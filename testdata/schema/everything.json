@@ -1,0 +1,132 @@
+{
+  "type": "object",
+  "properties": {
+    "str": {
+      "type": "string"
+    },
+    "int": {
+      "type": "integer",
+      "description": "an integer"
+    },
+    "uint": {
+      "type": "integer"
+    },
+    "float": {
+      "type": "number"
+    },
+    "bool": {
+      "type": "boolean"
+    },
+    "level": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "count": {
+      "type": "integer",
+      "enum": [
+        1,
+        2,
+        3
+      ]
+    },
+    "when": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "raw": {},
+    "any": {},
+    "bytes": {
+      "type": "string"
+    },
+    "list": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "Tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "Tags"
+        ]
+      }
+    },
+    "matrix": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "number"
+        }
+      }
+    },
+    "nested": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "Tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "Tags"
+      ]
+    },
+    "pointer": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "Tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "Tags"
+      ]
+    },
+    "labels": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "duration": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "str",
+    "int",
+    "uint",
+    "float",
+    "bool",
+    "level",
+    "when",
+    "list",
+    "nested"
+  ]
+}

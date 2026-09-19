@@ -1,0 +1,18 @@
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string",
+      "description": "Absolute path to read"
+    },
+    "max_bytes": {
+      "type": "integer",
+      "description": "Stop after this many bytes"
+    }
+  },
+  "required": [
+    "path",
+    "max_bytes"
+  ],
+  "additionalProperties": false
+}

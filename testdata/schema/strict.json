@@ -1,0 +1,34 @@
+{
+  "type": "object",
+  "properties": {
+    "query": {
+      "type": "string",
+      "description": "Search terms"
+    },
+    "limit": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "Maximum results"
+    },
+    "inner": {
+      "type": "object",
+      "properties": {
+        "deep": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "deep"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "query",
+    "limit",
+    "inner"
+  ],
+  "additionalProperties": false
+}
