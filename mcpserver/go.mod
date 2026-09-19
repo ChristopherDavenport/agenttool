@@ -3,8 +3,8 @@ module github.com/ChristopherDavenport/agenttool/mcpserver
 go 1.25.0
 
 require (
-	github.com/ChristopherDavenport/agenttool v0.0.1
-	github.com/ChristopherDavenport/agenttool/mcpclient v0.0.1
+	github.com/ChristopherDavenport/agenttool v0.0.2
+	github.com/ChristopherDavenport/agenttool/mcpclient v0.0.2
 	github.com/ChristopherDavenport/openresponses v0.0.9
 	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0
