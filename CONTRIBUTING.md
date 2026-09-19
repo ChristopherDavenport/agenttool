@@ -48,14 +48,20 @@ regenerate them with `go test . -update` and review the diff.
 
 ## Releases
 
-Releases are annotated tags. The tag message becomes the GitHub release
-notes, so write it as one:
+Every module in the repository shares one version and is tagged at one
+commit. With the changelog's *Unreleased* section written:
 
 ```sh
-git tag -a v0.1.0 -m "v0.1.0: one line per user-visible change"
-git push origin v0.1.0
+make release VERSION=v0.1.0
 ```
 
-The release workflow publishes the GitHub release, and the Go module
-proxy picks the version up from the tag. Before v1.0.0 the API may
-change between minor versions; the changelog records every break.
+sets the root requirement in `mcpclient` and `mcpserver`, and the
+`mcpclient` requirement in `mcpserver`, to the version, dates the
+changelog, runs `make check`, commits, tags `v0.1.0`,
+`mcpclient/v0.1.0` and `mcpserver/v0.1.0` with the changelog section as
+the message, and pushes. The nested `go.mod` files require released
+versions next to `replace` directives to the tree, so consumers fetch
+the versions and the checkout builds against the working tree. The
+release workflow publishes a GitHub release per tag, and the Go module
+proxy picks the versions up. Before v1.0.0 the API may change between
+minor versions; the changelog records every break.

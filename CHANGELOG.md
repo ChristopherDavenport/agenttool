@@ -5,6 +5,16 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- One version per repository. `mcpclient` and `mcpserver` require the
+  released root, and `mcpserver` requires `mcpclient`, next to
+  `replace` directives that build against the tree, so `go get` works
+  for consumers; at v0.0.1 they required a nonexistent `v0.0.0` and
+  could not be fetched. `make release VERSION=` sets the requirements,
+  dates the changelog, and tags the root and both nested modules at one
+  commit; the release workflow publishes nested tags too.
+
 ## v0.0.1 - 2026-09-19
 
 - `make check` now includes `tidy-check`, which fails when `go mod tidy`

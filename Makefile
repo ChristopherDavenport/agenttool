@@ -5,7 +5,7 @@ GOVULNCHECK ?= $(GO) run golang.org/x/vuln/cmd/govulncheck@latest
 # dependencies out of it.
 SUBMODULES = mcpclient mcpserver
 
-.PHONY: build deps test vet fmt tidy tidy-check lint vuln check interop clean
+.PHONY: build deps test vet fmt tidy tidy-check lint vuln check interop release clean
 
 build:
 	$(GO) build ./...
@@ -57,6 +57,35 @@ check: fmt tidy-check vet deps lint vuln test
 interop:
 	cd mcpclient && MCP_INTEROP=1 $(GO) test -race -count=1 -run TestInterop ./...
 	cd mcpserver && MCP_INTEROP=1 $(GO) test -race -count=1 -run TestInterop ./...
+
+MODULE := $(shell $(GO) list -m)
+NOTES := $(shell mktemp)
+
+# Cut a release. Every module in the repository shares one version and
+# one commit: each nested module's requirement on the root, and on any
+# sibling module, is set to VERSION next to the replace that keeps it
+# building from the tree; the changelog's Unreleased section is dated;
+# everything is checked; one commit is made; the root is tagged VERSION
+# and each nested module <dir>/VERSION with the changelog section as the
+# message; and the branch and tags are pushed. TRAILER, when set, is
+# appended to the commit message.
+release:
+	@test -n "$(VERSION)" || { echo "usage: make release VERSION=vX.Y.Z"; exit 1; }
+	@grep -q '^## Unreleased$$' CHANGELOG.md || { echo "CHANGELOG.md has no Unreleased section"; exit 1; }
+	@test -z "$$(git status --porcelain)" || { echo "working tree is not clean"; exit 1; }
+	@for m in $(SUBMODULES); do ( \
+	  cd $$m && $(GO) mod edit -require=$(MODULE)@$(VERSION) && \
+	  for s in $(SUBMODULES); do \
+	    if grep -q "^[[:space:]]*$(MODULE)/$$s " go.mod; then $(GO) mod edit -require=$(MODULE)/$$s@$(VERSION) || exit 1; fi; \
+	  done && $(GO) mod tidy ) || exit 1; done
+	sed -i 's/^## Unreleased$$/## $(VERSION) - '"$$(date +%F)"'/' CHANGELOG.md
+	$(MAKE) check
+	git add -A && git commit -q -m "Release $(VERSION)" $(if $(TRAILER),-m "$(TRAILER)")
+	@awk -v v="$(VERSION)" '/^## /{p=($$2==v)} p' CHANGELOG.md | sed '1s/.*/$(VERSION)/' > $(NOTES)
+	git tag -a $(VERSION) -F $(NOTES)
+	@for m in $(SUBMODULES); do git tag -a $$m/$(VERSION) -F $(NOTES) || exit 1; done
+	@rm -f $(NOTES)
+	git push origin HEAD $(VERSION) $(patsubst %,%/$(VERSION),$(SUBMODULES))
 
 clean:
 	rm -rf .cache

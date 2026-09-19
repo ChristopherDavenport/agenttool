@@ -3,7 +3,7 @@ module github.com/ChristopherDavenport/agenttool/mcpclient
 go 1.25.0
 
 require (
-	github.com/ChristopherDavenport/agenttool v0.0.0
+	github.com/ChristopherDavenport/agenttool v0.0.1
 	github.com/ChristopherDavenport/openresponses v0.0.9
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 )
@@ -19,4 +19,6 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 )
 
+// The require names the released root a consumer fetches; the replace
+// builds against the tree.
 replace github.com/ChristopherDavenport/agenttool => ../
