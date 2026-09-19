@@ -9,6 +9,7 @@ versions may break the API.
 
 - `make check` now includes `tidy-check`, which fails when `go mod tidy`
   would change any module's `go.mod` or `go.sum`; CI uses the same target.
+
 Extracted from `agentturn`, where it was the `tool` package and the
 `tools/mcp` and `front/mcp` modules, so the contract is versioned apart
 from the loop and usable without it.
