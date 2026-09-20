@@ -15,6 +15,15 @@ versions may break the API.
   tool consumed by `mcpclient` and served again by `mcpserver` lost its
   progress and total on the second hop; a round-trip test now covers the
   proxy. Callers that named either adapter's type switch to the root one.
+- `mcpserver.NewServer`, `AddTools` and `Handler` return an error when a
+  tool's schema cannot be parsed or resolved for validation, instead of
+  serving the tool with no argument validation and telling nobody. No
+  tool is registered when any fails.
+- `mcpclient.WithRefreshError` receives the error when the refresh that
+  follows a tool-list-changed notification fails; without it the SDK
+  logger, when set, records it. Transport errors from a call are wrapped
+  as `mcp: call "name": ...`, and an audio part is named after its media
+  type, `audio.wav`, rather than a bare `audio`.
 
 ## v0.0.2 - 2026-09-19
 

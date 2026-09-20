@@ -50,7 +50,10 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	srv := mcpserver.NewServer("agenttool-stdio-example", "0.0.0", tools...)
+	srv, err := mcpserver.NewServer("agenttool-stdio-example", "0.0.0", tools...)
+	if err != nil {
+		log.Fatal(err)
+	}
 	if err := srv.Run(ctx, &sdk.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}
