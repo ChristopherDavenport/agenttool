@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"iter"
 	"runtime/debug"
-	"sync"
 )
 
 // DefaultMaxParallel bounds concurrent tool calls in a batch when the
@@ -59,76 +58,51 @@ func (e Executor) Execute(ctx context.Context, jobs []Job) iter.Seq[Event] {
 		}
 
 		ctx, cancel := context.WithCancel(ctx)
+		// Cancelling on the way out is what releases a progress sender
+		// still blocked after the consumer has left: a remote tool may
+		// report from a goroutine of its own after its call returned.
 		defer cancel()
 
-		// events carries progress and completions. A remote tool may
-		// report progress after its call returned, from a goroutine of
-		// its own, so every send goes through send, which refuses once
-		// the channel is closed.
+		// events is unbuffered and never closed. The consumer reads until
+		// it has one final event per job, and every job sends exactly
+		// one, so a final send is unconditional and always received. A
+		// progress send may find the consumer gone, so it also waits on
+		// the context.
 		events := make(chan Event)
-		var gate sync.RWMutex
-		closed := false
-		send := func(ev Event) {
-			gate.RLock()
-			defer gate.RUnlock()
-			if closed {
-				return
-			}
-			if ev.Final {
-				// Completions are always delivered: the consumer reads
-				// until every job has one.
-				events <- ev
-				return
-			}
+		final := func(ev Event) { events <- ev }
+		progress := func(ev Event) {
 			select {
 			case events <- ev:
 			case <-ctx.Done():
 			}
 		}
 
-		var wg sync.WaitGroup
-		done := make(chan struct{})
 		go func() {
-			defer close(done)
 			sem := make(chan struct{}, limit)
 			for i, job := range jobs {
 				select {
 				case sem <- struct{}{}:
 				case <-ctx.Done():
-					// Jobs that never started still complete, with the
-					// cancellation as their error, so the consumer sees
-					// one final event per job.
-					wg.Add(1)
-					go func(i int) {
-						defer wg.Done()
-						send(Event{Index: i, Final: true, Err: ctx.Err()})
-					}(i)
+					// A job that never started still completes, with the
+					// cancellation as its error, so the consumer sees one
+					// final event per job.
+					final(Event{Index: i, Final: true, Err: ctx.Err()})
 					continue
 				}
-				wg.Add(1)
 				go func(i int, job Job) {
-					defer wg.Done()
 					defer func() { <-sem }()
 					res, err := run(ctx, job, func(r Result) {
-						send(Event{Index: i, Result: r})
+						progress(Event{Index: i, Result: r})
 					})
-					send(Event{Index: i, Final: true, Result: res, Err: err})
+					final(Event{Index: i, Final: true, Result: res, Err: err})
 				}(i, job)
 			}
-			wg.Wait()
-			// Late progress senders are released by the cancellation
-			// below before the gate is taken, so this never waits on a
-			// send nobody receives.
-			gate.Lock()
-			closed = true
-			close(events)
-			gate.Unlock()
 		}()
 
 		stopped := false
-		remaining := len(jobs)
 		finished := make([]bool, len(jobs))
-		for ev := range events {
+		for remaining := len(jobs); remaining > 0; {
+			ev := <-events
 			if ev.Final {
 				remaining--
 				finished[ev.Index] = true
@@ -138,6 +112,8 @@ func (e Executor) Execute(ctx context.Context, jobs []Job) iter.Seq[Event] {
 				continue
 			}
 			if stopped {
+				// The consumer left; keep receiving so every job's
+				// final event is taken and running tools are waited for.
 				continue
 			}
 			if !ev.Final && jobs[ev.Index].Call.OnUpdate != nil {
@@ -147,17 +123,7 @@ func (e Executor) Execute(ctx context.Context, jobs []Job) iter.Seq[Event] {
 				stopped = true
 				cancel()
 			}
-			if remaining == 0 {
-				break
-			}
 		}
-		// Every job has completed or the consumer left. Cancel so a
-		// sender still blocked on a send returns, drain, and wait for
-		// the producer to close the channel.
-		cancel()
-		for range events {
-		}
-		<-done
 	}
 }
 
