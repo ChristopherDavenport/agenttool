@@ -54,6 +54,10 @@ func NewServer(name, version string, tools ...agenttool.Tool) *sdk.Server {
 //
 // When the request carries a progress token, Call.OnUpdate forwards each
 // update as a progress notification whose message is the update's text.
+// An update whose Details is an agenttool.ProgressInfo supplies the
+// notification's progress, total and message, so a tool that mcpclient
+// consumed and this package serves again keeps its numbers; otherwise
+// updates are numbered in order with no total.
 func AddTools(s *sdk.Server, tools ...agenttool.Tool) {
 	for _, tl := range tools {
 		s.AddTool(Definition(tl), Handler(tl))
@@ -90,7 +94,7 @@ func Handler(tl agenttool.Tool) sdk.ToolHandler {
 			session := req.Session
 			call.OnUpdate = func(r agenttool.Result) {
 				params := &sdk.ProgressNotificationParams{ProgressToken: token, Progress: float64(n.Add(1)), Message: r.Output.String()}
-				if p, ok := r.Details.(Progress); ok {
+				if p, ok := r.Details.(agenttool.ProgressInfo); ok {
 					params.Progress, params.Total = p.Progress, p.Total
 					if p.Message != "" {
 						params.Message = p.Message
@@ -144,15 +148,6 @@ func validate(resolved *jsonschema.Resolved, raw json.RawMessage) error {
 		return fmt.Errorf("invalid arguments: %w", err)
 	}
 	return nil
-}
-
-// Progress, when set as the Details of a progress update, carries the
-// numbers of the MCP progress notification; otherwise updates are
-// numbered in order with no total.
-type Progress struct {
-	Progress float64
-	Total    float64
-	Message  string
 }
 
 // ContentOf maps a function call output to MCP content. Text becomes one

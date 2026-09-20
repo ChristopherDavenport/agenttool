@@ -228,11 +228,11 @@ func TestExecuteMapsResults(t *testing.T) {
 func TestProgressForwarded(t *testing.T) {
 	s := connect(t, newServer(t))
 	var mu sync.Mutex
-	var updates []Progress
+	var updates []agenttool.ProgressInfo
 	res, err := lookup(t, s, "progress").Execute(context.Background(), agenttool.Call{ID: "c", Args: json.RawMessage(`{}`), OnUpdate: func(r agenttool.Result) {
 		mu.Lock()
 		defer mu.Unlock()
-		updates = append(updates, r.Details.(Progress))
+		updates = append(updates, r.Details.(agenttool.ProgressInfo))
 		if r.Output.Text != "step" {
 			t.Errorf("update text = %q", r.Output.Text)
 		}
@@ -242,10 +242,10 @@ func TestProgressForwarded(t *testing.T) {
 	}
 	// The SDK dispatches notifications asynchronously, so the last update
 	// may land after the result.
-	got := waitFor(t, func() []Progress {
+	got := waitFor(t, func() []agenttool.ProgressInfo {
 		mu.Lock()
 		defer mu.Unlock()
-		return append([]Progress(nil), updates...)
+		return append([]agenttool.ProgressInfo(nil), updates...)
 	}, 2)
 	if got[1].Progress != 2 || got[1].Total != 2 {
 		t.Errorf("updates = %+v", got)

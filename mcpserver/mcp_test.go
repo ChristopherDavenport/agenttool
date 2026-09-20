@@ -39,7 +39,7 @@ var fixtures = []agenttool.Tool{
 	agenttool.New("fails", "always fails", func(context.Context, textArgs) (string, error) { return "", errors.New("disk on fire") }),
 	agenttool.New("progress", "reports progress", func(ctx context.Context, _ agenttool.NoArgs) (string, error) {
 		r := agenttool.Text("half way")
-		r.Details = Progress{Progress: 1, Total: 2}
+		r.Details = agenttool.ProgressInfo{Progress: 1, Total: 2}
 		agenttool.Progress(ctx, r)
 		agenttool.Progress(ctx, agenttool.Text("nearly"))
 		return "done", nil
@@ -166,11 +166,11 @@ func TestRoundTripProgress(t *testing.T) {
 	s := roundTrip(t, NewServer("fixtures", "1", fixtures...))
 	rt, _ := agenttool.Set(s.Tools()).Lookup("progress")
 	var mu sync.Mutex
-	var got []mcpclient.Progress
+	var got []agenttool.ProgressInfo
 	res, err := rt.Execute(context.Background(), agenttool.Call{Args: json.RawMessage(`{}`), OnUpdate: func(r agenttool.Result) {
 		mu.Lock()
 		defer mu.Unlock()
-		got = append(got, r.Details.(mcpclient.Progress))
+		got = append(got, r.Details.(agenttool.ProgressInfo))
 	}})
 	if err != nil || res.Output.Text != "done" {
 		t.Fatalf("res = %+v err = %v", res, err)
@@ -192,11 +192,77 @@ func TestRoundTripProgress(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if got[0] != (mcpclient.Progress{Progress: 1, Total: 2, Message: "half way"}) {
+	if got[0] != (agenttool.ProgressInfo{Progress: 1, Total: 2, Message: "half way"}) {
 		t.Errorf("first update = %+v", got[0])
 	}
 	if got[1].Message != "nearly" || got[1].Progress != 2 {
 		t.Errorf("second update = %+v", got[1])
+	}
+}
+
+// TestProxiedProgress takes the second hop the README promises: a
+// remote server's tool is consumed by mcpclient, served again by this
+// package, and consumed once more. The numbers the origin reported must
+// arrive intact rather than being replaced by the serving side's own
+// counter.
+func TestProxiedProgress(t *testing.T) {
+	origin := sdk.NewServer(&sdk.Implementation{Name: "origin", Version: "1"}, nil)
+	origin.AddTool(&sdk.Tool{Name: "count", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			if token := req.Params.GetProgressToken(); token != nil {
+				for _, p := range []sdk.ProgressNotificationParams{
+					{Progress: 10, Total: 40, Message: "a quarter"},
+					{Progress: 40, Total: 40, Message: "all"},
+				} {
+					p.ProgressToken = token
+					if err := req.Session.NotifyProgress(ctx, &p); err != nil {
+						return nil, err
+					}
+				}
+			}
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "counted"}}}, nil
+		})
+	first := roundTrip(t, origin, mcpclient.WithPrefix("origin"))
+	proxy := NewServer("proxy", "1", first.Tools()...)
+	second := roundTrip(t, proxy)
+
+	rt, ok := agenttool.Set(second.Tools()).Lookup("origin__count")
+	if !ok {
+		t.Fatalf("proxied tool missing from %v", second.Tools())
+	}
+	var mu sync.Mutex
+	var got []agenttool.ProgressInfo
+	res, err := rt.Execute(context.Background(), agenttool.Call{Args: json.RawMessage(`{}`), OnUpdate: func(r agenttool.Result) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, r.Details.(agenttool.ProgressInfo))
+	}})
+	if err != nil || res.Output.Text != "counted" {
+		t.Fatalf("res = %+v err = %v", res, err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		n := len(got)
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("updates = %+v", got)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []agenttool.ProgressInfo{
+		{Progress: 10, Total: 40, Message: "a quarter"},
+		{Progress: 40, Total: 40, Message: "all"},
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("update %d = %+v, want %+v", i, got[i], want[i])
+		}
 	}
 }
 
