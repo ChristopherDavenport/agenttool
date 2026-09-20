@@ -161,16 +161,31 @@ func (e Executor) Execute(ctx context.Context, jobs []Job) iter.Seq[Event] {
 	}
 }
 
-// run executes one job, turning a panic into an error.
+// PanicError is the error a job completes with when its tool panicked.
+// Error reports the tool and the panic value in one line, which is what
+// the model sees; the stack is kept for hosts and subscribers that
+// recover it with errors.As, and never reaches the conversation.
+type PanicError struct {
+	Tool  string
+	Value any
+	Stack []byte
+}
+
+func (e *PanicError) Error() string {
+	return fmt.Sprintf("tool %q panicked: %v", e.Tool, e.Value)
+}
+
+// run executes one job, turning a panic into a [PanicError].
 func run(ctx context.Context, job Job, onUpdate func(Result)) (res Result, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("tool %q panicked: %v\n%s", job.Tool.Name(), r, debug.Stack())
-		}
-	}()
 	if job.Tool == nil {
 		return Result{}, fmt.Errorf("no tool for call %q", job.Call.ID)
 	}
+	name := job.Tool.Name()
+	defer func() {
+		if r := recover(); r != nil {
+			err = &PanicError{Tool: name, Value: r, Stack: debug.Stack()}
+		}
+	}()
 	call := job.Call
 	call.OnUpdate = onUpdate
 	if err := ctx.Err(); err != nil {
