@@ -3,7 +3,7 @@ module github.com/ChristopherDavenport/agenttool/mcpclient
 go 1.25.0
 
 require (
-	github.com/ChristopherDavenport/agenttool v0.0.3
+	github.com/ChristopherDavenport/agenttool v0.0.4
 	github.com/ChristopherDavenport/openresponses v0.0.9
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 )

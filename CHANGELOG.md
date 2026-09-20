@@ -5,7 +5,7 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
-## Unreleased
+## v0.0.4 - 2026-09-19
 
 - `mcpclient.Remote.Await` blocks until the snapshot reflects every
   tool-list-changed notification received so far, returning the error
