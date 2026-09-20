@@ -51,6 +51,11 @@ versions may break the API.
   equals, and a tie is dropped, where both used to be emitted. A struct
   field that implements `json.Marshaler` is now `{}` like any other
   self-encoding type. `enum` tags work on `uintptr` fields.
+- `Executor.Execute` drops the gate, closed flag, done channel, drain
+  loop and wait group it carried. The events channel is never closed:
+  the consumer reads until it has one final event per job, so a final
+  send is always received, and the deferred cancel releases a late
+  progress sender. Behaviour is unchanged.
 
 ## v0.0.2 - 2026-09-19
 
