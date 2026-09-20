@@ -7,10 +7,11 @@ import (
 	"testing"
 
 	"github.com/ChristopherDavenport/agenttool"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestArgumentsValidatedAgainstSchema(t *testing.T) {
-	s := roundTrip(t, NewServer("t", "0", fixtures...))
+	s := roundTrip(t, newServer(t, "t", fixtures...))
 	tools := agenttool.Set(s.Tools())
 	cases := []struct {
 		name    string
@@ -46,15 +47,40 @@ func TestArgumentsValidatedAgainstSchema(t *testing.T) {
 	}
 }
 
-func TestUnresolvableSchemaIsNotValidated(t *testing.T) {
-	odd := &agenttool.Func{ToolName: "odd", Schema: json.RawMessage(`{"$schema":"http://example.com/unknown","type":"object"}`),
-		Fn: func(_ context.Context, c agenttool.Call) (agenttool.Result, error) {
-			return agenttool.Text(string(c.Args)), nil
-		}}
-	s := roundTrip(t, NewServer("t", "0", odd))
-	tl, _ := agenttool.Set(s.Tools()).Lookup("odd")
-	res, err := tl.Execute(context.Background(), agenttool.Call{ID: "1", Args: json.RawMessage(`{"x":1}`)})
-	if err != nil || res.Output.Text != `{"x":1}` {
-		t.Errorf("res = %+v err = %v", res, err)
+func TestUnresolvableSchemaIsRefused(t *testing.T) {
+	cases := []struct {
+		name    string
+		schema  string
+		wantErr string
+	}{
+		{"unknown draft", `{"$schema":"http://example.com/unknown","type":"object"}`, "unsupported $schema"},
+		{"not a schema", `{"type":5}`, "schema"},
+		{"unresolvable ref", `{"type":"object","properties":{"a":{"$ref":"#/$defs/missing"}}}`, "schema"},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			odd := &agenttool.Func{ToolName: "odd", Schema: json.RawMessage(tc.schema),
+				Fn: func(context.Context, agenttool.Call) (agenttool.Result, error) { return agenttool.Text("ran"), nil }}
+			if _, err := Handler(odd); err == nil || !strings.Contains(err.Error(), `tool "odd"`) || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("Handler err = %v, want tool name and %q", err, tc.wantErr)
+			}
+			s, err := NewServer("t", "0", fixtures[0], odd)
+			if err == nil || s != nil {
+				t.Errorf("NewServer = %v, %v; want nil server and an error", s, err)
+			}
+			// Nothing is registered when any tool fails.
+			srv := sdkServer()
+			if err := AddTools(srv, fixtures[0], odd); err == nil {
+				t.Fatal("AddTools should fail")
+			}
+			rt := roundTrip(t, srv)
+			if n := len(rt.Tools()); n != 0 {
+				t.Errorf("%d tools registered after a failed AddTools, want 0", n)
+			}
+		})
+	}
+}
+
+func sdkServer() *sdk.Server {
+	return sdk.NewServer(&sdk.Implementation{Name: "t", Version: "0"}, nil)
 }

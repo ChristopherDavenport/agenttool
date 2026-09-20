@@ -87,8 +87,8 @@ s, err := mcpclient.Connect(ctx, &mcp.CommandTransport{Command: cmd}, mcpclient.
 tools := s.Tools() // fs__read, fs__write, ...
 
 // Serve: Go tools over MCP.
-server := mcpserver.NewServer("my-tools", "0.1.0", ReadFile)
-server.Run(ctx, &mcp.StdioTransport{})
+server, err := mcpserver.NewServer("my-tools", "0.1.0", ReadFile)
+err = server.Run(ctx, &mcp.StdioTransport{})
 ```
 
 `mcpclient` maps text, image, audio and resource content to output

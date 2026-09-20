@@ -7,12 +7,13 @@
 // to MCP content. The official Go SDK owns transports (stdio, streamable
 // HTTP) and protocol negotiation.
 //
-//	server := mcpserver.NewServer("files", "1.0", readFile, writeFile)
-//	err := server.Run(ctx, &sdk.StdioTransport{})
+//	server, err := mcpserver.NewServer("files", "1.0", readFile, writeFile)
+//	...
+//	err = server.Run(ctx, &sdk.StdioTransport{})
 //
-// BeforeToolCall and AfterToolCall do not run here. Policy belongs to
-// whoever hosts the loop, and this front hosts only tools; a caller who
-// wants a policy applies it to the tools before serving them.
+// No policy runs here. A loop's hooks around tool calls belong to
+// whoever hosts the loop, and this package hosts only tools; a caller
+// who wants a policy applies it to the tools before serving them.
 package mcpserver
 
 import (
@@ -34,11 +35,17 @@ import (
 // object schema on every tool.
 var emptySchema = json.RawMessage(`{"type":"object","properties":{}}`)
 
-// NewServer builds an SDK server named name that serves tools.
-func NewServer(name, version string, tools ...agenttool.Tool) *sdk.Server {
+// octetStream is the media type for bytes of unknown type.
+const octetStream = "application/octet-stream"
+
+// NewServer builds an SDK server named name that serves tools. It fails
+// as [AddTools] does.
+func NewServer(name, version string, tools ...agenttool.Tool) (*sdk.Server, error) {
 	s := sdk.NewServer(&sdk.Implementation{Name: name, Version: version}, nil)
-	AddTools(s, tools...)
-	return s
+	if err := AddTools(s, tools...); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // AddTools registers tools on an SDK server. Each tool's Parameters is
@@ -46,11 +53,14 @@ func NewServer(name, version string, tools ...agenttool.Tool) *sdk.Server {
 // nil Parameters becomes an empty object schema. The handler validates
 // the arguments against that schema, as MCP servers are expected to, so
 // a missing required property or a wrong type is refused before the
-// tool runs; a schema the validator cannot resolve is served as is and
-// the tool's own decoding is the only check. It then runs Execute with
-// the raw arguments and maps the result with [ContentOf]; a returned
-// error, a validation failure included, sets isError with the message
-// as text so the calling model can see it and retry.
+// tool runs. A schema the validator cannot parse or resolve is a
+// registration error, "mcpserver: tool NAME: schema: ...", reported
+// before any tool is added, as [agenttool.New] panics for the same
+// mistake; the validator handles JSON Schema draft-07 and 2020-12. The
+// handler then runs Execute with the raw arguments and maps the result
+// with [ContentOf]; a returned error, a validation failure included,
+// sets isError with the message as text so the calling model can see it
+// and retry.
 //
 // When the request carries a progress token, Call.OnUpdate forwards each
 // update as a progress notification whose message is the update's text.
@@ -58,10 +68,19 @@ func NewServer(name, version string, tools ...agenttool.Tool) *sdk.Server {
 // notification's progress, total and message, so a tool that mcpclient
 // consumed and this package serves again keeps its numbers; otherwise
 // updates are numbered in order with no total.
-func AddTools(s *sdk.Server, tools ...agenttool.Tool) {
+func AddTools(s *sdk.Server, tools ...agenttool.Tool) error {
+	handlers := make([]sdk.ToolHandler, 0, len(tools))
 	for _, tl := range tools {
-		s.AddTool(Definition(tl), Handler(tl))
+		h, err := Handler(tl)
+		if err != nil {
+			return err
+		}
+		handlers = append(handlers, h)
 	}
+	for i, tl := range tools {
+		s.AddTool(Definition(tl), handlers[i])
+	}
+	return nil
 }
 
 // Definition builds the MCP tool definition for tl.
@@ -75,9 +94,13 @@ func Definition(tl agenttool.Tool) *sdk.Tool {
 
 var callSeq atomic.Int64
 
-// Handler builds the SDK handler that runs tl.
-func Handler(tl agenttool.Tool) sdk.ToolHandler {
-	resolved := resolveSchema(tl.Parameters())
+// Handler builds the SDK handler that runs tl. It fails when the tool's
+// schema cannot be resolved for validation.
+func Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
+	resolved, err := resolveSchema(tl.Parameters())
+	if err != nil {
+		return nil, fmt.Errorf("mcpserver: tool %q: schema: %w", tl.Name(), err)
+	}
 	return func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
 		call := agenttool.Call{
 			ID:   "mcp_" + strconv.FormatInt(callSeq.Add(1), 10),
@@ -87,7 +110,7 @@ func Handler(tl agenttool.Tool) sdk.ToolHandler {
 			call.Args = json.RawMessage("{}")
 		}
 		if err := validate(resolved, call.Args); err != nil {
-			return &sdk.CallToolResult{IsError: true, Content: []sdk.Content{&sdk.TextContent{Text: err.Error()}}}, nil
+			return errorResult(err), nil
 		}
 		if token := req.Params.GetProgressToken(); token != nil && req.Session != nil {
 			var n atomic.Int64
@@ -100,46 +123,47 @@ func Handler(tl agenttool.Tool) sdk.ToolHandler {
 						params.Message = p.Message
 					}
 				}
+				// Progress is best effort: a notification the session
+				// could not deliver must not fail the call, and the
+				// result carries everything the update did.
 				_ = session.NotifyProgress(ctx, params)
 			}
 		}
 		res, err := tl.Execute(ctx, call)
 		if err != nil {
-			return &sdk.CallToolResult{IsError: true, Content: []sdk.Content{&sdk.TextContent{Text: err.Error()}}}, nil
+			return errorResult(err), nil
 		}
 		return &sdk.CallToolResult{Content: ContentOf(res.Output)}, nil
-	}
+	}, nil
 }
 
-// resolveSchema prepares a tool's schema for validation. It returns nil
-// when there is no schema or the validator cannot resolve it.
-func resolveSchema(raw json.RawMessage) *jsonschema.Resolved {
+// errorResult is the isError result whose text is the message the
+// calling model sees.
+func errorResult(err error) *sdk.CallToolResult {
+	return &sdk.CallToolResult{IsError: true, Content: []sdk.Content{&sdk.TextContent{Text: err.Error()}}}
+}
+
+// resolveSchema prepares a tool's schema for validation. An empty schema
+// is the empty object schema.
+func resolveSchema(raw json.RawMessage) (*jsonschema.Resolved, error) {
 	if len(raw) == 0 {
 		raw = emptySchema
 	}
 	var schema jsonschema.Schema
 	if err := json.Unmarshal(raw, &schema); err != nil {
-		return nil
+		return nil, err
 	}
 	switch schema.Schema {
 	case "", "http://json-schema.org/draft-07/schema#", "https://json-schema.org/draft-07/schema#", "https://json-schema.org/draft/2020-12/schema":
 	default:
-		// The validator handles draft-07 and 2020-12 only.
-		return nil
+		return nil, fmt.Errorf("unsupported $schema %q: the validator handles draft-07 and 2020-12", schema.Schema)
 	}
-	resolved, err := schema.Resolve(nil)
-	if err != nil {
-		return nil
-	}
-	return resolved
+	return schema.Resolve(nil)
 }
 
 // validate checks raw arguments against a resolved schema. The error is
 // phrased like the tool package's own decode errors.
 func validate(resolved *jsonschema.Resolved, raw json.RawMessage) error {
-	if resolved == nil {
-		return nil
-	}
 	var instance any
 	if err := json.Unmarshal(raw, &instance); err != nil {
 		return fmt.Errorf("invalid arguments: %w", err)
@@ -176,23 +200,7 @@ func ContentOf(out openresponses.FunctionCallOutputData) []sdk.Content {
 				content = append(content, &sdk.ResourceLink{URI: p.ImageURL, Name: "image"})
 			}
 		case *openresponses.InputFile:
-			switch {
-			case p.FileData != "":
-				data, err := base64.StdEncoding.DecodeString(p.FileData)
-				if err != nil {
-					content = append(content, &sdk.TextContent{Text: p.FileData})
-					continue
-				}
-				uri := p.FileURL
-				if uri == "" {
-					uri = "file:///" + strings.TrimPrefix(p.Filename, "/")
-				}
-				content = append(content, &sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: uri, Blob: data}})
-			case p.FileURL != "":
-				content = append(content, &sdk.ResourceLink{URI: p.FileURL, Name: p.Filename})
-			default:
-				content = append(content, &sdk.TextContent{Text: p.Filename})
-			}
+			content = append(content, fileContent(p))
 		default:
 			data, err := json.Marshal(part)
 			if err != nil {
@@ -202,6 +210,29 @@ func ContentOf(out openresponses.FunctionCallOutputData) []sdk.Content {
 		}
 	}
 	return content
+}
+
+// fileContent maps an input_file part: data to an embedded blob
+// resource whose URI is the file URL or a file URI built from the name,
+// a URL alone to a resource link, and a bare name to text. Data that is
+// not base64 is passed through as text rather than dropped.
+func fileContent(p *openresponses.InputFile) sdk.Content {
+	switch {
+	case p.FileData != "":
+		data, err := base64.StdEncoding.DecodeString(p.FileData)
+		if err != nil {
+			return &sdk.TextContent{Text: p.FileData}
+		}
+		uri := p.FileURL
+		if uri == "" {
+			uri = "file:///" + strings.TrimPrefix(p.Filename, "/")
+		}
+		return &sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: uri, Blob: data}}
+	case p.FileURL != "":
+		return &sdk.ResourceLink{URI: p.FileURL, Name: p.Filename}
+	default:
+		return &sdk.TextContent{Text: p.Filename}
+	}
 }
 
 // parseDataURL splits a base64 data URL into its media type and bytes.
@@ -223,7 +254,7 @@ func parseDataURL(url string) (string, []byte, bool) {
 		return "", nil, false
 	}
 	if mime == "" {
-		mime = "application/octet-stream"
+		mime = octetStream
 	}
 	return mime, data, true
 }

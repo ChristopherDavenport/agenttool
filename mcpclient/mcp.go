@@ -15,7 +15,8 @@
 // Tools returns a snapshot. The server subscribes to the SDK's
 // tool-list-changed notification and refreshes it, so a loop that reads
 // its tool list each turn should call Tools then rather than hold the
-// slice; agentturn's Config.ToolProvider is that hook.
+// slice. A refresh that fails leaves the snapshot as it was and reports
+// through [WithRefreshError], or the SDK logger when one is set.
 package mcpclient
 
 import (
@@ -43,11 +44,15 @@ const progressGrace = time.Second
 type Option func(*options)
 
 type options struct {
-	prefix     string
-	sequential map[string]bool
-	client     sdk.Implementation
-	clientOpts sdk.ClientOptions
+	prefix         string
+	sequential     map[string]bool
+	client         sdk.Implementation
+	clientOpts     sdk.ClientOptions
+	onRefreshError func(error)
 }
+
+// octetStream is the media type for bytes of unknown type.
+const octetStream = "application/octet-stream"
 
 // WithPrefix prefixes every tool name with prefix and a double
 // underscore, so WithPrefix("fs") turns a remote "read" into "fs__read"
@@ -83,16 +88,24 @@ func WithClientOptions(opts sdk.ClientOptions) Option {
 	return func(o *options) { o.clientOpts = opts }
 }
 
+// WithRefreshError sets the function called when the refresh that
+// follows a tool-list-changed notification fails. The snapshot is left
+// as it was. Without it the failure is logged through the SDK logger
+// from [WithClientOptions] when one is set, and dropped otherwise.
+func WithRefreshError(fn func(error)) Option {
+	return func(o *options) { o.onRefreshError = fn }
+}
+
 // Server is one connected MCP session and the tools it offers.
 type Server struct {
 	session *sdk.ClientSession
 	opts    options
 
-	mu    sync.RWMutex
-	tools []agenttool.Tool
+	mu       sync.RWMutex
+	tools    []agenttool.Tool
+	progress map[string]func(agenttool.Result) // by progress token
 
-	token    atomic.Int64
-	progress sync.Map // progress token (string) -> func(agenttool.Result)
+	token atomic.Int64
 }
 
 // Connect opens one session over t, lists its tools and returns the
@@ -103,7 +116,7 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Server, err
 	for _, opt := range opts {
 		opt(&o)
 	}
-	s := &Server{opts: o}
+	s := &Server{opts: o, progress: make(map[string]func(agenttool.Result))}
 
 	clientOpts := o.clientOpts
 	userToolsChanged := clientOpts.ToolListChangedHandler
@@ -113,7 +126,11 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Server, err
 		}
 		// The handler runs on the session's receive path; listing needs
 		// a round trip, so refresh off it.
-		go func() { _ = s.Refresh(context.Background()) }()
+		go func() {
+			if err := s.Refresh(context.Background()); err != nil {
+				s.refreshFailed(err)
+			}
+		}()
 	}
 	userProgress := clientOpts.ProgressNotificationHandler
 	clientOpts.ProgressNotificationHandler = func(ctx context.Context, req *sdk.ProgressNotificationClientRequest) {
@@ -147,8 +164,19 @@ func (s *Server) Tools() []agenttool.Tool {
 	return append([]agenttool.Tool(nil), s.tools...)
 }
 
+// refreshFailed reports a failed automatic refresh.
+func (s *Server) refreshFailed(err error) {
+	switch {
+	case s.opts.onRefreshError != nil:
+		s.opts.onRefreshError(err)
+	case s.opts.clientOpts.Logger != nil:
+		s.opts.clientOpts.Logger.Error("mcpclient: refresh after tool-list-changed failed", "err", err)
+	}
+}
+
 // Refresh lists the server's tools again and replaces the snapshot. It
-// runs automatically on the tool-list-changed notification.
+// runs automatically on the tool-list-changed notification; see
+// [WithRefreshError] for how a failure there is reported.
 func (s *Server) Refresh(ctx context.Context) error {
 	var tools []agenttool.Tool
 	for t, err := range s.session.Tools(ctx, nil) {
@@ -182,12 +210,12 @@ func (s *Server) Name(remote string) string {
 }
 
 func (s *Server) wrap(t *sdk.Tool) (agenttool.Tool, error) {
-	schema, err := json.Marshal(t.InputSchema)
-	if err != nil {
-		return nil, fmt.Errorf("mcp: tool %q: input schema: %w", t.Name, err)
-	}
-	if t.InputSchema == nil {
-		schema = json.RawMessage(`{"type":"object"}`)
+	schema := json.RawMessage(`{"type":"object"}`)
+	if t.InputSchema != nil {
+		var err error
+		if schema, err = json.Marshal(t.InputSchema); err != nil {
+			return nil, fmt.Errorf("mcp: tool %q: input schema: %w", t.Name, err)
+		}
 	}
 	remote := t.Name
 	name := s.Name(remote)
@@ -219,14 +247,20 @@ func (s *Server) call(ctx context.Context, remote string, call agenttool.Call) (
 	if call.OnUpdate != nil {
 		token := "agenttool-" + strconv.FormatInt(s.token.Add(1), 10)
 		params.Meta = sdk.Meta{"progressToken": token}
-		s.progress.Store(token, call.OnUpdate)
+		s.mu.Lock()
+		s.progress[token] = call.OnUpdate
+		s.mu.Unlock()
 		// Notifications are dispatched asynchronously and can trail the
 		// result, so the token outlives the call briefly.
-		defer time.AfterFunc(progressGrace, func() { s.progress.Delete(token) })
+		defer time.AfterFunc(progressGrace, func() {
+			s.mu.Lock()
+			delete(s.progress, token)
+			s.mu.Unlock()
+		})
 	}
 	res, err := s.session.CallTool(ctx, params)
 	if err != nil {
-		return agenttool.Result{}, err
+		return agenttool.Result{}, fmt.Errorf("mcp: call %q: %w", remote, err)
 	}
 	return Result(res)
 }
@@ -241,13 +275,15 @@ func (s *Server) onProgress(p *sdk.ProgressNotificationParams) {
 	if !ok {
 		return
 	}
-	fn, ok := s.progress.Load(token)
+	s.mu.RLock()
+	fn, ok := s.progress[token]
+	s.mu.RUnlock()
 	if !ok {
 		return
 	}
 	r := agenttool.Text(p.Message)
 	r.Details = agenttool.ProgressInfo{Progress: p.Progress, Total: p.Total, Message: p.Message}
-	fn.(func(agenttool.Result))(r)
+	fn(r)
 }
 
 // Result maps an MCP call result to a tool result. Text-only content
@@ -273,7 +309,7 @@ func Result(res *sdk.CallToolResult) (agenttool.Result, error) {
 			parts = append(parts, &openresponses.InputImage{ImageURL: dataURL(v.MIMEType, v.Data)})
 		case *sdk.AudioContent:
 			textOnly = false
-			parts = append(parts, &openresponses.InputFile{Filename: "audio", FileData: base64.StdEncoding.EncodeToString(v.Data)})
+			parts = append(parts, &openresponses.InputFile{Filename: audioName(v.MIMEType), FileData: base64.StdEncoding.EncodeToString(v.Data)})
 		case *sdk.EmbeddedResource:
 			if v.Resource == nil {
 				continue
@@ -321,9 +357,34 @@ func Result(res *sdk.CallToolResult) (agenttool.Result, error) {
 	return out, nil
 }
 
-func dataURL(mime string, data []byte) string {
-	if mime == "" {
-		mime = "application/octet-stream"
+// audioExt maps the audio media types MCP servers commonly send to a
+// file extension. It is fixed rather than read from the host's MIME
+// table so a part is named the same everywhere.
+var audioExt = map[string]string{
+	"audio/wav":   ".wav",
+	"audio/x-wav": ".wav",
+	"audio/wave":  ".wav",
+	"audio/mpeg":  ".mp3",
+	"audio/mp3":   ".mp3",
+	"audio/mp4":   ".m4a",
+	"audio/aac":   ".aac",
+	"audio/ogg":   ".ogg",
+	"audio/opus":  ".opus",
+	"audio/flac":  ".flac",
+	"audio/webm":  ".webm",
+}
+
+// audioName names an audio part after its media type, "audio.wav" for
+// audio/wav, so the type survives in a part that has no field for it.
+// An unknown or empty type gives "audio".
+func audioName(mediaType string) string {
+	base, _, _ := strings.Cut(mediaType, ";")
+	return "audio" + audioExt[strings.ToLower(strings.TrimSpace(base))]
+}
+
+func dataURL(mediaType string, data []byte) string {
+	if mediaType == "" {
+		mediaType = octetStream
 	}
-	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data)
+	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data)
 }

@@ -47,8 +47,19 @@ var fixtures = []agenttool.Tool{
 	&agenttool.Func{ToolName: "bare", ToolDescription: "no schema", Fn: func(context.Context, agenttool.Call) (agenttool.Result, error) { return agenttool.Text("bare"), nil }},
 }
 
-// roundTrip serves the fixtures over front/mcp and consumes them with
-// tools/mcp over in-memory transports.
+// newServer builds a server from tools and fails the test on a bad
+// schema.
+func newServer(t *testing.T, name string, tools ...agenttool.Tool) *sdk.Server {
+	t.Helper()
+	s, err := NewServer(name, "1", tools...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// roundTrip serves the fixtures over mcpserver and consumes them with
+// mcpclient over in-memory transports.
 func roundTrip(t *testing.T, server *sdk.Server, opts ...mcpclient.Option) *mcpclient.Server {
 	t.Helper()
 	ct, st := sdk.NewInMemoryTransports()
@@ -75,7 +86,7 @@ func normalise(t *testing.T, raw json.RawMessage) string {
 }
 
 func TestRoundTripDefinitions(t *testing.T) {
-	s := roundTrip(t, NewServer("fixtures", "1", fixtures...))
+	s := roundTrip(t, newServer(t, "fixtures", fixtures...))
 	got := agenttool.Set(s.Tools())
 	if len(got) != len(fixtures) {
 		t.Fatalf("got %d tools, want %d", len(got), len(fixtures))
@@ -104,7 +115,7 @@ func TestRoundTripDefinitions(t *testing.T) {
 }
 
 func TestRoundTripExecute(t *testing.T) {
-	s := roundTrip(t, NewServer("fixtures", "1", fixtures...))
+	s := roundTrip(t, newServer(t, "fixtures", fixtures...))
 	set := agenttool.Set(s.Tools())
 	ctx := context.Background()
 	cases := []struct {
@@ -163,7 +174,7 @@ func TestRoundTripExecute(t *testing.T) {
 }
 
 func TestRoundTripProgress(t *testing.T) {
-	s := roundTrip(t, NewServer("fixtures", "1", fixtures...))
+	s := roundTrip(t, newServer(t, "fixtures", fixtures...))
 	rt, _ := agenttool.Set(s.Tools()).Lookup("progress")
 	var mu sync.Mutex
 	var got []agenttool.ProgressInfo
@@ -223,7 +234,7 @@ func TestProxiedProgress(t *testing.T) {
 			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "counted"}}}, nil
 		})
 	first := roundTrip(t, origin, mcpclient.WithPrefix("origin"))
-	proxy := NewServer("proxy", "1", first.Tools()...)
+	proxy := newServer(t, "proxy", first.Tools()...)
 	second := roundTrip(t, proxy)
 
 	rt, ok := agenttool.Set(second.Tools()).Lookup("origin__count")
