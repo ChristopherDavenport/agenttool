@@ -45,7 +45,10 @@ func (s *Schema) ValidateJSON(raw json.RawMessage) error {
 // Validate checks a decoded JSON value (maps, slices, strings,
 // json.Number or float64, bools, nil) against s: its type, enum,
 // required properties, additionalProperties when false, and its items
-// and properties recursively. A schema with no Type accepts anything.
+// and properties recursively. A schema with no Type accepts anything;
+// one whose Type is not a JSON Schema type name accepts nothing, so a
+// misspelt hand-built schema fails on its first use rather than
+// silently passing everything.
 func (s *Schema) Validate(v any) error {
 	return s.validate(v, "")
 }
@@ -55,7 +58,7 @@ func (s *Schema) validate(v any, path string) error {
 		return nil
 	}
 	if v == nil {
-		if s.Nullable || s.Type == "" {
+		if s.Nullable || s.Type == "" || s.Type == "null" {
 			return nil
 		}
 		return &ValidationError{Path: path, Msg: "expected " + s.Type + ", got null"}
@@ -103,6 +106,10 @@ func (s *Schema) validate(v any, path string) error {
 		if f != math.Trunc(f) {
 			return &ValidationError{Path: path, Msg: "expected integer, got " + describe(v)}
 		}
+	case "null":
+		return &ValidationError{Path: path, Msg: "expected null, got " + describe(v)}
+	default:
+		return &ValidationError{Path: path, Msg: fmt.Sprintf("schema type %q is not a JSON Schema type", s.Type)}
 	}
 	return nil
 }
@@ -179,7 +186,7 @@ func inEnum(enum []any, v any) bool {
 				return true
 			}
 		default:
-			ef, okE := toFloat(numberOf(e))
+			ef, okE := toFloat(e)
 			vf, okV := toFloat(v)
 			if okE && okV && ef == vf {
 				return true
@@ -187,20 +194,6 @@ func inEnum(enum []any, v any) bool {
 		}
 	}
 	return false
-}
-
-// numberOf widens the integer kinds enumValues produces to a value
-// toFloat understands.
-func numberOf(v any) any {
-	switch n := v.(type) {
-	case int64:
-		return n
-	case float64:
-		return n
-	case int:
-		return n
-	}
-	return v
 }
 
 func describeEnum(enum []any) string {
