@@ -39,6 +39,18 @@ versions may break the API.
 - README: the first example handles its error, the `Executor` consumer
   loop and `Event` are shown, and the stdio example names its field and
   uses a `Set`.
+- `Schema.MarshalJSON` has a value receiver, so a `Schema` value on its
+  own or inside another struct marshals as a pointer does instead of
+  silently emitting Go field names. The ordered writer is one type used
+  at both levels. The type documents how `NoAdditional` and
+  `AdditionalProperties` share a key and what a hand-built object omits.
+- `Schema.Validate` rejects a `Type` that is not a JSON Schema type name
+  and handles `"null"`, where an unknown name passed everything.
+- The generator resolves fields that embedded structs promote under one
+  name as `encoding/json` does: shallowest wins, tagged wins among
+  equals, and a tie is dropped, where both used to be emitted. A struct
+  field that implements `json.Marshaler` is now `{}` like any other
+  self-encoding type. `enum` tags work on `uintptr` fields.
 
 ## v0.0.2 - 2026-09-19
 
