@@ -333,6 +333,146 @@ func TestRefreshErrorReported(t *testing.T) {
 	if got := names(s.Tools()); strings.Join(got, ",") != strings.Join(before, ",") {
 		t.Errorf("snapshot changed on a failed refresh: %v, was %v", got, before)
 	}
+	// Await reports the failure rather than blocking, until a refresh
+	// succeeds.
+	if err := s.Await(context.Background()); err == nil || !strings.Contains(err.Error(), "listing broke") {
+		t.Errorf("Await after a failed refresh = %v", err)
+	}
+	failing.Store(false)
+	if err := s.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Await(context.Background()); err != nil {
+		t.Errorf("Await after a successful refresh = %v", err)
+	}
+	if _, ok := agenttool.Set(s.Tools()).Lookup("late"); !ok {
+		t.Errorf("late tool missing after Refresh: %v", names(s.Tools()))
+	}
+}
+
+// holdListing installs middleware that, while hold is set, blocks
+// tools/list until release is closed, so a refresh can be observed in
+// flight.
+func holdListing(server *sdk.Server) (hold *atomic.Bool, release chan struct{}) {
+	hold = new(atomic.Bool)
+	release = make(chan struct{})
+	server.AddReceivingMiddleware(func(next sdk.MethodHandler) sdk.MethodHandler {
+		return func(ctx context.Context, method string, req sdk.Request) (sdk.Result, error) {
+			if method == "tools/list" && hold.Load() {
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return next(ctx, method, req)
+		}
+	})
+	return hold, release
+}
+
+func addLate(server *sdk.Server) {
+	server.AddTool(&sdk.Tool{Name: "late", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "late"}}}, nil
+		})
+}
+
+// waitSeen blocks until the remote has received n tool-list-changed
+// notifications.
+func waitSeen(t *testing.T, s *Remote, n int64) {
+	t.Helper()
+	waitFor(t, func() []struct{} { return make([]struct{}, s.seen.Load()) }, int(n))
+}
+
+func TestAwaitWaitsForRefresh(t *testing.T) {
+	server := newServer(t)
+	hold, release := holdListing(server)
+	s := connect(t, server)
+	if err := s.Await(context.Background()); err != nil {
+		t.Fatalf("Await with nothing pending = %v", err)
+	}
+
+	hold.Store(true)
+	addLate(server)
+	waitSeen(t, s, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := s.Await(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Await while the listing is held = %v, want deadline", err)
+	}
+	if _, ok := agenttool.Set(s.Tools()).Lookup("late"); ok {
+		t.Fatal("snapshot changed before the listing returned")
+	}
+
+	close(release)
+	if err := s.Await(context.Background()); err != nil {
+		t.Fatalf("Await after the listing = %v", err)
+	}
+	if _, ok := agenttool.Set(s.Tools()).Lookup("late"); !ok {
+		t.Errorf("late tool missing after Await: %v", names(s.Tools()))
+	}
+}
+
+func TestCallWaitsForRefresh(t *testing.T) {
+	server := newServer(t)
+	hold, release := holdListing(server)
+	var remote atomic.Pointer[Remote]
+	server.AddTool(&sdk.Tool{Name: "unlock", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(ctx context.Context, _ *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			server.AddTool(&sdk.Tool{Name: "secret", InputSchema: json.RawMessage(`{"type":"object"}`)},
+				func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+					return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "shh"}}}, nil
+				})
+			// Return only once the client has the notification, so the
+			// result follows it as it would from a server that notifies
+			// synchronously.
+			for remote.Load().seen.Load() == 0 {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(time.Millisecond):
+				}
+			}
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "unlocked"}}}, nil
+		})
+	s := connect(t, server)
+	remote.Store(s)
+	unlock := lookup(t, s, "unlock")
+
+	hold.Store(true)
+	type outcome struct {
+		res agenttool.Result
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := unlock.Execute(context.Background(), agenttool.Call{ID: "c", Args: json.RawMessage(`{}`)})
+		done <- outcome{res, err}
+	}()
+	waitSeen(t, s, 1)
+	time.Sleep(20 * time.Millisecond)
+	select {
+	case o := <-done:
+		t.Fatalf("call returned before the refresh: %+v", o)
+	default:
+	}
+	if _, ok := agenttool.Set(s.Tools()).Lookup("secret"); ok {
+		t.Fatal("snapshot changed before the listing returned")
+	}
+
+	close(release)
+	select {
+	case o := <-done:
+		if o.err != nil || o.res.Output.Text != "unlocked" {
+			t.Fatalf("res = %+v, err = %v", o.res, o.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("call did not return after the listing")
+	}
+	if _, ok := agenttool.Set(s.Tools()).Lookup("secret"); !ok {
+		t.Errorf("secret tool missing when the call returned: %v", names(s.Tools()))
+	}
 }
 
 func TestAudioName(t *testing.T) {

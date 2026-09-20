@@ -123,7 +123,10 @@ err = server.Run(ctx, &mcp.StdioTransport{})
 `mcpclient` maps text, image, audio and resource content to output
 parts, `isError` to a returned error, progress notifications to the
 call's progress callback, and refreshes its snapshot on
-tool-list-changed. `mcpserver` validates arguments against each tool's
+tool-list-changed. The refresh is a round trip: `Await` blocks until
+it has landed, and a call that returns after the notification arrived
+waits for it, so a tool that adds a tool usually returns with the list
+already current. `mcpserver` validates arguments against each tool's
 schema, maps outputs back to MCP content and forwards progress when
 the request carries a token. `make interop` checks both against the
 upstream reference server and the MCP Inspector over stdio.
