@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "Memo": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string",
+      "description": "outer wins"
+    }
+  },
+  "required": [
+    "Memo",
+    "id"
+  ]
+}

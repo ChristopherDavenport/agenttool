@@ -20,6 +20,12 @@ type Schemer interface {
 // Schema is a JSON Schema fragment as the generator builds it. Keys are
 // emitted in a fixed order and properties keep struct field order, so
 // the output is stable across runs and readable in a request.
+//
+// The type can be built by hand for [Schema.Validate]. A nil or empty
+// slice is omitted from the JSON, so a hand-built object schema emits
+// "properties" and "required" only when they are set, while the
+// generator sets both to empty slices and always emits them. Type ""
+// accepts any value.
 type Schema struct {
 	// Type is a JSON Schema type name, or empty for any value.
 	Type string
@@ -31,8 +37,11 @@ type Schema struct {
 	Enum        []any
 	Properties  []Property
 	Required    []string
-	// AdditionalProperties is emitted when set: false, or a schema for
-	// map values.
+	// AdditionalProperties and NoAdditional share the JSON key
+	// "additionalProperties". NoAdditional emits false and wins when both
+	// are set, as strict mode requires; AdditionalProperties emits a
+	// schema for the values of a map. Neither set, the key is omitted and
+	// unknown properties are allowed.
 	AdditionalProperties *Schema
 	NoAdditional         bool
 	Items                *Schema
@@ -44,89 +53,78 @@ type Property struct {
 	Schema *Schema
 }
 
-// MarshalJSON emits the schema with a fixed key order.
-func (s *Schema) MarshalJSON() ([]byte, error) {
-	var buf bytes.Buffer
-	buf.WriteByte('{')
-	first := true
-	field := func(key string, value any) error {
-		if !first {
-			buf.WriteByte(',')
-		}
-		first = false
-		k, _ := json.Marshal(key)
-		buf.Write(k)
-		buf.WriteByte(':')
-		v, err := json.Marshal(value)
-		if err != nil {
-			return err
-		}
-		buf.Write(v)
-		return nil
-	}
+// MarshalJSON emits the schema with a fixed key order. The receiver is
+// a value so that a Schema value, on its own or inside another struct,
+// marshals the same way as a pointer; the validate methods take a
+// pointer because a nil Items or AdditionalProperties accepts anything.
+func (s Schema) MarshalJSON() ([]byte, error) {
+	var o ordered
 	if s.Type != "" {
 		var typ any = s.Type
 		if s.Nullable {
 			typ = []string{s.Type, "null"}
 		}
-		if err := field("type", typ); err != nil {
-			return nil, err
-		}
+		o = append(o, kv{"type", typ})
 	}
 	if s.Description != "" {
-		if err := field("description", s.Description); err != nil {
-			return nil, err
-		}
+		o = append(o, kv{"description", s.Description})
 	}
 	if s.Format != "" {
-		if err := field("format", s.Format); err != nil {
-			return nil, err
-		}
+		o = append(o, kv{"format", s.Format})
 	}
 	if s.Enum != nil {
-		if err := field("enum", s.Enum); err != nil {
-			return nil, err
-		}
+		o = append(o, kv{"enum", s.Enum})
 	}
 	if s.Properties != nil {
-		if !first {
-			buf.WriteByte(',')
+		props := make(ordered, 0, len(s.Properties))
+		for _, p := range s.Properties {
+			props = append(props, kv{p.Name, p.Schema})
 		}
-		first = false
-		buf.WriteString(`"properties":{`)
-		for i, p := range s.Properties {
-			if i > 0 {
-				buf.WriteByte(',')
-			}
-			k, _ := json.Marshal(p.Name)
-			buf.Write(k)
-			buf.WriteByte(':')
-			v, err := json.Marshal(p.Schema)
-			if err != nil {
-				return nil, err
-			}
-			buf.Write(v)
-		}
-		buf.WriteByte('}')
+		o = append(o, kv{"properties", props})
 	}
 	if s.Required != nil {
-		if err := field("required", s.Required); err != nil {
-			return nil, err
-		}
+		o = append(o, kv{"required", s.Required})
 	}
 	if s.Items != nil {
-		if err := field("items", s.Items); err != nil {
-			return nil, err
-		}
+		o = append(o, kv{"items", s.Items})
 	}
-	if s.NoAdditional {
-		if err := field("additionalProperties", false); err != nil {
+	switch {
+	case s.NoAdditional:
+		o = append(o, kv{"additionalProperties", false})
+	case s.AdditionalProperties != nil:
+		o = append(o, kv{"additionalProperties", s.AdditionalProperties})
+	}
+	return o.MarshalJSON()
+}
+
+// kv is one member of an ordered JSON object.
+type kv struct {
+	key   string
+	value any
+}
+
+// ordered is a JSON object whose members are emitted in slice order,
+// where encoding/json would sort a map's keys.
+type ordered []kv
+
+func (o ordered) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	for i, m := range o {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		k, err := json.Marshal(m.key)
+		if err != nil {
 			return nil, err
 		}
-	} else if s.AdditionalProperties != nil {
-		if err := field("additionalProperties", s.AdditionalProperties); err != nil {
+		buf.Write(k)
+		buf.WriteByte(':')
+		v, err := json.Marshal(m.value)
+		if err != nil {
 			return nil, err
 		}
+		buf.Write(v)
 	}
 	buf.WriteByte('}')
 	return buf.Bytes(), nil
@@ -145,7 +143,10 @@ func SchemaFor[T any](opts ...Option) (json.RawMessage, error) {
 //
 // Exported fields become properties named by their json tag. A "desc"
 // tag becomes the description and an "enum" tag, comma separated,
-// becomes the enum. Embedded structs are flattened. Supported kinds are
+// becomes the enum. Embedded structs are flattened under encoding/json's
+// rules: of several fields promoted under one name the shallowest wins,
+// a tagged one wins among equals, and the rest of a tie is dropped as
+// the encoder would drop it. Supported kinds are
 // bool, the integer and float kinds, string, slices and arrays, maps
 // with string keys, nested structs, pointers, time.Time (a date-time
 // string), []byte (a string), json.RawMessage and interfaces (any
@@ -231,13 +232,32 @@ func (g *generator) object(t reflect.Type) (*Schema, error) {
 	if g.strict {
 		s.NoAdditional = true
 	}
-	if err := g.fields(t, s); err != nil {
+	var fields []field
+	if err := g.collect(t, 0, &fields); err != nil {
 		return nil, err
+	}
+	for _, f := range dominant(fields) {
+		s.Properties = append(s.Properties, Property{Name: f.name, Schema: f.schema})
+		if f.required {
+			s.Required = append(s.Required, f.name)
+		}
 	}
 	return s, nil
 }
 
-func (g *generator) fields(t reflect.Type, s *Schema) error {
+// field is one exported struct field the generator found, with what
+// [dominant] needs to settle a name that several fields promote.
+type field struct {
+	name     string
+	schema   *Schema
+	required bool
+	depth    int // embedding depth; 0 for the struct's own fields
+	tagged   bool
+}
+
+// collect appends the fields of t in index order, recursing into
+// embedded structs in place so the order matches encoding/json's.
+func (g *generator) collect(t reflect.Type, depth int, out *[]field) error {
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
 		tag := f.Tag.Get("json")
@@ -251,7 +271,7 @@ func (g *generator) fields(t reflect.Type, s *Schema) error {
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct {
-				if err := g.fields(ft, s); err != nil {
+				if err := g.collect(ft, depth+1, out); err != nil {
 					return err
 				}
 				continue
@@ -260,6 +280,7 @@ func (g *generator) fields(t reflect.Type, s *Schema) error {
 		if !f.IsExported() {
 			continue
 		}
+		tagged := name != ""
 		if name == "" {
 			name = f.Name
 		}
@@ -277,17 +298,53 @@ func (g *generator) fields(t reflect.Type, s *Schema) error {
 				return fmt.Errorf("agenttool: field %s: %w", f.Name, err)
 			}
 		}
-		if g.strict {
-			if f.Type.Kind() == reflect.Pointer {
-				prop.Nullable = true
-			}
-			s.Required = append(s.Required, name)
-		} else if !optional {
-			s.Required = append(s.Required, name)
+		if g.strict && f.Type.Kind() == reflect.Pointer {
+			prop.Nullable = true
 		}
-		s.Properties = append(s.Properties, Property{Name: name, Schema: prop})
+		*out = append(*out, field{name: name, schema: prop, required: g.strict || !optional, depth: depth, tagged: tagged})
 	}
 	return nil
+}
+
+// dominant keeps, for each name, the field encoding/json would encode:
+// the shallowest, then the one tagged among equals, and none of a tie
+// that has no tag or several. Order is preserved.
+func dominant(fields []field) []field {
+	byName := make(map[string][]int, len(fields))
+	for i, f := range fields {
+		byName[f.name] = append(byName[f.name], i)
+	}
+	keep := make([]bool, len(fields))
+	for _, idx := range byName {
+		shallowest := idx[0]
+		for _, i := range idx[1:] {
+			if fields[i].depth < fields[shallowest].depth {
+				shallowest = i
+			}
+		}
+		var equal, tagged []int
+		for _, i := range idx {
+			if fields[i].depth == fields[shallowest].depth {
+				equal = append(equal, i)
+				if fields[i].tagged {
+					tagged = append(tagged, i)
+				}
+			}
+		}
+		switch {
+		case len(equal) == 1:
+			keep[equal[0]] = true
+		case len(tagged) == 1:
+			keep[tagged[0]] = true
+		}
+	}
+	out := make([]field, 0, len(fields))
+	for i, f := range fields {
+		if keep[i] {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func hasOpt(opts, want string) bool {
@@ -307,7 +364,10 @@ func (g *generator) schema(t reflect.Type, field string) (*Schema, error) {
 		return &Schema{Type: "string", Format: "date-time"}, nil
 	case t == rawMessageType:
 		return &Schema{}, nil
-	case t.Kind() != reflect.Pointer && t.Kind() != reflect.Struct && t.Implements(jsonMarshalerType):
+	case t.Kind() != reflect.Pointer && t.Implements(jsonMarshalerType):
+		// A type that writes its own JSON tells reflection nothing about
+		// the shape it writes, so it accepts any value. An argument type
+		// that needs better implements [Schemer].
 		return &Schema{}, nil
 	case t.Implements(textMarshalerType) || reflect.PointerTo(t).Implements(textMarshalerType):
 		if t.Kind() == reflect.Pointer {
@@ -370,7 +430,7 @@ func enumValues(t reflect.Type, tag string) ([]any, error) {
 		case reflect.String:
 			out = append(out, p)
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 			n, err := strconv.ParseInt(p, 10, 64)
 			if err != nil {
 				return nil, fmt.Errorf("enum value %q: %w", p, err)

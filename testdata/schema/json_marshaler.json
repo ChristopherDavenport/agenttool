@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "value": {},
+    "word": {
+      "type": "integer",
+      "enum": [
+        1,
+        2
+      ]
+    }
+  },
+  "required": [
+    "value",
+    "word"
+  ]
+}

@@ -77,6 +77,36 @@ type recursive struct {
 	Child *recursive `json:"child,omitempty"`
 }
 
+// base and other promote fields under the same names into shadowed, the
+// way encoding/json resolves them: the outer "id" wins by depth, the
+// tagged "Memo" wins among equals, and "Name" is a tie that is dropped.
+type base struct {
+	ID   string `json:"id"`
+	Name string
+	Note string `json:"Memo"`
+}
+
+type other struct {
+	Name string
+	Memo string
+}
+
+type shadowed struct {
+	base
+	other
+	ID string `json:"id" desc:"outer wins"`
+}
+
+// selfEncoding writes its own JSON, so its shape is unknown.
+type selfEncoding struct{ N int }
+
+func (selfEncoding) MarshalJSON() ([]byte, error) { return []byte(`"opaque"`), nil }
+
+type marshalerArgs struct {
+	Value selfEncoding `json:"value"`
+	Word  uintptr      `json:"word" enum:"1,2"`
+}
+
 func TestSchemaGolden(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -93,6 +123,8 @@ func TestSchemaGolden(t *testing.T) {
 		{"custom", reflect.TypeFor[custom](), false},
 		{"text_marshaler", reflect.TypeFor[textArgs](), false},
 		{"pointer_to_struct", reflect.TypeFor[*readFileArgs](), false},
+		{"shadowed", reflect.TypeFor[shadowed](), false},
+		{"json_marshaler", reflect.TypeFor[marshalerArgs](), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -131,6 +163,54 @@ func indent(t *testing.T, raw []byte) []byte {
 		t.Fatal(err)
 	}
 	return out
+}
+
+// TestShadowedMatchesEncoder checks the promoted-field rule against
+// encoding/json itself: the schema's properties are the keys the encoder
+// writes.
+func TestShadowedMatchesEncoder(t *testing.T) {
+	s, err := Reflect(reflect.TypeFor[shadowed]())
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(shadowed{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys map[string]any
+	if err := json.Unmarshal(encoded, &keys); err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != len(s.Properties) {
+		t.Fatalf("encoder writes %v, schema has %+v", keys, s.Properties)
+	}
+	for _, p := range s.Properties {
+		if _, ok := keys[p.Name]; !ok {
+			t.Errorf("schema property %q is not a key the encoder writes: %s", p.Name, encoded)
+		}
+	}
+	if s.Properties[0].Name != "Memo" || s.Properties[1].Name != "id" || s.Properties[1].Schema.Description != "outer wins" {
+		t.Errorf("properties = %+v", s.Properties)
+	}
+}
+
+func TestSchemaMarshalsAsValue(t *testing.T) {
+	want := `{"type":["string","null"],"description":"d"}`
+	if got, _ := json.Marshal(Schema{Type: "string", Nullable: true, Description: "d"}); string(got) != want {
+		t.Errorf("value = %s, want %s", got, want)
+	}
+	wrapped := struct{ S Schema }{Schema{Type: "string", Nullable: true, Description: "d"}}
+	if got, _ := json.Marshal(wrapped); string(got) != `{"S":`+want+`}` {
+		t.Errorf("wrapped value = %s", got)
+	}
+	// A hand-built object omits what it does not set; the generator emits
+	// empty properties and required.
+	if got, _ := json.Marshal(&Schema{Type: "object"}); string(got) != `{"type":"object"}` {
+		t.Errorf("hand-built = %s", got)
+	}
+	if got, _ := json.Marshal(&Schema{Type: "object", NoAdditional: true, AdditionalProperties: &Schema{Type: "string"}}); string(got) != `{"type":"object","additionalProperties":false}` {
+		t.Errorf("NoAdditional should win: %s", got)
+	}
 }
 
 func TestSchemaKeyOrder(t *testing.T) {

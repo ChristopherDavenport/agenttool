@@ -110,3 +110,31 @@ func TestNewValidatesBeforeDecoding(t *testing.T) {
 		t.Errorf("schemer tool: %v", err)
 	}
 }
+
+func TestValidateUnknownType(t *testing.T) {
+	cases := []struct {
+		name    string
+		schema  *Schema
+		value   any
+		wantErr string
+	}{
+		{"misspelt type", &Schema{Type: "strng"}, "x", `"strng" is not a JSON Schema type`},
+		{"null accepts null", &Schema{Type: "null"}, nil, ""},
+		{"null rejects a value", &Schema{Type: "null"}, "x", "expected null"},
+		{"no type accepts anything", &Schema{}, "x", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.schema.Validate(tc.value)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("err = %v, want containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
