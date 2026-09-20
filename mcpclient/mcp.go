@@ -12,7 +12,7 @@
 //	defer s.Close()
 //	tools := s.Tools()
 //
-// Tools returns a snapshot. The server subscribes to the SDK's
+// Tools returns a snapshot. The remote subscribes to the SDK's
 // tool-list-changed notification and refreshes it, so a loop that reads
 // its tool list each turn should call Tools then rather than hold the
 // slice. A refresh that fails leaves the snapshot as it was and reports
@@ -96,8 +96,10 @@ func WithRefreshError(fn func(error)) Option {
 	return func(o *options) { o.onRefreshError = fn }
 }
 
-// Server is one connected MCP session and the tools it offers.
-type Server struct {
+// Remote is one connected MCP server: its session and the tools it
+// offers. It is the consume-side handle; mcpserver.NewServer returns
+// the SDK server for the serve side.
+type Remote struct {
 	session *sdk.ClientSession
 	opts    options
 
@@ -109,14 +111,14 @@ type Server struct {
 }
 
 // Connect opens one session over t, lists its tools and returns the
-// server. The caller closes it. The context bounds the connection and
+// remote. The caller closes it. The context bounds the connection and
 // the initial listing only.
-func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Server, error) {
+func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, error) {
 	o := options{client: sdk.Implementation{Name: "agenttool", Version: "0"}}
 	for _, opt := range opts {
 		opt(&o)
 	}
-	s := &Server{opts: o, progress: make(map[string]func(agenttool.Result))}
+	s := &Remote{opts: o, progress: make(map[string]func(agenttool.Result))}
 
 	clientOpts := o.clientOpts
 	userToolsChanged := clientOpts.ToolListChangedHandler
@@ -155,17 +157,17 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Server, err
 
 // Session returns the underlying SDK session, for resources, prompts and
 // anything else this package does not map.
-func (s *Server) Session() *sdk.ClientSession { return s.session }
+func (s *Remote) Session() *sdk.ClientSession { return s.session }
 
 // Tools returns a snapshot of the server's tools as of the last listing.
-func (s *Server) Tools() []agenttool.Tool {
+func (s *Remote) Tools() []agenttool.Tool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return append([]agenttool.Tool(nil), s.tools...)
 }
 
 // refreshFailed reports a failed automatic refresh.
-func (s *Server) refreshFailed(err error) {
+func (s *Remote) refreshFailed(err error) {
 	switch {
 	case s.opts.onRefreshError != nil:
 		s.opts.onRefreshError(err)
@@ -177,7 +179,7 @@ func (s *Server) refreshFailed(err error) {
 // Refresh lists the server's tools again and replaces the snapshot. It
 // runs automatically on the tool-list-changed notification; see
 // [WithRefreshError] for how a failure there is reported.
-func (s *Server) Refresh(ctx context.Context) error {
+func (s *Remote) Refresh(ctx context.Context) error {
 	var tools []agenttool.Tool
 	for t, err := range s.session.Tools(ctx, nil) {
 		if err != nil {
@@ -196,20 +198,20 @@ func (s *Server) Refresh(ctx context.Context) error {
 }
 
 // Close closes the session.
-func (s *Server) Close() error {
+func (s *Remote) Close() error {
 	return s.session.Close()
 }
 
 // Name returns the local name of a remote tool under this server's
 // prefix.
-func (s *Server) Name(remote string) string {
+func (s *Remote) Name(remote string) string {
 	if s.opts.prefix == "" {
 		return remote
 	}
 	return s.opts.prefix + "__" + remote
 }
 
-func (s *Server) wrap(t *sdk.Tool) (agenttool.Tool, error) {
+func (s *Remote) wrap(t *sdk.Tool) (agenttool.Tool, error) {
 	schema := json.RawMessage(`{"type":"object"}`)
 	if t.InputSchema != nil {
 		var err error
@@ -219,15 +221,13 @@ func (s *Server) wrap(t *sdk.Tool) (agenttool.Tool, error) {
 	}
 	remote := t.Name
 	name := s.Name(remote)
-	return &agenttool.Func{
-		ToolName:        name,
-		ToolDescription: t.Description,
-		Schema:          schema,
-		RunAlone:        s.opts.sequential[remote] || s.opts.sequential[name],
-		Fn: func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
-			return s.call(ctx, remote, call)
-		},
-	}, nil
+	var opts []agenttool.Option
+	if s.opts.sequential[remote] || s.opts.sequential[name] {
+		opts = append(opts, agenttool.WithSequential())
+	}
+	return agenttool.NewFunc(name, t.Description, schema, func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
+		return s.call(ctx, remote, call)
+	}, opts...), nil
 }
 
 // call invokes a remote tool and maps its result. When the call asked
@@ -238,7 +238,7 @@ func (s *Server) wrap(t *sdk.Tool) (agenttool.Tool, error) {
 // delivered concurrently with, or just after, the result; the batch
 // executor in the tool package serialises them and drops anything after
 // completion.
-func (s *Server) call(ctx context.Context, remote string, call agenttool.Call) (agenttool.Result, error) {
+func (s *Remote) call(ctx context.Context, remote string, call agenttool.Call) (agenttool.Result, error) {
 	args := call.Args
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
@@ -262,12 +262,12 @@ func (s *Server) call(ctx context.Context, remote string, call agenttool.Call) (
 	if err != nil {
 		return agenttool.Result{}, fmt.Errorf("mcp: call %q: %w", remote, err)
 	}
-	return Result(res)
+	return ResultOf(res)
 }
 
 // onProgress routes a progress notification to the call that asked for
 // it.
-func (s *Server) onProgress(p *sdk.ProgressNotificationParams) {
+func (s *Remote) onProgress(p *sdk.ProgressNotificationParams) {
 	if p == nil {
 		return
 	}
@@ -286,13 +286,13 @@ func (s *Server) onProgress(p *sdk.ProgressNotificationParams) {
 	fn(r)
 }
 
-// Result maps an MCP call result to a tool result. Text-only content
+// ResultOf maps an MCP call result to a tool result. Text-only content
 // becomes Output.Text; image, audio and resource content becomes
 // Output.Parts with the matching openresponses content types; structured
 // content is appended as JSON text. An isError result becomes an error
 // whose message is the text content, so the loop produces the error
 // output the model sees. Details carries the SDK result verbatim.
-func Result(res *sdk.CallToolResult) (agenttool.Result, error) {
+func ResultOf(res *sdk.CallToolResult) (agenttool.Result, error) {
 	if res == nil {
 		return agenttool.Result{}, errors.New("mcp: empty result")
 	}

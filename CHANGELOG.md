@@ -24,6 +24,21 @@ versions may break the API.
   logger, when set, records it. Transport errors from a call are wrapped
   as `mcp: call "name": ...`, and an audio part is named after its media
   type, `audio.wav`, rather than a bare `audio`.
+- One vocabulary for the contract. `Func` and its `ToolName`,
+  `ToolDescription`, `Schema`, `Fn`, `RunAlone` and `StrictSchema`
+  fields are replaced by `NewFunc(name, description, parameters, fn,
+  opts...)`, which takes the same `WithStrict` and `WithSequential`
+  options as `New` and panics on a nil function. `Reflect`, `SchemaOf`
+  and `SchemaFor` take those options instead of a positional `strict`
+  bool; `SchemaOf` and `SchemaFor` consult `Schemer`, `Reflect` does not,
+  and each says so. `Typed` is unexported, since `New` returns `Tool`.
+  Panic and error strings say `agenttool` rather than the pre-extraction
+  `tool`. `Tool.Execute` documents that `Details` may accompany an error.
+  In `mcpclient`, `Server` is `Remote` and `Result` is `ResultOf`, the
+  counterpart of `mcpserver.ContentOf`.
+- README: the first example handles its error, the `Executor` consumer
+  loop and `Event` are shown, and the stdio example names its field and
+  uses a `Set`.
 
 ## v0.0.2 - 2026-09-19
 

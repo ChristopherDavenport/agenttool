@@ -74,7 +74,7 @@ func newServer(t *testing.T) *sdk.Server {
 	return s
 }
 
-func connect(t *testing.T, server *sdk.Server, opts ...Option) *Server {
+func connect(t *testing.T, server *sdk.Server, opts ...Option) *Remote {
 	t.Helper()
 	ct, st := sdk.NewInMemoryTransports()
 	ctx := context.Background()
@@ -89,7 +89,7 @@ func connect(t *testing.T, server *sdk.Server, opts ...Option) *Server {
 	return s
 }
 
-func lookup(t *testing.T, s *Server, name string) agenttool.Tool {
+func lookup(t *testing.T, s *Remote, name string) agenttool.Tool {
 	t.Helper()
 	tl, ok := agenttool.Set(s.Tools()).Lookup(name)
 	if !ok {
@@ -350,7 +350,7 @@ func TestAudioName(t *testing.T) {
 			t.Errorf("audioName(%q) = %q, want %q", tc.mediaType, got, tc.want)
 		}
 	}
-	res, err := Result(&sdk.CallToolResult{Content: []sdk.Content{&sdk.AudioContent{MIMEType: "audio/wav", Data: []byte{1}}}})
+	res, err := ResultOf(&sdk.CallToolResult{Content: []sdk.Content{&sdk.AudioContent{MIMEType: "audio/wav", Data: []byte{1}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,13 +360,13 @@ func TestAudioName(t *testing.T) {
 }
 
 func TestResultEdgeCases(t *testing.T) {
-	if _, err := Result(nil); err == nil {
+	if _, err := ResultOf(nil); err == nil {
 		t.Error("nil result should error")
 	}
-	if _, err := Result(&sdk.CallToolResult{IsError: true}); err == nil || err.Error() != "tool call failed" {
+	if _, err := ResultOf(&sdk.CallToolResult{IsError: true}); err == nil || err.Error() != "tool call failed" {
 		t.Errorf("empty error result = %v", err)
 	}
-	res, err := Result(&sdk.CallToolResult{Content: []sdk.Content{&sdk.ImageContent{Data: []byte{1}}}})
+	res, err := ResultOf(&sdk.CallToolResult{Content: []sdk.Content{&sdk.ImageContent{Data: []byte{1}}}})
 	if err != nil || res.Output.Parts[0].(*openresponses.InputImage).ImageURL != "data:application/octet-stream;base64,AQ==" {
 		t.Errorf("image without mime = %+v, %v", res, err)
 	}

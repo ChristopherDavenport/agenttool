@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -144,7 +145,7 @@ func TestNewOptionsAndDefinition(t *testing.T) {
 	if err := (Set{plain, plain}).Validate(); err == nil {
 		t.Error("duplicate names accepted")
 	}
-	if err := (Set{&Func{}}).Validate(); err == nil {
+	if err := (Set{NewFunc("", "", nil, echo)}).Validate(); err == nil {
 		t.Error("empty name accepted")
 	}
 	if Set(nil).Definitions() != nil {
@@ -175,19 +176,37 @@ func TestCallFromAndProgress(t *testing.T) {
 	Progress(context.Background(), Text("x"))
 }
 
-func TestFuncTool(t *testing.T) {
-	f := &Func{ToolName: "f", ToolDescription: "d", Schema: json.RawMessage(`{"type":"object"}`), RunAlone: true}
-	if _, err := f.Execute(context.Background(), Call{}); err == nil {
-		t.Error("nil Fn should error")
+// echo is a raw tool function that returns its arguments as text.
+func echo(_ context.Context, c Call) (Result, error) { return Text(string(c.Args)), nil }
+
+func TestNewFunc(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object"}`)
+	f := NewFunc("f", "d", schema, echo, WithSequential())
+	if f.Name() != "f" || f.Description() != "d" || string(f.Parameters()) != string(schema) {
+		t.Errorf("tool = %q %q %s", f.Name(), f.Description(), f.Parameters())
 	}
-	f.Fn = func(_ context.Context, c Call) (Result, error) { return Text(string(c.Args)), nil }
+	// The schema is served verbatim and never validated.
 	res, err := f.Execute(context.Background(), Call{Args: json.RawMessage(`{"a":1}`)})
 	if err != nil || res.Output.Text != `{"a":1}` {
 		t.Errorf("res = %+v, err = %v", res, err)
 	}
 	if !IsSequential(f) || IsStrict(f) {
-		t.Error("flags wrong")
+		t.Error("WithSequential not applied, or strict set")
 	}
+	if strict := NewFunc("s", "", nil, echo, WithStrict()); !IsStrict(strict) || IsSequential(strict) {
+		t.Error("WithStrict not applied, or sequential set")
+	}
+	if NewFunc("n", "", nil, echo).Parameters() != nil {
+		t.Error("nil parameters should stay nil")
+	}
+	func() {
+		defer func() {
+			if r := recover(); r == nil || !strings.Contains(fmt.Sprint(r), `agenttool.NewFunc("nofn")`) {
+				t.Errorf("nil function panic = %v", r)
+			}
+		}()
+		NewFunc("nofn", "", nil, nil)
+	}()
 	if ErrorResult(errors.New("x")).Output.Text != "Error: x" {
 		t.Error("error result format")
 	}
