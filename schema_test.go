@@ -96,7 +96,7 @@ func TestSchemaGolden(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := SchemaOf(tc.typ, tc.strict)
+			got, err := SchemaOf(tc.typ, strictOpts(tc.strict)...)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -134,7 +134,7 @@ func indent(t *testing.T, raw []byte) []byte {
 }
 
 func TestSchemaKeyOrder(t *testing.T) {
-	got, err := SchemaOf(reflect.TypeFor[everything](), false)
+	got, err := SchemaOf(reflect.TypeFor[everything]())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestSchemaErrors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := SchemaOf(tc.typ, tc.strict)
+			_, err := SchemaOf(tc.typ, strictOpts(tc.strict)...)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("err = %v, want containing %q", err, tc.want)
 			}
@@ -187,3 +187,11 @@ func TestNewPanicsOnBadSchema(t *testing.T) {
 }
 
 var _ = everything{}.hidden
+
+// strictOpts turns a table's strict flag into options.
+func strictOpts(strict bool) []Option {
+	if strict {
+		return []Option{WithStrict()}
+	}
+	return nil
+}

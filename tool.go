@@ -38,6 +38,9 @@ type Tool interface {
 	// Parameters is the JSON Schema of the arguments object. nil means
 	// the tool takes no arguments.
 	Parameters() json.RawMessage
+	// Execute runs one call. On error the model sees the error and
+	// Result.Output is ignored; Result.Details may still be set for
+	// subscribers, as mcpclient does with the raw MCP result.
 	Execute(ctx context.Context, call Call) (Result, error)
 }
 
@@ -177,45 +180,45 @@ func (s Set) Validate() error {
 	return nil
 }
 
-// Func is a Tool built from plain values and a function; the untyped
-// counterpart of [New] for tools whose schema comes from elsewhere, such
-// as a remote server.
-type Func struct {
-	ToolName        string
-	ToolDescription string
-	Schema          json.RawMessage
-	Fn              func(ctx context.Context, call Call) (Result, error)
-	// RunAlone marks the tool [Sequential].
-	RunAlone bool
-	// StrictSchema marks the tool [Strict].
-	StrictSchema bool
-}
-
-// Name returns the tool name.
-func (f *Func) Name() string { return f.ToolName }
-
-// Description returns the tool description.
-func (f *Func) Description() string { return f.ToolDescription }
-
-// Parameters returns the schema.
-func (f *Func) Parameters() json.RawMessage { return f.Schema }
-
-// Execute calls Fn.
-func (f *Func) Execute(ctx context.Context, call Call) (Result, error) {
-	if f.Fn == nil {
-		return Result{}, fmt.Errorf("tool %q: no function", f.ToolName)
+// NewFunc builds a Tool from plain values and a function that takes the
+// raw call: the untyped counterpart of [New] for tools whose schema
+// comes from elsewhere, such as a remote server. parameters is served
+// verbatim and never validated; nil means the tool takes no arguments.
+// [WithStrict] and [WithSequential] apply; the options that shape a
+// reflected schema do not. A nil fn panics here, like a bad schema in
+// [New].
+func NewFunc(name, description string, parameters json.RawMessage, fn func(ctx context.Context, call Call) (Result, error), opts ...Option) Tool {
+	if fn == nil {
+		panic(fmt.Sprintf("agenttool.NewFunc(%q): nil function", name))
 	}
-	return f.Fn(ctx, call)
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return &funcTool{name: name, description: description, schema: parameters, fn: fn, strict: o.strict, sequential: o.sequential}
 }
 
-// Sequential reports RunAlone.
-func (f *Func) Sequential() bool { return f.RunAlone }
+type funcTool struct {
+	name        string
+	description string
+	schema      json.RawMessage
+	fn          func(ctx context.Context, call Call) (Result, error)
+	strict      bool
+	sequential  bool
+}
 
-// Strict reports StrictSchema.
-func (f *Func) Strict() bool { return f.StrictSchema }
+func (f *funcTool) Name() string                { return f.name }
+func (f *funcTool) Description() string         { return f.description }
+func (f *funcTool) Parameters() json.RawMessage { return f.schema }
+func (f *funcTool) Sequential() bool            { return f.sequential }
+func (f *funcTool) Strict() bool                { return f.strict }
+
+func (f *funcTool) Execute(ctx context.Context, call Call) (Result, error) {
+	return f.fn(ctx, call)
+}
 
 var (
-	_ Tool       = (*Func)(nil)
-	_ Sequential = (*Func)(nil)
-	_ Strict     = (*Func)(nil)
+	_ Tool       = (*funcTool)(nil)
+	_ Sequential = (*funcTool)(nil)
+	_ Strict     = (*funcTool)(nil)
 )

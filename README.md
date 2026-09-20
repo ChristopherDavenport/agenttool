@@ -31,7 +31,10 @@ type ReadFileArgs struct {
 var ReadFile = agenttool.New("read_file", "Read a file from disk",
 	func(ctx context.Context, a ReadFileArgs) (string, error) {
 		b, err := os.ReadFile(a.Path)
-		return string(b), err
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
 	})
 ```
 
@@ -62,17 +65,43 @@ type Tool interface {
 
 `Call` carries the call ID, the raw arguments and an optional progress
 callback; `Result` carries the output the model sees, app-only
-`Details`, and a `Terminate` hint. Two optional interfaces refine a
-tool: `Sequential` forces a batch containing it to run one call at a
-time, and `Strict` marks its schema strict. `Func` builds a tool from
-plain values for schemas that come from elsewhere; `Set` is a list with
-lookup; `Definition` produces the `openresponses.FunctionTool` for a
-request.
+`Details`, and a `Terminate` hint. On error the model sees the error
+and the output is ignored. Two optional interfaces refine a tool:
+`Sequential` forces a batch containing it to run one call at a time,
+and `Strict` marks its schema strict; `WithSequential()` and
+`WithStrict()` set them on a tool from `New` or `NewFunc`. `NewFunc`
+builds a tool from plain values and a raw function for schemas that
+come from elsewhere; `SchemaFor[T]()` gives the schema `New` would
+reflect; `Set` is a list with lookup; `Definition` produces the
+`openresponses.FunctionTool` for a request.
+
+## A batch
 
 `Executor` runs a batch: parallel up to a bound, or sequential when
-asked, with progress forwarded and completions yielded in completion
-order from the caller's goroutine. A loop that owns its own scheduling
-needs only the interface.
+asked. Events are yielded from the caller's goroutine, so a consumer
+never sees two at once.
+
+```go
+jobs := []agenttool.Job{{Tool: ReadFile, Call: agenttool.Call{ID: call.ID, Args: call.Arguments}}}
+outputs := make([]agenttool.Result, len(jobs))
+for ev := range (agenttool.Executor{MaxParallel: 4}).Execute(ctx, jobs) {
+	switch {
+	case !ev.Final:
+		show(ev.Result) // progress the tool reported through Call.Update
+	case ev.Err != nil:
+		outputs[ev.Index] = agenttool.ErrorResult(ev.Err)
+	default:
+		outputs[ev.Index] = ev.Result
+	}
+}
+```
+
+An `Event` names its job by `Index`. It is `Final` exactly once per
+job, carrying the `Result` or the `Err`, and completions arrive in
+completion order, not job order. A tool that panics completes with a
+`PanicError` whose message is one line; the stack is on the value for
+`errors.As`. `Results` is the shortcut when progress is not needed. A
+loop that owns its own scheduling needs only the interface.
 
 ## MCP
 
