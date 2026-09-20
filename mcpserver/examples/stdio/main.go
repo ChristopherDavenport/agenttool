@@ -37,12 +37,12 @@ type sum struct {
 const tinyPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 
 func main() {
-	tools := []agenttool.Tool{
+	tools := agenttool.Set{
 		agenttool.New("upper", "Uppercase a string", func(_ context.Context, a upperArgs) (string, error) {
 			return strings.ToUpper(a.Text), nil
 		}),
 		agenttool.New("add", "Add two integers", func(_ context.Context, a addArgs) (sum, error) {
-			return sum{a.A + a.B}, nil
+			return sum{Sum: a.A + a.B}, nil
 		}, agenttool.WithStrict()),
 		agenttool.New("tiny_image", "Return a 1x1 PNG", func(context.Context, agenttool.NoArgs) (openresponses.Contents, error) {
 			return openresponses.Contents{&openresponses.InputImage{ImageURL: "data:image/png;base64," + tinyPNG}}, nil

@@ -21,11 +21,11 @@ type validArgs struct {
 }
 
 func TestSchemaValidate(t *testing.T) {
-	plain, err := Reflect(reflect.TypeFor[validArgs](), false)
+	plain, err := Reflect(reflect.TypeFor[validArgs]())
 	if err != nil {
 		t.Fatal(err)
 	}
-	strict, err := Reflect(reflect.TypeFor[validArgs](), true)
+	strict, err := Reflect(reflect.TypeFor[validArgs](), WithStrict())
 	if err != nil {
 		t.Fatal(err)
 	}
