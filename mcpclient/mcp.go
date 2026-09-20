@@ -12,11 +12,22 @@
 //	defer s.Close()
 //	tools := s.Tools()
 //
-// Tools returns a snapshot. The remote subscribes to the SDK's
+// Tools returns a snapshot. The remote subscribes to the server's
 // tool-list-changed notification and refreshes it, so a loop that reads
 // its tool list each turn should call Tools then rather than hold the
-// slice. A refresh that fails leaves the snapshot as it was and reports
-// through [WithRefreshError], or the SDK logger when one is set.
+// slice. The refresh is a listing round trip, and until it lands the
+// snapshot is the old list: [Remote.Await] blocks until every
+// notification received so far is reflected, and a call that returns
+// after a notification was received waits for that refresh before
+// returning, so a tool that changes the tool list usually returns with
+// the new list in place. The SDK delivers a notification on its own
+// goroutine and a server may send it after the call's result, so that
+// is not a guarantee; a notification that arrives after the call has
+// returned is reflected after the next Await, and a consumer that must
+// see a change now calls Refresh. A refresh that fails leaves the
+// snapshot as it was and reports through [WithRefreshError], or the
+// SDK logger when one is set; Await returns the same error until a
+// refresh succeeds.
 package mcpclient
 
 import (
@@ -107,6 +118,18 @@ type Remote struct {
 	tools    []agenttool.Tool
 	progress map[string]func(agenttool.Result) // by progress token
 
+	// seen counts tool-list-changed notifications as they arrive.
+	// settled is the count the snapshot reflects and settledErr the
+	// error of the refresh that settled it; settledCh is closed and
+	// replaced whenever they change. All three are under mu. listing
+	// serialises refreshes, so the count a refresh settles is the one it
+	// read after acquiring it, which every earlier notification precedes.
+	seen       atomic.Int64
+	listing    sync.Mutex
+	settled    int64
+	settledErr error
+	settledCh  chan struct{}
+
 	token atomic.Int64
 }
 
@@ -118,7 +141,7 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 	for _, opt := range opts {
 		opt(&o)
 	}
-	s := &Remote{opts: o, progress: make(map[string]func(agenttool.Result))}
+	s := &Remote{opts: o, progress: make(map[string]func(agenttool.Result)), settledCh: make(chan struct{})}
 
 	clientOpts := o.clientOpts
 	userToolsChanged := clientOpts.ToolListChangedHandler
@@ -126,10 +149,11 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 		if userToolsChanged != nil {
 			userToolsChanged(ctx, req)
 		}
+		s.seen.Add(1)
 		// The handler runs on the session's receive path; listing needs
 		// a round trip, so refresh off it.
 		go func() {
-			if err := s.Refresh(context.Background()); err != nil {
+			if err := s.refresh(context.Background(), false); err != nil {
 				s.refreshFailed(err)
 			}
 		}()
@@ -178,23 +202,78 @@ func (s *Remote) refreshFailed(err error) {
 
 // Refresh lists the server's tools again and replaces the snapshot. It
 // runs automatically on the tool-list-changed notification; see
-// [WithRefreshError] for how a failure there is reported.
+// [WithRefreshError] for how a failure there is reported. Refreshes
+// are serialised, so a Refresh that finds one in flight waits its turn.
 func (s *Remote) Refresh(ctx context.Context) error {
+	return s.refresh(ctx, true)
+}
+
+// refresh lists and replaces the snapshot, then marks the notifications
+// received before the listing began as settled, with the listing's
+// error. When force is false and a refresh that began after the last
+// notification has already settled, there is nothing to do: several
+// notifications in quick succession cost one listing.
+func (s *Remote) refresh(ctx context.Context, force bool) error {
+	s.listing.Lock()
+	defer s.listing.Unlock()
+	gen := s.seen.Load()
+	if !force {
+		s.mu.RLock()
+		settled := s.settled
+		s.mu.RUnlock()
+		if settled >= gen {
+			return nil
+		}
+	}
+	tools, err := s.list(ctx)
+	s.mu.Lock()
+	if err == nil {
+		s.tools = tools
+	}
+	s.settled = max(s.settled, gen)
+	s.settledErr = err
+	close(s.settledCh)
+	s.settledCh = make(chan struct{})
+	s.mu.Unlock()
+	return err
+}
+
+func (s *Remote) list(ctx context.Context) ([]agenttool.Tool, error) {
 	var tools []agenttool.Tool
 	for t, err := range s.session.Tools(ctx, nil) {
 		if err != nil {
-			return fmt.Errorf("mcp: list tools: %w", err)
+			return nil, fmt.Errorf("mcp: list tools: %w", err)
 		}
 		rt, err := s.wrap(t)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		tools = append(tools, rt)
 	}
-	s.mu.Lock()
-	s.tools = tools
-	s.mu.Unlock()
-	return nil
+	return tools, nil
+}
+
+// Await returns once the snapshot reflects every tool-list-changed
+// notification received before the call, or when ctx ends. It returns
+// nil when the refresh that settled them succeeded, the refresh's error
+// when it failed, in which case the snapshot is the older list until a
+// refresh succeeds, or ctx's error. It returns at once when no refresh
+// is pending, so a loop can call it before each read of Tools.
+func (s *Remote) Await(ctx context.Context) error {
+	target := s.seen.Load()
+	for {
+		s.mu.RLock()
+		settled, err, ch := s.settled, s.settledErr, s.settledCh
+		s.mu.RUnlock()
+		if settled >= target {
+			return err
+		}
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // Close closes the session.
@@ -258,9 +337,18 @@ func (s *Remote) call(ctx context.Context, remote string, call agenttool.Call) (
 			s.mu.Unlock()
 		})
 	}
+	before := s.seen.Load()
 	res, err := s.session.CallTool(ctx, params)
 	if err != nil {
 		return agenttool.Result{}, fmt.Errorf("mcp: call %q: %w", remote, err)
+	}
+	if s.seen.Load() != before {
+		// The list changed while this call ran, most likely because of
+		// it. Wait for the refresh so the caller's next Tools reads the
+		// list the result belongs with. The result stands either way: a
+		// refresh that fails is reported through refreshFailed, and one
+		// that outlives ctx is reflected after the next Await.
+		_ = s.Await(ctx)
 	}
 	return ResultOf(res)
 }

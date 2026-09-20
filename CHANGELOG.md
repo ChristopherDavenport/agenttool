@@ -5,6 +5,20 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- `mcpclient.Remote.Await` blocks until the snapshot reflects every
+  tool-list-changed notification received so far, returning the error
+  of the refresh when it failed, so a loop can bound its wait before
+  reading `Tools` instead of finding the refresh in flight. A call that
+  returns after a notification arrived waits for the refresh before
+  returning, so a tool that changes the tool list usually returns with
+  the new list in place; the SDK delivers the notification on its own
+  goroutine and a server may send it after the result, so a
+  notification that lands after the call is reflected after the next
+  `Await`, and `Refresh` remains the way to see a change for certain.
+  Notifications in quick succession now cost one listing.
+
 ## v0.0.3 - 2026-09-19
 
 - A tool panic now completes with a `PanicError` whose message is one
