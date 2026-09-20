@@ -3,8 +3,10 @@ package mcpclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -297,6 +299,63 @@ func TestListChangedRefreshes(t *testing.T) {
 			t.Fatalf("removal not reflected: %v", names(s.Tools()))
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestRefreshErrorReported(t *testing.T) {
+	server := newServer(t)
+	var failing atomic.Bool
+	server.AddReceivingMiddleware(func(next sdk.MethodHandler) sdk.MethodHandler {
+		return func(ctx context.Context, method string, req sdk.Request) (sdk.Result, error) {
+			if method == "tools/list" && failing.Load() {
+				return nil, errors.New("listing broke")
+			}
+			return next(ctx, method, req)
+		}
+	})
+	errs := make(chan error, 1)
+	s := connect(t, server, WithRefreshError(func(err error) { errs <- err }))
+	before := names(s.Tools())
+
+	failing.Store(true)
+	server.AddTool(&sdk.Tool{Name: "late", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			return &sdk.CallToolResult{}, nil
+		})
+	select {
+	case err := <-errs:
+		if !strings.Contains(err.Error(), "listing broke") {
+			t.Errorf("refresh err = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("refresh error not reported")
+	}
+	if got := names(s.Tools()); strings.Join(got, ",") != strings.Join(before, ",") {
+		t.Errorf("snapshot changed on a failed refresh: %v, was %v", got, before)
+	}
+}
+
+func TestAudioName(t *testing.T) {
+	cases := []struct {
+		mediaType string
+		want      string
+	}{
+		{"", "audio"},
+		{"audio/x-no-such-type", "audio"},
+		{"audio/wav", "audio.wav"},
+		{"Audio/MPEG; codecs=x", "audio.mp3"},
+	}
+	for _, tc := range cases {
+		if got := audioName(tc.mediaType); got != tc.want {
+			t.Errorf("audioName(%q) = %q, want %q", tc.mediaType, got, tc.want)
+		}
+	}
+	res, err := Result(&sdk.CallToolResult{Content: []sdk.Content{&sdk.AudioContent{MIMEType: "audio/wav", Data: []byte{1}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f, ok := res.Output.Parts[0].(*openresponses.InputFile); !ok || f.Filename != "audio.wav" || f.FileData != "AQ==" {
+		t.Errorf("audio part = %+v", res.Output.Parts[0])
 	}
 }
 
