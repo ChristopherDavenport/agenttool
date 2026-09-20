@@ -10,6 +10,11 @@ versions may break the API.
 - A tool panic now completes with a `PanicError` whose message is one
   line, `tool "name" panicked: value`, so the model no longer receives
   the goroutine stack; hosts recover the stack through `errors.As`.
+- `mcpclient.Progress` and `mcpserver.Progress` are replaced by one
+  `agenttool.ProgressInfo`. The two were unrelated types, so a remote
+  tool consumed by `mcpclient` and served again by `mcpserver` lost its
+  progress and total on the second hop; a round-trip test now covers the
+  proxy. Callers that named either adapter's type switch to the root one.
 
 ## v0.0.2 - 2026-09-19
 

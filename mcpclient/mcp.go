@@ -204,10 +204,12 @@ func (s *Server) wrap(t *sdk.Tool) (agenttool.Tool, error) {
 
 // call invokes a remote tool and maps its result. When the call asked
 // for updates a progress token is attached and notifications for it are
-// routed to Call.OnUpdate. The SDK dispatches notifications on their own
-// goroutines, so an update may be delivered concurrently with, or just
-// after, the result; the batch executor in the tool package serialises
-// them and drops anything after completion.
+// routed to Call.OnUpdate with an agenttool.ProgressInfo as Details, so
+// a tool served again by mcpserver forwards the same numbers. The SDK
+// dispatches notifications on their own goroutines, so an update may be
+// delivered concurrently with, or just after, the result; the batch
+// executor in the tool package serialises them and drops anything after
+// completion.
 func (s *Server) call(ctx context.Context, remote string, call agenttool.Call) (agenttool.Result, error) {
 	args := call.Args
 	if len(args) == 0 {
@@ -244,16 +246,8 @@ func (s *Server) onProgress(p *sdk.ProgressNotificationParams) {
 		return
 	}
 	r := agenttool.Text(p.Message)
-	r.Details = Progress{Progress: p.Progress, Total: p.Total, Message: p.Message}
+	r.Details = agenttool.ProgressInfo{Progress: p.Progress, Total: p.Total, Message: p.Message}
 	fn.(func(agenttool.Result))(r)
-}
-
-// Progress is the Details of a progress update forwarded from a remote
-// tool.
-type Progress struct {
-	Progress float64
-	Total    float64
-	Message  string
 }
 
 // Result maps an MCP call result to a tool result. Text-only content

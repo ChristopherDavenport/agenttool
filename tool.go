@@ -72,6 +72,17 @@ type Result struct {
 	Terminate bool
 }
 
+// ProgressInfo, when set as the Details of a progress update, carries
+// the numbers behind it: how far the tool is, out of how much, and a
+// message. The fields mirror the MCP progress notification so the two
+// adapters forward it in either direction; a tool with no numbers to
+// report leaves Details unset and sends text alone.
+type ProgressInfo struct {
+	Progress float64
+	Total    float64
+	Message  string
+}
+
 // Text builds a result whose output is a string.
 func Text(s string) Result {
 	return Result{Output: openresponses.FunctionCallOutputData{Text: s}}
