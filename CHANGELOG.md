@@ -5,6 +5,18 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- `Recordable` is implemented by a `Result.Details` value that is meant
+  to outlive the run: one method, `RecordNS() string`, names the
+  namespace it is recorded under, and its JSON is what `json.Marshal`
+  produces, so a type shapes it with `MarshalJSON` as anywhere else.
+  `RecordOf(details)` returns the namespace and bytes as a `*Record`,
+  nil for any other value, so a recorder can write a tool's side data
+  without being compiled against its type. `Details` stays `any`; the
+  progress and child-run values that in-process subscribers read are
+  unchanged and are not recorded.
+
 ## v0.0.4 - 2026-09-19
 
 - `mcpclient.Remote.Await` blocks until the snapshot reflects every

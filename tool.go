@@ -67,7 +67,9 @@ type Result struct {
 	// Output is what the model sees.
 	Output openresponses.FunctionCallOutputData
 	// Details is app-only data for subscribers and fronts. It is never
-	// sent to the model.
+	// sent to the model. A value that implements [Recordable] can also
+	// be written to a session by a recorder that does not know its
+	// type; see [RecordOf].
 	Details any
 	// Terminate hints that the loop should stop after this batch instead
 	// of calling the model again. The loop honours it only when every
@@ -84,6 +86,47 @@ type ProgressInfo struct {
 	Progress float64
 	Total    float64
 	Message  string
+}
+
+// Recordable is implemented by a Details value that is meant to outlive
+// the run. A recorder that does not know the type can still write it,
+// as a namespaced JSON entry beside the call it came from, through
+// [RecordOf]. RecordNS names the entry's namespace, "owner:kind" by
+// convention, and must not be empty. The data is the value's JSON as
+// json.Marshal produces it, so a type shapes it with MarshalJSON like
+// anywhere else; a MarshalJSON on a pointer receiver applies only when
+// Details holds the pointer. Details for in-process subscribers alone,
+// such as [ProgressInfo] or a live handle, do not implement it and are
+// not recorded.
+type Recordable interface {
+	RecordNS() string
+}
+
+// Record is the durable form of a [Recordable] Details value: the
+// namespace and the JSON a recorder writes under it.
+type Record struct {
+	NS   string
+	Data json.RawMessage
+}
+
+// RecordOf returns the record of details when it implements
+// [Recordable], and nil when it is nil or any other value, which is not
+// an error: most Details are for subscribers in the same process. An
+// empty namespace or a value that does not marshal is an error.
+func RecordOf(details any) (*Record, error) {
+	rec, ok := details.(Recordable)
+	if !ok {
+		return nil, nil
+	}
+	ns := rec.RecordNS()
+	if ns == "" {
+		return nil, fmt.Errorf("agenttool: record %T: empty namespace", details)
+	}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return nil, fmt.Errorf("agenttool: record %s: %w", ns, err)
+	}
+	return &Record{NS: ns, Data: data}, nil
 }
 
 // Text builds a result whose output is a string.

@@ -66,7 +66,10 @@ type Tool interface {
 `Call` carries the call ID, the raw arguments and an optional progress
 callback; `Result` carries the output the model sees, app-only
 `Details`, and a `Terminate` hint. On error the model sees the error
-and the output is ignored. Two optional interfaces refine a tool:
+and the output is ignored. `Details` that implement `Recordable`, one
+method naming a namespace, can be written to a session by a recorder
+that does not know their type: `RecordOf` gives the namespace and the
+value's JSON. Two optional interfaces refine a tool:
 `Sequential` forces a batch containing it to run one call at a time,
 and `Strict` marks its schema strict; `WithSequential()` and
 `WithStrict()` set them on a tool from `New` or `NewFunc`. `NewFunc`
