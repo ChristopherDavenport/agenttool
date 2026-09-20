@@ -133,13 +133,15 @@ func (s *Schema) MarshalJSON() ([]byte, error) {
 }
 
 // SchemaFor returns the JSON Schema for T. See [SchemaOf].
-func SchemaFor[T any](strict bool) (json.RawMessage, error) {
+func SchemaFor[T any](opts ...Option) (json.RawMessage, error) {
 	var zero T
-	return SchemaOf(reflect.TypeOf(&zero).Elem(), strict)
+	return SchemaOf(reflect.TypeOf(&zero).Elem(), opts...)
 }
 
-// SchemaOf reflects a JSON Schema object for t, which must be a struct
-// or a pointer to one, or implement [Schemer].
+// SchemaOf returns the JSON Schema object [New] would use for an
+// argument type t: the one t supplies when it implements [Schemer],
+// otherwise the reflected schema of [Reflect]. Of the options only
+// [WithStrict] applies, and not to a Schemer's own schema.
 //
 // Exported fields become properties named by their json tag. A "desc"
 // tag becomes the description and an "enum" tag, comma separated,
@@ -155,32 +157,41 @@ func SchemaFor[T any](strict bool) (json.RawMessage, error) {
 //
 // Outside strict mode a field is optional when its tag says omitempty
 // or omitzero or when it is a pointer.
-func SchemaOf(t reflect.Type, strict bool) (json.RawMessage, error) {
+func SchemaOf(t reflect.Type, opts ...Option) (json.RawMessage, error) {
 	if t == nil {
-		return nil, fmt.Errorf("tool: schema of nil type")
+		return nil, fmt.Errorf("agenttool: schema of nil type")
 	}
 	if s, ok := schemerFor(t); ok {
 		return s, nil
 	}
-	s, err := Reflect(t, strict)
+	s, err := Reflect(t, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return json.Marshal(s)
 }
 
-// Reflect returns the schema tree [SchemaOf] serialises, for callers
-// that want to validate with it. t must be a struct or a pointer to
-// one; [Schemer] is not consulted.
-func Reflect(t reflect.Type, strict bool) (*Schema, error) {
+// Reflect returns the schema tree that [SchemaOf] serialises, for
+// callers that want to validate with it. t must be a struct or a
+// pointer to one; [Schemer] is not consulted, since a Schemer supplies
+// JSON, not a tree. Of the options only [WithStrict] applies.
+func Reflect(t reflect.Type, opts ...Option) (*Schema, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return reflectStruct(t, o.strict)
+}
+
+func reflectStruct(t reflect.Type, strict bool) (*Schema, error) {
 	if t == nil {
-		return nil, fmt.Errorf("tool: schema of nil type")
+		return nil, fmt.Errorf("agenttool: schema of nil type")
 	}
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t.Kind() != reflect.Struct {
-		return nil, fmt.Errorf("tool: arguments must be a struct, got %s", t)
+		return nil, fmt.Errorf("agenttool: arguments must be a struct, got %s", t)
 	}
 	g := &generator{strict: strict, seen: map[reflect.Type]bool{}}
 	return g.object(t)
@@ -211,7 +222,7 @@ var (
 
 func (g *generator) object(t reflect.Type) (*Schema, error) {
 	if g.seen[t] {
-		return nil, fmt.Errorf("tool: recursive type %s cannot be expressed as a schema", t)
+		return nil, fmt.Errorf("agenttool: recursive type %s cannot be expressed as a schema", t)
 	}
 	g.seen[t] = true
 	defer delete(g.seen, t)
@@ -263,7 +274,7 @@ func (g *generator) fields(t reflect.Type, s *Schema) error {
 		if e, ok := f.Tag.Lookup("enum"); ok {
 			prop.Enum, err = enumValues(f.Type, e)
 			if err != nil {
-				return fmt.Errorf("tool: field %s: %w", f.Name, err)
+				return fmt.Errorf("agenttool: field %s: %w", f.Name, err)
 			}
 		}
 		if g.strict {
@@ -329,10 +340,10 @@ func (g *generator) schema(t reflect.Type, field string) (*Schema, error) {
 		return &Schema{Type: "array", Items: items}, nil
 	case reflect.Map:
 		if t.Key().Kind() != reflect.String {
-			return nil, fmt.Errorf("tool: field %s: map key must be a string, got %s", field, t.Key())
+			return nil, fmt.Errorf("agenttool: field %s: map key must be a string, got %s", field, t.Key())
 		}
 		if g.strict {
-			return nil, fmt.Errorf("tool: field %s: maps cannot be expressed in a strict schema", field)
+			return nil, fmt.Errorf("agenttool: field %s: maps cannot be expressed in a strict schema", field)
 		}
 		values, err := g.schema(t.Elem(), field)
 		if err != nil {
@@ -342,7 +353,7 @@ func (g *generator) schema(t reflect.Type, field string) (*Schema, error) {
 	case reflect.Struct:
 		return g.object(t)
 	default:
-		return nil, fmt.Errorf("tool: field %s: unsupported type %s", field, t)
+		return nil, fmt.Errorf("agenttool: field %s: unsupported type %s", field, t)
 	}
 }
 

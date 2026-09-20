@@ -59,8 +59,8 @@ func TestUnresolvableSchemaIsRefused(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			odd := &agenttool.Func{ToolName: "odd", Schema: json.RawMessage(tc.schema),
-				Fn: func(context.Context, agenttool.Call) (agenttool.Result, error) { return agenttool.Text("ran"), nil }}
+			odd := agenttool.NewFunc("odd", "", json.RawMessage(tc.schema),
+				func(context.Context, agenttool.Call) (agenttool.Result, error) { return agenttool.Text("ran"), nil })
 			if _, err := Handler(odd); err == nil || !strings.Contains(err.Error(), `tool "odd"`) || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Errorf("Handler err = %v, want tool name and %q", err, tc.wantErr)
 			}

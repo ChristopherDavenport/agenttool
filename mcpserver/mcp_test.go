@@ -44,7 +44,7 @@ var fixtures = []agenttool.Tool{
 		agenttool.Progress(ctx, agenttool.Text("nearly"))
 		return "done", nil
 	}),
-	&agenttool.Func{ToolName: "bare", ToolDescription: "no schema", Fn: func(context.Context, agenttool.Call) (agenttool.Result, error) { return agenttool.Text("bare"), nil }},
+	agenttool.NewFunc("bare", "no schema", nil, func(context.Context, agenttool.Call) (agenttool.Result, error) { return agenttool.Text("bare"), nil }),
 }
 
 // newServer builds a server from tools and fails the test on a bad
@@ -60,7 +60,7 @@ func newServer(t *testing.T, name string, tools ...agenttool.Tool) *sdk.Server {
 
 // roundTrip serves the fixtures over mcpserver and consumes them with
 // mcpclient over in-memory transports.
-func roundTrip(t *testing.T, server *sdk.Server, opts ...mcpclient.Option) *mcpclient.Server {
+func roundTrip(t *testing.T, server *sdk.Server, opts ...mcpclient.Option) *mcpclient.Remote {
 	t.Helper()
 	ct, st := sdk.NewInMemoryTransports()
 	ctx := context.Background()

@@ -12,10 +12,12 @@ import (
 // NoArgs is the argument type of a tool that takes no arguments.
 type NoArgs struct{}
 
-// Option configures a tool built by [New].
-type Option func(*typedOptions)
+// Option configures a tool built by [New] or [NewFunc], or a schema
+// from [Reflect], [SchemaOf] and [SchemaFor]. Each says which options
+// apply to it.
+type Option func(*options)
 
-type typedOptions struct {
+type options struct {
 	strict       bool
 	sequential   bool
 	schema       json.RawMessage
@@ -24,21 +26,21 @@ type typedOptions struct {
 
 // WithStrict generates the schema under the strict rules and sets the
 // strict flag on the function tool.
-func WithStrict() Option { return func(o *typedOptions) { o.strict = true } }
+func WithStrict() Option { return func(o *options) { o.strict = true } }
 
 // WithSequential marks the tool [Sequential].
-func WithSequential() Option { return func(o *typedOptions) { o.sequential = true } }
+func WithSequential() Option { return func(o *options) { o.sequential = true } }
 
-// WithParameters replaces the reflected schema with schema. Arguments
-// are then not validated before decoding, because the tool cannot know
-// what the schema promises.
+// WithParameters replaces the reflected schema of a [New] tool with
+// schema. Arguments are then not validated before decoding, because the
+// tool cannot know what the schema promises.
 func WithParameters(schema json.RawMessage) Option {
-	return func(o *typedOptions) { o.schema = schema }
+	return func(o *options) { o.schema = schema }
 }
 
-// WithoutValidation skips the argument check against the reflected
-// schema, leaving the decoder as the only guard.
-func WithoutValidation() Option { return func(o *typedOptions) { o.noValidation = true } }
+// WithoutValidation skips a [New] tool's argument check against the
+// reflected schema, leaving the decoder as the only guard.
+func WithoutValidation() Option { return func(o *options) { o.noValidation = true } }
 
 // New builds a Tool from a typed function. The schema is reflected from
 // Args at registration time (see [SchemaOf]); a type that cannot be
@@ -49,6 +51,11 @@ func WithoutValidation() Option { return func(o *typedOptions) { o.noValidation 
 // Args with the standard decoder. Properties the schema does not name
 // are ignored, or rejected under [WithStrict], whose schema says so.
 //
+// Validation covers reflected schemas only. When Args implements
+// [Schemer] or the schema comes from [WithParameters], the tool cannot
+// know what the schema promises, so arguments go straight to the
+// decoder; [WithoutValidation] asks for the same on a reflected one.
+//
 // Out maps to the output the model sees: a string passes through as
 // text, openresponses.Contents goes out as parts, a [Result] or an
 // openresponses.FunctionCallOutputData is used as is, and anything else
@@ -57,7 +64,7 @@ func WithoutValidation() Option { return func(o *typedOptions) { o.noValidation 
 // The function can reach its [Call] through [CallFrom] on the context,
 // for the call ID or to report progress.
 func New[Args, Out any](name, description string, fn func(context.Context, Args) (Out, error), opts ...Option) Tool {
-	var o typedOptions
+	var o options
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -70,20 +77,20 @@ func New[Args, Out any](name, description string, fn func(context.Context, Args)
 			schema = s
 		} else {
 			var err error
-			tree, err = Reflect(t, o.strict)
+			tree, err = reflectStruct(t, o.strict)
 			if err != nil {
-				panic(fmt.Sprintf("tool.New(%q): %v", name, err))
+				panic(fmt.Sprintf("agenttool.New(%q): %v", name, err))
 			}
 			schema, err = json.Marshal(tree)
 			if err != nil {
-				panic(fmt.Sprintf("tool.New(%q): %v", name, err))
+				panic(fmt.Sprintf("agenttool.New(%q): %v", name, err))
 			}
 		}
 	}
 	if o.noValidation {
 		tree = nil
 	}
-	return &Typed[Args, Out]{
+	return &typed[Args, Out]{
 		name:        name,
 		description: description,
 		schema:      schema,
@@ -94,8 +101,8 @@ func New[Args, Out any](name, description string, fn func(context.Context, Args)
 	}
 }
 
-// Typed is the Tool returned by [New].
-type Typed[Args, Out any] struct {
+// typed is the Tool returned by [New].
+type typed[Args, Out any] struct {
 	name        string
 	description string
 	schema      json.RawMessage
@@ -106,23 +113,23 @@ type Typed[Args, Out any] struct {
 }
 
 // Name returns the tool name.
-func (t *Typed[Args, Out]) Name() string { return t.name }
+func (t *typed[Args, Out]) Name() string { return t.name }
 
 // Description returns the tool description.
-func (t *Typed[Args, Out]) Description() string { return t.description }
+func (t *typed[Args, Out]) Description() string { return t.description }
 
 // Parameters returns the argument schema.
-func (t *Typed[Args, Out]) Parameters() json.RawMessage { return t.schema }
+func (t *typed[Args, Out]) Parameters() json.RawMessage { return t.schema }
 
 // Strict reports whether the schema is strict.
-func (t *Typed[Args, Out]) Strict() bool { return t.strict }
+func (t *typed[Args, Out]) Strict() bool { return t.strict }
 
 // Sequential reports whether the tool runs alone.
-func (t *Typed[Args, Out]) Sequential() bool { return t.sequential }
+func (t *typed[Args, Out]) Sequential() bool { return t.sequential }
 
 // Execute validates and decodes the arguments, calls the function and
 // converts the output.
-func (t *Typed[Args, Out]) Execute(ctx context.Context, call Call) (Result, error) {
+func (t *typed[Args, Out]) Execute(ctx context.Context, call Call) (Result, error) {
 	if t.tree != nil {
 		if err := t.tree.ValidateJSON(call.Args); err != nil {
 			return Result{}, err
@@ -185,7 +192,7 @@ func Output(v any) (Result, error) {
 type callKey struct{}
 
 // WithCall attaches the call to ctx so the tool function can find it
-// with [CallFrom]. [Typed.Execute] does this before calling the function.
+// with [CallFrom]. A [New] tool does this before calling its function.
 func WithCall(ctx context.Context, call Call) context.Context {
 	return context.WithValue(ctx, callKey{}, call)
 }
@@ -205,7 +212,7 @@ func Progress(ctx context.Context, r Result) {
 }
 
 var (
-	_ Tool       = (*Typed[NoArgs, string])(nil)
-	_ Strict     = (*Typed[NoArgs, string])(nil)
-	_ Sequential = (*Typed[NoArgs, string])(nil)
+	_ Tool       = (*typed[NoArgs, string])(nil)
+	_ Strict     = (*typed[NoArgs, string])(nil)
+	_ Sequential = (*typed[NoArgs, string])(nil)
 )

@@ -175,7 +175,7 @@ func TestExecuteLateProgressIsDropped(t *testing.T) {
 	// A tool that keeps reporting progress from its own goroutine after
 	// it returned, as a remote tool's asynchronous notifications can.
 	release := make(chan struct{})
-	late := &Func{ToolName: "late", Fn: func(ctx context.Context, c Call) (Result, error) {
+	late := NewFunc("late", "", nil, func(ctx context.Context, c Call) (Result, error) {
 		go func() {
 			<-release
 			for i := 0; i < 3; i++ {
@@ -183,7 +183,7 @@ func TestExecuteLateProgressIsDropped(t *testing.T) {
 			}
 		}()
 		return Text("done"), nil
-	}}
+	})
 	var updates int
 	for ev := range (Executor{}).Execute(context.Background(), []Job{{Tool: late, Call: Call{ID: "1"}}}) {
 		if !ev.Final {
