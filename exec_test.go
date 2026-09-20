@@ -124,8 +124,16 @@ func TestExecuteProgressAndPanic(t *testing.T) {
 	if finals[0].Result.Output.Text != "done" {
 		t.Errorf("progress result = %+v", finals[0])
 	}
-	if finals[1].Err == nil || !strings.Contains(finals[1].Err.Error(), "panicked") {
-		t.Errorf("panic err = %v", finals[1].Err)
+	var pe *PanicError
+	if !errors.As(finals[1].Err, &pe) {
+		t.Fatalf("panic err = %T %v, want *PanicError", finals[1].Err, finals[1].Err)
+	}
+	if pe.Tool != "panics" || pe.Value != "oh no" || len(pe.Stack) == 0 {
+		t.Errorf("panic error = %+v", pe)
+	}
+	// The model sees one line; the stack stays behind the type.
+	if msg := finals[1].Err.Error(); msg != `tool "panics" panicked: oh no` || strings.Contains(msg, "goroutine") {
+		t.Errorf("panic message = %q", msg)
 	}
 	if finals[2].Err == nil || !strings.Contains(finals[2].Err.Error(), "no tool") {
 		t.Errorf("missing tool err = %v", finals[2].Err)
