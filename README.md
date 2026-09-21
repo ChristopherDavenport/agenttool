@@ -126,6 +126,44 @@ The record a tool writes this way and the `Recordable` it returns as
 `Details` are the same namespace at two moments: what it started, and
 how it ended.
 
+## Interrupting a call, closing a tool
+
+A tool that owns a process, a container or a persistent shell has two
+moments, and the contract answers them separately.
+
+Stopping a call in flight is the call's context. It is cancelled from
+another goroutine while `Execute` runs, which is what a host's Ctrl-C
+is, so a tool signals or kills what that call started and returns; a
+partial result with no error is the right answer when the output so far
+is worth the model's while. The shell the tool value owns is untouched,
+because the context belongs to the call.
+
+```go
+func (s *Shell) Execute(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
+	out, err := s.start(call.Args)
+	select {
+	case res := <-out:
+		return res, err
+	case <-ctx.Done():
+		s.signal(os.Interrupt)               // the foreground command, not the shell
+		return agenttool.Text(s.drain()), nil // what it printed before the interrupt
+	}
+}
+
+func (s *Shell) Close() error { return s.container.Remove() }
+```
+
+There is no `Interrupt` method. The reference agent that has one has it
+because its language has no cancellation to hand, and a second way to
+say the same thing would leave a tool guessing which one a host used.
+The model's own interrupt, "send `C-c` and keep the shell", is an
+argument of the shell tool and needs nothing from the contract.
+
+Releasing what outlives the call is `io.Closer`. It belongs to the host
+and never to a run or a batch, since a session outlives many runs and
+the executor closes nothing; `agenttool.Set(tools).Close()` closes the
+ones that implement it and joins their errors.
+
 ## A batch
 
 `Executor` runs a batch: parallel up to a bound, or sequential when

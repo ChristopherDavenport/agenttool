@@ -25,7 +25,9 @@ package agenttool
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 
 	"github.com/ChristopherDavenport/openresponses"
 )
@@ -40,7 +42,11 @@ type Tool interface {
 	Parameters() json.RawMessage
 	// Execute runs one call. On error the model sees the error and
 	// Result.Output is ignored; Result.Details may still be set for
-	// subscribers, as mcpclient does with the raw MCP result.
+	// subscribers, as mcpclient does with the raw MCP result. The
+	// context is the call's, and its cancellation is the host's
+	// interrupt: a tool that owns a process stops it there and keeps
+	// anything the tool value owns across calls, which [io.Closer]
+	// releases.
 	Execute(ctx context.Context, call Call) (Result, error)
 }
 
@@ -332,6 +338,36 @@ func Definition(t Tool) *openresponses.FunctionTool {
 	return ft
 }
 
+// A tool that owns something has two moments the contract answers
+// separately: stopping a call that is running, and releasing what
+// outlives it.
+//
+// Stopping a call is the call's context. It is cancelled from another
+// goroutine while Execute runs, which is what a host's interrupt is, so
+// a tool that owns a process waits on ctx.Done, signals or kills what
+// that call started, and returns; a partial result with no error is
+// the right answer when the output so far is worth the model's while.
+// What the tool value owns across calls, a persistent shell or a
+// container, is untouched, because the context belongs to the call and
+// not to the tool.
+//
+// There is deliberately no Interrupt method. The reference agent that
+// has one has it because its language has no cancellation to hand: it
+// documents interrupt as called "from a different thread when a
+// conversation interrupt fires while this tool is still executing",
+// which is what cancelling a context does here. A second way to say the
+// same thing would leave every tool guessing which one a host used. The
+// other kind of interrupt, the model's own "press Ctrl-C in the shell
+// and keep it running", is an argument of the shell tool and needs
+// nothing from the contract.
+//
+// Releasing what outlives the call is [io.Closer], which a tool
+// implements when it owns a container, a persistent shell or a pool.
+// Close belongs to the host and never to a run or a batch: a session
+// outlives many runs, the executor closes nothing, and a host closes
+// what it built when it is done with it. [Set.Close] does it for a
+// list of tools.
+
 // Set is a list of tools with lookup by name.
 type Set []Tool
 
@@ -355,6 +391,31 @@ func (s Set) Definitions() openresponses.Tools {
 		out = append(out, Definition(t))
 	}
 	return out
+}
+
+// Close closes every tool in the set that implements [io.Closer], in
+// order, and returns their errors joined; a tool that implements it
+// releases what it owns beyond one call, such as a container or a
+// persistent shell. It is the host's to call, once, when the session
+// that built the tools is over, and never a loop's: the loop's runs
+// come and go while the tools stay. Closing a set twice is the tools'
+// business, as is a call that arrives after.
+//
+// A tool from mcpclient is not a closer; the remote's session is closed
+// through mcpclient.Remote.Close, which serves every tool of that
+// server.
+func (s Set) Close() error {
+	var errs []error
+	for _, t := range s {
+		c, ok := t.(io.Closer)
+		if !ok {
+			continue
+		}
+		if err := c.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("agenttool: close %q: %w", t.Name(), err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Validate reports an empty or duplicate name.
