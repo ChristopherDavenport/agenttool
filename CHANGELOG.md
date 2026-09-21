@@ -22,6 +22,17 @@ versions may break the API.
   `RecordOf` read of `Result.Details` at the end of a call is unchanged;
   a value written both ways is recorded under one namespace twice.
 
+- A tool can say whether a call will run confined. `Confined` is an
+  optional interface, `Confined(ctx, args) (bool, string)`, answering
+  for the arguments of one call and naming what confines it, and
+  `ConfinedBy` reads it from any tool. Both reference agents put a
+  sandbox under one shell tool and make leaving it an argument of that
+  tool, so a shared permission preset either prompted for every
+  harmless command or named one product's field; now it can ask about
+  the calls that leave the sandbox. A tool that does not implement it
+  reports false, which says it claims no sandbox rather than that it has
+  none, and nothing here enforces anything.
+
 - A tool's lifecycle is stated, and it is two things, not three. A tool
   that owns a container or a persistent shell implements `io.Closer`,
   and `Set.Close` closes the tools of a set in order and joins their

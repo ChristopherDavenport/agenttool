@@ -72,7 +72,10 @@ that does not know their type: `RecordOf` gives the namespace and the
 value's JSON. Optional interfaces refine a tool: `Sequential` forces a
 batch containing it to run one call at a time, `Resource` serialises
 the calls that touch one piece of shared state, `Annotated` carries
-MCP's behavioural hints for a policy layer to read, and `Strict` marks
+MCP's behavioural hints for a policy layer to read, `Confined` says
+whether a call will run in a sandbox and by what, so a shared
+permission preset can ask about the calls that leave one without
+knowing a product's own argument for leaving it, and `Strict` marks
 its schema strict; `WithSequential()`, `WithResource()`,
 `WithAnnotations()` and `WithStrict()` set them on a tool from `New` or
 `NewFunc`. `NewFunc` builds a tool from plain values

@@ -294,6 +294,43 @@ func AnnotationsOf(t Tool) Annotations {
 	return a.Annotations()
 }
 
+// Confined is implemented by a tool that knows whether a call will run
+// inside a sandbox, and says so before it runs. A permission layer can
+// then ask about the calls that leave the sandbox without knowing the
+// product's own argument for leaving it: both reference agents put an
+// OS sandbox under one shell tool and make the escape hatch an argument
+// of that tool, so a shared preset that cannot see confinement either
+// prompts for every harmless command or names one product's field and
+// serves only that product.
+//
+// Confined answers for the call args describe, with the context the
+// call will run under, since confinement can depend on what the host
+// put there. The string names what confines it, "seatbelt",
+// "landlock+seccomp", "container:agent-sandbox", for the prompt and the
+// record; it is empty when the answer is false.
+//
+// A tool that runs a sandbox implements it. A tool that does not is not
+// expected to, and [ConfinedBy] answers false for it, which a policy
+// reads as unconfined, since the safe mistake is to ask. Nothing here
+// enforces anything: this is what a tool reports, never what it runs.
+type Confined interface {
+	Confined(ctx context.Context, args json.RawMessage) (bool, string)
+}
+
+// ConfinedBy reports whether a call of t with args will run confined,
+// and what confines it. A tool that does not implement [Confined]
+// reports false and "", which says the tool does not claim a sandbox
+// rather than that it has none: a policy treats both as unconfined and
+// may not read a false as permission to skip a prompt it would
+// otherwise raise.
+func ConfinedBy(ctx context.Context, t Tool, args json.RawMessage) (bool, string) {
+	c, ok := t.(Confined)
+	if !ok {
+		return false, ""
+	}
+	return c.Confined(ctx, args)
+}
+
 // Strict is implemented by tools whose schema was generated under the
 // strict rules (every field required, additionalProperties false,
 // optional fields nullable). The flag is set on the function tool.
