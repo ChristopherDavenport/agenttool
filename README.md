@@ -69,19 +69,23 @@ callback; `Result` carries the output the model sees, app-only
 and the output is ignored. `Details` that implement `Recordable`, one
 method naming a namespace, can be written to a session by a recorder
 that does not know their type: `RecordOf` gives the namespace and the
-value's JSON. Optional interfaces refine a tool: `Sequential` forces a
-batch containing it to run one call at a time, `Resource` serialises
-the calls that touch one piece of shared state, `Annotated` carries
-MCP's behavioural hints for a policy layer to read, `Confined` says
+value's JSON.
+
+Optional interfaces refine a tool. `Sequential` forces a batch
+containing it to run one call at a time and `Resource` serialises only
+the calls that touch one piece of shared state; `Annotated` carries
+MCP's behavioural hints for a policy layer to read; `Confined` says
 whether a call will run in a sandbox and by what, so a shared
 permission preset can ask about the calls that leave one without
-knowing a product's own argument for leaving it, and `Strict` marks
-its schema strict; `WithSequential()`, `WithResource()`,
+knowing a product's own argument for leaving it; `Strict` marks the
+schema strict. `WithSequential()`, `WithResource()`,
 `WithAnnotations()` and `WithStrict()` set them on a tool from `New` or
-`NewFunc`. `NewFunc` builds a tool from plain values
-and a raw function for schemas that come from elsewhere; `SchemaFor[T]()`
-gives the schema `New` would reflect; `Set` is a list with lookup;
-`Definition` produces the `openresponses.FunctionTool` for a request.
+`NewFunc`.
+
+`NewFunc` builds a tool from plain values and a raw function for
+schemas that come from elsewhere; `SchemaFor[T]()` gives the schema
+`New` would reflect; `Set` is a list with lookup; `Definition` produces
+the `openresponses.FunctionTool` for a request.
 
 ## A handle on the record before the call ends
 
@@ -208,7 +212,9 @@ tools that name the same resource share it, which is how a shell tool
 and the tool that restarts that shell stay apart, and
 `mcpclient.WithResource("shell:session", "bash")` names it for a remote
 tool, since MCP has no field for one. Whether the second call waits or
-is refused stays the tool's choice. A tool that panics completes with a
+is refused stays the tool's choice.
+
+A tool that panics completes with a
 `PanicError` whose message is one line; the stack is on the value for
 `errors.As`. `Results` is the shortcut when progress is not needed. A
 loop that owns its own scheduling needs only the interface.

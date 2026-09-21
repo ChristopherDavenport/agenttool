@@ -96,7 +96,9 @@ versions may break the API.
   rather than per job, bounded by `MaxParallel` as before. Independent
   jobs may now start in any order, which the documented completion
   order already allowed; a serial batch is unchanged, in the model's
-  order from end to end.
+  order from end to end. A tool that already has a `Resource() string`
+  method of its own now declares one, as any optional interface here
+  works.
 
 ## v0.0.5 - 2026-09-20
 
