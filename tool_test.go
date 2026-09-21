@@ -244,3 +244,88 @@ func (bareTool) Parameters() json.RawMessage { return nil }
 func (bareTool) Execute(context.Context, Call) (Result, error) {
 	return Result{}, nil
 }
+
+// closingTool owns something beyond one call and records how it was
+// asked to let go of it.
+type closingTool struct {
+	name      string
+	err       error
+	closes    int
+	cancelled bool
+}
+
+func (c *closingTool) Name() string                { return c.name }
+func (c *closingTool) Description() string         { return "" }
+func (c *closingTool) Parameters() json.RawMessage { return nil }
+func (c *closingTool) Close() error                { c.closes++; return c.err }
+
+func (c *closingTool) Execute(ctx context.Context, _ Call) (Result, error) {
+	<-ctx.Done() // the host's interrupt, and the only one there is
+	c.cancelled = true
+	return Text("partial output"), nil
+}
+
+func TestSetClose(t *testing.T) {
+	broken := errors.New("container still running")
+	cases := []struct {
+		name    string
+		set     Set
+		wantErr []string
+	}{
+		{name: "nothing to close", set: Set{bareTool{}}},
+		{name: "one closer", set: Set{&closingTool{name: "shell"}, bareTool{}}},
+		{
+			name:    "errors are joined and named",
+			set:     Set{&closingTool{name: "shell", err: broken}, &closingTool{name: "browser", err: broken}},
+			wantErr: []string{`close "shell": container still running`, `close "browser": container still running`},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.set.Close()
+			if len(tc.wantErr) == 0 {
+				if err != nil {
+					t.Fatalf("err = %v", err)
+				}
+			} else {
+				for _, want := range tc.wantErr {
+					if err == nil || !strings.Contains(err.Error(), want) {
+						t.Errorf("err = %v, want %q in it", err, want)
+					}
+				}
+			}
+			for _, tl := range tc.set {
+				if c, ok := tl.(*closingTool); ok && c.closes != 1 {
+					t.Errorf("%s closed %d times, want once", c.name, c.closes)
+				}
+			}
+		})
+	}
+}
+
+// TestCancellationIsTheInterrupt: cancelling the call's context stops
+// the call and leaves the tool, and what it owns, alive for the next
+// one. It is why there is no Interrupt method.
+func TestCancellationIsTheInterrupt(t *testing.T) {
+	tool := &closingTool{name: "shell"}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan Result, 1)
+	go func() {
+		res, err := tool.Execute(ctx, Call{ID: "c"})
+		if err != nil {
+			t.Errorf("err = %v", err)
+		}
+		done <- res
+	}()
+	cancel()
+	res := <-done
+	if res.Output.Text != "partial output" || !tool.cancelled {
+		t.Errorf("result = %+v, cancelled = %v", res, tool.cancelled)
+	}
+	if tool.closes != 0 {
+		t.Error("an interrupted call closed the tool")
+	}
+	if err := (Set{tool}).Close(); err != nil || tool.closes != 1 {
+		t.Errorf("close = %v, closes = %d", err, tool.closes)
+	}
+}

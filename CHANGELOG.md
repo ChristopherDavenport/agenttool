@@ -22,6 +22,20 @@ versions may break the API.
   `RecordOf` read of `Result.Details` at the end of a call is unchanged;
   a value written both ways is recorded under one namespace twice.
 
+- A tool's lifecycle is stated, and it is two things, not three. A tool
+  that owns a container or a persistent shell implements `io.Closer`,
+  and `Set.Close` closes the tools of a set in order and joins their
+  errors; it is the host's to call when the session is over, never a
+  loop's, and the executor closes nothing. Stopping a call that is
+  running stays the call's context, which is cancelled from another
+  goroutine while `Execute` runs and is what a host's interrupt is: the
+  documentation now says so, with the shell that signals its foreground
+  command, returns what it printed and keeps the shell. No `Interrupter`
+  interface is added, because the reference that has one has it for a
+  language with no cancellation primitive, and a second way to say
+  "stop" would leave a tool guessing which one a host used; the model's
+  own interrupt is an argument of the shell tool.
+
 - `mcpserver` can tell one client from another. The call's context now
   carries the MCP session it arrived on, read with
   `mcpserver.SessionFrom(ctx)` or `mcpserver.SessionID(ctx)` and
