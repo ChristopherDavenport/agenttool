@@ -22,6 +22,19 @@ versions may break the API.
   `RecordOf` read of `Result.Details` at the end of a call is unchanged;
   a value written both ways is recorded under one namespace twice.
 
+- A call waits for a tool-list-changed notification that has not been
+  sent yet. v0.0.4 made a call whose list changed wait for the refresh,
+  but the reference Go SDK sends the notification about ten
+  milliseconds after the change, so the result reached the client
+  first, the wait never engaged, and a tool that added a tool still
+  showed it a turn late. A call whose list looks unchanged now waits up
+  to `DefaultNotificationGrace`, 50 ms, for a notification before
+  returning, and `WithNotificationGrace(d)` bounds or, at zero, turns
+  off that wait. The wait ends as soon as the notification lands, and
+  is skipped for a server that advertises no tool-list-changed
+  notification and for a tool the server annotated read-only, which
+  cannot have changed the list without lying.
+
 - A tool can say whether a call will run confined. `Confined` is an
   optional interface, `Confined(ctx, args) (bool, string)`, answering
   for the arguments of one call and naming what confines it, and

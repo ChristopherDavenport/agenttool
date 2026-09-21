@@ -241,8 +241,14 @@ ones a Go tool carries, so they survive a round trip. They are the
 server's word, so a policy may use them to be stricter and may not use
 them alone to allow a call. The refresh is a round trip: `Await` blocks until
 it has landed, and a call that returns after the notification arrived
-waits for it, so a tool that adds a tool usually returns with the list
-already current. `mcpserver` validates arguments against each tool's
+waits for it. A server need not notify before it answers, and the
+reference Go SDK arms the notification on a 10 ms timer, so a call
+whose list looks unchanged waits up to
+`mcpclient.DefaultNotificationGrace` for one before returning; a tool
+that adds a tool then returns with the list already current.
+`WithNotificationGrace` bounds or disables that wait, which is skipped
+for a read-only tool and for a server that advertises no
+tool-list-changed notification. `mcpserver` validates arguments against each tool's
 schema, maps outputs back to MCP content and forwards progress when
 the request carries a token. One `Tool` value serves every client that
 connects, so the call's context carries the session it arrived on:

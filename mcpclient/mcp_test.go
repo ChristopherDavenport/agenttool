@@ -596,3 +596,117 @@ func TestAnnotationsMapped(t *testing.T) {
 		t.Error("a nil tool reported annotations")
 	}
 }
+
+// TestCallSeesATooltAddedByItself is the reference SDK's own timing: a
+// tool whose handler adds a tool returns before the notification is
+// sent, because the server arms it on a 10 ms timer, so the call must
+// leave a grace window for it or the new tool appears a turn late.
+func TestCallSeesAToolAddedByItself(t *testing.T) {
+	server := newServer(t)
+	server.AddTool(&sdk.Tool{Name: "unlock", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(ctx context.Context, _ *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			server.AddTool(&sdk.Tool{Name: "secret", InputSchema: json.RawMessage(`{"type":"object"}`)},
+				func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+					return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "shh"}}}, nil
+				})
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "unlocked"}}}, nil
+		})
+	s := connect(t, server)
+	res, err := lookup(t, s, "unlock").Execute(context.Background(), agenttool.Call{ID: "c", Args: json.RawMessage(`{}`)})
+	if err != nil || res.Output.Text != "unlocked" {
+		t.Fatalf("res = %+v, err = %v", res, err)
+	}
+	if _, ok := agenttool.Set(s.Tools()).Lookup("secret"); !ok {
+		t.Errorf("the tool the call added is not in the list it returned with: %v", names(s.Tools()))
+	}
+}
+
+func TestAwaitNotificationGrace(t *testing.T) {
+	const grace = 100 * time.Millisecond
+	cases := []struct {
+		name        string
+		grace       time.Duration
+		listChanged bool
+		notify      bool // a notification arrives while the wait is on
+		wantWait    bool
+	}{
+		{name: "nothing comes", grace: grace, listChanged: true, wantWait: true},
+		{name: "a notification ends the wait", grace: grace, listChanged: true, notify: true},
+		{name: "the grace is off", grace: 0, listChanged: true},
+		{name: "the server sends no notifications", grace: grace, listChanged: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Remote{notified: make(chan struct{}), grace: tc.grace, listChanged: tc.listChanged}
+			if tc.notify {
+				time.AfterFunc(5*time.Millisecond, func() {
+					s.seen.Add(1)
+					s.mu.Lock()
+					close(s.notified)
+					s.notified = make(chan struct{})
+					s.mu.Unlock()
+				})
+			}
+			start := time.Now()
+			s.awaitNotification(context.Background(), 0)
+			if waited := time.Since(start); (waited >= grace) != tc.wantWait {
+				t.Errorf("waited %v, want the whole grace = %v", waited, tc.wantWait)
+			}
+		})
+	}
+
+	// A notification already counted needs no waiting at all.
+	s := &Remote{notified: make(chan struct{}), grace: grace, listChanged: true}
+	s.seen.Add(1)
+	start := time.Now()
+	s.awaitNotification(context.Background(), 0)
+	if waited := time.Since(start); waited >= grace {
+		t.Errorf("waited %v for a notification already seen", waited)
+	}
+
+	// A cancelled context ends the wait with the call, not the grace.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start = time.Now()
+	(&Remote{notified: make(chan struct{}), grace: grace, listChanged: true}).awaitNotification(ctx, 0)
+	if waited := time.Since(start); waited >= grace {
+		t.Errorf("waited %v after the context ended", waited)
+	}
+}
+
+// TestReadOnlyCallDoesNotWait: the wait is for a call that might have
+// changed the list, so a tool the server marked read-only skips it and
+// the forty read-only tools of a server cost nothing.
+func TestReadOnlyCallDoesNotWait(t *testing.T) {
+	const grace = 500 * time.Millisecond
+	server := sdk.NewServer(&sdk.Implementation{Name: "annotated", Version: "1"}, nil)
+	server.AddTool(&sdk.Tool{
+		Name:        "search",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: ptr(false), OpenWorldHint: ptr(false)},
+	}, func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "found"}}}, nil
+	})
+	server.AddTool(&sdk.Tool{Name: "write", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "written"}}}, nil
+		})
+	s := connect(t, server, WithNotificationGrace(grace))
+
+	start := time.Now()
+	if _, err := lookup(t, s, "search").Execute(context.Background(), agenttool.Call{ID: "c", Args: json.RawMessage(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if waited := time.Since(start); waited >= grace/2 {
+		t.Errorf("a read-only call waited %v", waited)
+	}
+
+	// A tool that says nothing waits, because it may have changed the list.
+	start = time.Now()
+	if _, err := lookup(t, s, "write").Execute(context.Background(), agenttool.Call{ID: "c", Args: json.RawMessage(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if waited := time.Since(start); waited < grace/2 {
+		t.Errorf("an unannotated call waited %v, want the grace", waited)
+	}
+}
