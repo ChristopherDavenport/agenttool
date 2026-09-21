@@ -70,9 +70,12 @@ and the output is ignored. `Details` that implement `Recordable`, one
 method naming a namespace, can be written to a session by a recorder
 that does not know their type: `RecordOf` gives the namespace and the
 value's JSON. Optional interfaces refine a tool: `Sequential` forces a
-batch containing it to run one call at a time, `Strict` marks its
-schema strict, and `WithSequential()` and `WithStrict()` set them on a
-tool from `New` or `NewFunc`. `NewFunc` builds a tool from plain values
+batch containing it to run one call at a time, `Resource` serialises
+the calls that touch one piece of shared state, `Annotated` carries
+MCP's behavioural hints for a policy layer to read, and `Strict` marks
+its schema strict; `WithSequential()`, `WithResource()`,
+`WithAnnotations()` and `WithStrict()` set them on a tool from `New` or
+`NewFunc`. `NewFunc` builds a tool from plain values
 and a raw function for schemas that come from elsewhere; `SchemaFor[T]()`
 gives the schema `New` would reflect; `Set` is a list with lookup;
 `Definition` produces the `openresponses.FunctionTool` for a request.
@@ -187,9 +190,15 @@ err = server.Run(ctx, &mcp.StdioTransport{})
 ```
 
 `mcpclient` maps text, image, audio and resource content to output
-parts, `isError` to a returned error, progress notifications to the
-call's progress callback, and refreshes its snapshot on
-tool-list-changed. The refresh is a round trip: `Await` blocks until
+parts, `isError` to a returned error, a tool's annotations to
+`agenttool.Annotations`, progress notifications to the call's progress
+callback, and refreshes its snapshot on tool-list-changed. The hints
+say a `search` is read-only and a `delete_repo` destructive, which is
+what a permission layer keys on instead of a per-server name list;
+`AnnotationsOf` reads them from any tool and `mcpserver` serves the
+ones a Go tool carries, so they survive a round trip. They are the
+server's word, so a policy may use them to be stricter and may not use
+them alone to allow a call. The refresh is a round trip: `Await` blocks until
 it has landed, and a call that returns after the notification arrived
 waits for it, so a tool that adds a tool usually returns with the list
 already current. `mcpserver` validates arguments against each tool's

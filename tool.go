@@ -238,6 +238,56 @@ type Resource interface {
 	Resource() string
 }
 
+// Annotations are the behavioural hints a tool carries: what a policy
+// layer keys on when it wants to treat a search differently from a
+// delete. The fields are MCP's tool annotations, so a remote tool's
+// hints survive the adapter in both directions, and a Go tool may set
+// them with [WithAnnotations].
+//
+// They are hints and never authoritative. MCP's own specification says
+// a client must not make tool-use decisions on the annotations of an
+// untrusted server, and a Go tool's are only as good as its author, so
+// a policy may use them to be stricter and must not use them alone to
+// allow a call. The zero value is a tool that says nothing, which is
+// not the same as a tool that says it is harmless: ReadOnly false means
+// "unstated" as often as "writes".
+type Annotations struct {
+	// Title is a human-readable name for display.
+	Title string
+	// ReadOnly says the tool does not modify its environment.
+	ReadOnly bool
+	// Destructive says the tool may make destructive updates, rather
+	// than only additive ones. It is meaningful only when ReadOnly is
+	// false, and MCP's default for a tool that carries annotations
+	// without this one is true.
+	Destructive bool
+	// Idempotent says that calling the tool again with the same
+	// arguments has no further effect. It is meaningful only when
+	// ReadOnly is false.
+	Idempotent bool
+	// OpenWorld says the tool may interact with entities outside a
+	// closed domain, as a web search does and a memory tool does not.
+	// MCP's default for a tool that carries annotations without this one
+	// is true.
+	OpenWorld bool
+}
+
+// Annotated is implemented by a tool that carries [Annotations].
+type Annotated interface {
+	Annotations() Annotations
+}
+
+// AnnotationsOf returns t's annotations, or the zero value when it
+// carries none, which says nothing about the tool rather than saying it
+// is harmless.
+func AnnotationsOf(t Tool) Annotations {
+	a, ok := t.(Annotated)
+	if !ok {
+		return Annotations{}
+	}
+	return a.Annotations()
+}
+
 // Strict is implemented by tools whose schema was generated under the
 // strict rules (every field required, additionalProperties false,
 // optional fields nullable). The flag is set on the function tool.
@@ -327,8 +377,8 @@ func (s Set) Validate() error {
 // raw call: the untyped counterpart of [New] for tools whose schema
 // comes from elsewhere, such as a remote server. parameters is served
 // verbatim and never validated; nil means the tool takes no arguments.
-// [WithStrict], [WithSequential] and [WithResource] apply; the options
-// that shape a reflected schema do not. A nil fn panics here, like a bad schema in
+// [WithStrict], [WithSequential], [WithResource] and [WithAnnotations]
+// apply; the options that shape a reflected schema do not. A nil fn panics here, like a bad schema in
 // [New].
 func NewFunc(name, description string, parameters json.RawMessage, fn func(ctx context.Context, call Call) (Result, error), opts ...Option) Tool {
 	if fn == nil {
@@ -338,7 +388,7 @@ func NewFunc(name, description string, parameters json.RawMessage, fn func(ctx c
 	for _, opt := range opts {
 		opt(&o)
 	}
-	return &funcTool{name: name, description: description, schema: parameters, fn: fn, strict: o.strict, sequential: o.sequential, resource: o.resource}
+	return &funcTool{name: name, description: description, schema: parameters, fn: fn, strict: o.strict, sequential: o.sequential, resource: o.resource, annotations: o.annotations}
 }
 
 type funcTool struct {
@@ -349,6 +399,7 @@ type funcTool struct {
 	strict      bool
 	sequential  bool
 	resource    string
+	annotations Annotations
 }
 
 func (f *funcTool) Name() string                { return f.name }
@@ -357,6 +408,7 @@ func (f *funcTool) Parameters() json.RawMessage { return f.schema }
 func (f *funcTool) Sequential() bool            { return f.sequential }
 func (f *funcTool) Strict() bool                { return f.strict }
 func (f *funcTool) Resource() string            { return f.resource }
+func (f *funcTool) Annotations() Annotations    { return f.annotations }
 
 func (f *funcTool) Execute(ctx context.Context, call Call) (Result, error) {
 	return f.fn(ctx, call)
@@ -367,4 +419,5 @@ var (
 	_ Sequential = (*funcTool)(nil)
 	_ Strict     = (*funcTool)(nil)
 	_ Resource   = (*funcTool)(nil)
+	_ Annotated  = (*funcTool)(nil)
 )

@@ -22,6 +22,18 @@ versions may break the API.
   `RecordOf` read of `Result.Details` at the end of a call is unchanged;
   a value written both ways is recorded under one namespace twice.
 
+- A tool carries MCP's behavioural hints. `Annotations` holds the
+  title, read-only, destructive, idempotent and open-world hints; a
+  tool implements `Annotated` or is built with `WithAnnotations`, and
+  `AnnotationsOf` reads them from any tool. `mcpclient` maps a remote
+  tool's annotations onto the tools it builds, applying MCP's defaults
+  for the hints a server omits from a block it sent and reporting
+  nothing for a server that sent no block, and `mcpserver` serves the
+  hints a Go tool carries, each stated rather than defaulted, so a
+  proxied tool keeps them. They are hints from a server a client has no
+  reason to trust: a policy may use them to be stricter and may not use
+  them alone to allow a call, which the doc comments say.
+
 - Serialising a tool against itself no longer costs the batch its
   parallelism. A tool that owns shared state implements `Resource`, one
   method naming it, or is built with `WithResource("shell:session")`,

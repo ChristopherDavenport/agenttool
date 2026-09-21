@@ -333,3 +333,39 @@ func TestParseDataURL(t *testing.T) {
 		}
 	}
 }
+
+// TestRoundTripAnnotations: a tool's hints survive being served and
+// consumed again, and a tool that carries none serves none, so nothing
+// downstream reads a default the tool never claimed.
+func TestRoundTripAnnotations(t *testing.T) {
+	cases := []struct {
+		name string
+		want agenttool.Annotations
+	}{
+		{name: "none"},
+		{name: "read-only", want: agenttool.Annotations{Title: "Search issues", ReadOnly: true}},
+		{name: "destructive", want: agenttool.Annotations{Destructive: true, OpenWorld: true}},
+		{name: "idempotent write", want: agenttool.Annotations{Idempotent: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := []agenttool.Option{}
+			if tc.want != (agenttool.Annotations{}) {
+				opts = append(opts, agenttool.WithAnnotations(tc.want))
+			}
+			local := agenttool.New("hinted", "a tool with hints",
+				func(context.Context, agenttool.NoArgs) (string, error) { return "ok", nil }, opts...)
+			if def := Definition(local); (def.Annotations != nil) != (tc.want != agenttool.Annotations{}) {
+				t.Errorf("definition annotations = %+v", def.Annotations)
+			}
+			s := roundTrip(t, newServer(t, "hints", local))
+			back, ok := agenttool.Set(s.Tools()).Lookup("hinted")
+			if !ok {
+				t.Fatal("tool missing")
+			}
+			if got := agenttool.AnnotationsOf(back); got != tc.want {
+				t.Errorf("annotations = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}

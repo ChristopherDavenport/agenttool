@@ -530,3 +530,69 @@ func TestResultEdgeCases(t *testing.T) {
 		t.Errorf("image without mime = %+v, %v", res, err)
 	}
 }
+
+func ptr[T any](v T) *T { return &v }
+
+// TestAnnotationsMapped covers the hints a policy layer keys on,
+// including the defaults MCP applies to a block that omits one.
+func TestAnnotationsMapped(t *testing.T) {
+	cases := []struct {
+		name string
+		tool *sdk.Tool
+		want agenttool.Annotations
+		ok   bool
+	}{
+		{
+			name: "no annotations",
+			tool: &sdk.Tool{Name: "plain", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		},
+		{
+			name: "read-only",
+			tool: &sdk.Tool{Name: "search", InputSchema: json.RawMessage(`{"type":"object"}`),
+				Annotations: &sdk.ToolAnnotations{Title: "Search issues", ReadOnlyHint: true, DestructiveHint: ptr(false), OpenWorldHint: ptr(false)}},
+			want: agenttool.Annotations{Title: "Search issues", ReadOnly: true},
+			ok:   true,
+		},
+		{
+			name: "destructive and open world",
+			tool: &sdk.Tool{Name: "delete", InputSchema: json.RawMessage(`{"type":"object"}`),
+				Annotations: &sdk.ToolAnnotations{DestructiveHint: ptr(true), OpenWorldHint: ptr(true)}},
+			want: agenttool.Annotations{Destructive: true, OpenWorld: true},
+			ok:   true,
+		},
+		{
+			name: "the omitted hints take MCP's defaults",
+			tool: &sdk.Tool{Name: "write", InputSchema: json.RawMessage(`{"type":"object"}`),
+				Annotations: &sdk.ToolAnnotations{IdempotentHint: true}},
+			want: agenttool.Annotations{Destructive: true, Idempotent: true, OpenWorld: true},
+			ok:   true,
+		},
+		{
+			name: "the tool's own title wins",
+			tool: &sdk.Tool{Name: "write", Title: "Write a file", InputSchema: json.RawMessage(`{"type":"object"}`),
+				Annotations: &sdk.ToolAnnotations{Title: "older title", ReadOnlyHint: true, DestructiveHint: ptr(false), OpenWorldHint: ptr(false)}},
+			want: agenttool.Annotations{Title: "Write a file", ReadOnly: true},
+			ok:   true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := AnnotationsOf(tc.tool)
+			if ok != tc.ok || got != tc.want {
+				t.Fatalf("AnnotationsOf = %+v %v, want %+v %v", got, ok, tc.want, tc.ok)
+			}
+			// The same hints reach the local tool the adapter builds.
+			server := sdk.NewServer(&sdk.Implementation{Name: "annotated", Version: "1"}, nil)
+			server.AddTool(tc.tool, func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+				return &sdk.CallToolResult{}, nil
+			})
+			s := connect(t, server)
+			if got := agenttool.AnnotationsOf(lookup(t, s, tc.tool.Name)); got != tc.want {
+				t.Errorf("local tool's annotations = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+	if _, ok := AnnotationsOf(nil); ok {
+		t.Error("a nil tool reported annotations")
+	}
+}

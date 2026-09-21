@@ -12,6 +12,11 @@
 //	defer s.Close()
 //	tools := s.Tools()
 //
+// A remote tool's annotations, the read-only and destructive hints MCP
+// carries, reach the local tool through [agenttool.AnnotationsOf]; they
+// are the server's word, so a policy may read them and must not trust
+// them alone.
+//
 // Tools returns a snapshot. The remote subscribes to the server's
 // tool-list-changed notification and refreshes it, so a loop that reads
 // its tool list each turn should call Tools then rather than hold the
@@ -330,9 +335,39 @@ func (s *Remote) wrap(t *sdk.Tool) (agenttool.Tool, error) {
 	} else if res, ok := s.opts.resources[name]; ok {
 		opts = append(opts, agenttool.WithResource(res))
 	}
+	if a, ok := AnnotationsOf(t); ok {
+		opts = append(opts, agenttool.WithAnnotations(a))
+	}
 	return agenttool.NewFunc(name, t.Description, schema, func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
 		return s.call(ctx, remote, call)
 	}, opts...), nil
+}
+
+// AnnotationsOf maps a remote tool's annotations, reporting false when
+// it carries none. The hints a server omits take MCP's defaults, so a
+// tool that carries an annotations block without a destructive or
+// open-world hint is destructive and open-world, and a tool with no
+// block at all says nothing and is the zero [agenttool.Annotations].
+// Title is the tool's own when it has one, since MCP prefers it for
+// display, and the annotations' otherwise.
+//
+// The hints are the server's word and nothing more: a policy may use
+// them to be stricter and must not use them alone to allow a call.
+func AnnotationsOf(t *sdk.Tool) (agenttool.Annotations, bool) {
+	if t == nil || t.Annotations == nil {
+		return agenttool.Annotations{}, false
+	}
+	a := agenttool.Annotations{
+		Title:       t.Annotations.Title,
+		ReadOnly:    t.Annotations.ReadOnlyHint,
+		Destructive: t.Annotations.DestructiveHint == nil || *t.Annotations.DestructiveHint,
+		Idempotent:  t.Annotations.IdempotentHint,
+		OpenWorld:   t.Annotations.OpenWorldHint == nil || *t.Annotations.OpenWorldHint,
+	}
+	if t.Title != "" {
+		a.Title = t.Title
+	}
+	return a, true
 }
 
 // call invokes a remote tool and maps its result. When the call asked
