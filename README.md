@@ -146,7 +146,25 @@ for ev := range (agenttool.Executor{MaxParallel: 4}).Execute(ctx, jobs) {
 
 An `Event` names its job by `Index`. It is `Final` exactly once per
 job, carrying the `Result` or the `Err`, and completions arrive in
-completion order, not job order. A tool that panics completes with a
+completion order, not job order.
+
+A tool that owns shared state names it, and only the calls that touch
+it wait for each other:
+
+```go
+var Bash = agenttool.New("bash", "Run a shell command", run,
+	agenttool.WithResource("shell:session"))
+```
+
+Two `bash` calls in one batch then run one after the other in the
+model's order, while the five reads beside them still run together.
+`Sequential` remains the wider claim, "nothing else runs while I do",
+and takes the whole batch; a tool that reports both is sequential. Two
+tools that name the same resource share it, which is how a shell tool
+and the tool that restarts that shell stay apart, and
+`mcpclient.WithResource("shell:session", "bash")` names it for a remote
+tool, since MCP has no field for one. Whether the second call waits or
+is refused stays the tool's choice. A tool that panics completes with a
 `PanicError` whose message is one line; the stack is on the value for
 `errors.As`. `Results` is the shortcut when progress is not needed. A
 loop that owns its own scheduling needs only the interface.

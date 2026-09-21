@@ -3,6 +3,7 @@ package agenttool
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -282,5 +283,113 @@ func TestExecuteKeepsAnInstalledRecorder(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Errorf("recorder calls = %d, want 1", calls.Load())
+	}
+}
+
+// TestExecuteResourceChains is the shape a persistent shell needs: two
+// calls of the shell never overlap and keep the model's order, while
+// the reads beside them run together. The reads prove their
+// parallelism by meeting at a barrier rather than by a clock.
+func TestExecuteResourceChains(t *testing.T) {
+	const reads = 3
+	var arrived atomic.Int32
+	barrier := make(chan struct{})
+	read := New("read", "", func(ctx context.Context, _ NoArgs) (string, error) {
+		if arrived.Add(1) == reads {
+			close(barrier)
+		}
+		select {
+		case <-barrier:
+			return "read", nil
+		case <-time.After(5 * time.Second):
+			return "", errors.New("reads did not run together")
+		}
+	})
+
+	var mu sync.Mutex
+	var log []string
+	var inShell int
+	shell := func(name string) Tool {
+		return New(name, "", func(ctx context.Context, _ NoArgs) (string, error) {
+			mu.Lock()
+			inShell++
+			overlap := inShell > 1
+			log = append(log, name)
+			mu.Unlock()
+			time.Sleep(5 * time.Millisecond)
+			mu.Lock()
+			inShell--
+			mu.Unlock()
+			if overlap {
+				return "", errors.New("two calls in the shell at once")
+			}
+			return name, nil
+		}, WithResource("shell:session"))
+	}
+
+	jobs := []Job{
+		{Tool: shell("cd_a"), Call: Call{ID: "1"}},
+		{Tool: read, Call: Call{ID: "2"}},
+		{Tool: shell("cd_b"), Call: Call{ID: "3"}},
+		{Tool: read, Call: Call{ID: "4"}},
+		{Tool: read, Call: Call{ID: "5"}},
+	}
+	results, errs := (Executor{}).Results(context.Background(), jobs)
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("errs[%d] = %v", i, err)
+		}
+	}
+	if results[0].Output.Text != "cd_a" || results[2].Output.Text != "cd_b" {
+		t.Errorf("results = %+v", results)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(log, ",") != "cd_a,cd_b" {
+		t.Errorf("shell order = %v, want the model's order", log)
+	}
+}
+
+// TestExecuteResourceGrouping covers which jobs share a chain, without
+// running them: two tools naming one resource share it, a sequential
+// tool takes the batch whatever it names, and a tool that names nothing
+// is a chain of its own.
+func TestExecuteResourceGrouping(t *testing.T) {
+	plain := New("plain", "", func(context.Context, NoArgs) (string, error) { return "", nil })
+	shell := New("shell", "", func(context.Context, NoArgs) (string, error) { return "", nil }, WithResource("shell:session"))
+	restart := NewFunc("restart", "", nil, func(context.Context, Call) (Result, error) { return Result{}, nil }, WithResource("shell:session"))
+	other := New("other", "", func(context.Context, NoArgs) (string, error) { return "", nil }, WithResource("container:47"))
+	both := New("both", "", func(context.Context, NoArgs) (string, error) { return "", nil }, WithSequential(), WithResource("shell:session"))
+
+	cases := []struct {
+		name  string
+		tools []Tool
+		limit int
+		want  [][]int
+	}{
+		{"no resources", []Tool{plain, plain, plain}, 8, [][]int{{0}, {1}, {2}}},
+		{"one resource twice", []Tool{shell, plain, shell}, 8, [][]int{{0, 2}, {1}}},
+		{"two tools, one resource", []Tool{shell, restart, other}, 8, [][]int{{0, 1}, {2}}},
+		{"a serial batch ignores resources", []Tool{shell, plain, shell}, 1, [][]int{{0, 1, 2}}},
+		{"sequential beats resource", []Tool{both, plain}, 1, [][]int{{0, 1}}},
+		{"a nil tool has no resource", []Tool{nil, shell}, 8, [][]int{{0}, {1}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			jobs := make([]Job, len(tc.tools))
+			for i, tl := range tc.tools {
+				jobs[i] = Job{Tool: tl}
+			}
+			got := chainsOf(jobs, tc.limit)
+			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Errorf("chains = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if res := ResourceOf(both); res != "" {
+		t.Errorf("ResourceOf(a sequential tool) = %q, want the empty string", res)
+	}
+	if res := ResourceOf(shell); res != "shell:session" {
+		t.Errorf("ResourceOf = %q", res)
 	}
 }

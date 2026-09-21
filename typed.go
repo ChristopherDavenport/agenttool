@@ -20,6 +20,7 @@ type Option func(*options)
 type options struct {
 	strict       bool
 	sequential   bool
+	resource     string
 	schema       json.RawMessage
 	noValidation bool
 }
@@ -30,6 +31,12 @@ func WithStrict() Option { return func(o *options) { o.strict = true } }
 
 // WithSequential marks the tool [Sequential].
 func WithSequential() Option { return func(o *options) { o.sequential = true } }
+
+// WithResource names the shared state a call of the tool touches, so
+// [Executor] runs two calls of it one after the other while the rest of
+// the batch runs alongside; see [Resource]. An empty name is no
+// resource.
+func WithResource(name string) Option { return func(o *options) { o.resource = name } }
 
 // WithParameters replaces the reflected schema of a [New] tool with
 // schema. Arguments are then not validated before decoding, because the
@@ -97,6 +104,7 @@ func New[Args, Out any](name, description string, fn func(context.Context, Args)
 		tree:        tree,
 		strict:      o.strict,
 		sequential:  o.sequential,
+		resource:    o.resource,
 		fn:          fn,
 	}
 }
@@ -109,6 +117,7 @@ type typed[Args, Out any] struct {
 	tree        *Schema
 	strict      bool
 	sequential  bool
+	resource    string
 	fn          func(context.Context, Args) (Out, error)
 }
 
@@ -126,6 +135,9 @@ func (t *typed[Args, Out]) Strict() bool { return t.strict }
 
 // Sequential reports whether the tool runs alone.
 func (t *typed[Args, Out]) Sequential() bool { return t.sequential }
+
+// Resource reports the shared state a call touches.
+func (t *typed[Args, Out]) Resource() string { return t.resource }
 
 // Execute validates and decodes the arguments, calls the function and
 // converts the output.
@@ -215,4 +227,5 @@ var (
 	_ Tool       = (*typed[NoArgs, string])(nil)
 	_ Strict     = (*typed[NoArgs, string])(nil)
 	_ Sequential = (*typed[NoArgs, string])(nil)
+	_ Resource   = (*typed[NoArgs, string])(nil)
 )
