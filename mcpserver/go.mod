@@ -8,8 +8,8 @@ go 1.25.0
 // build it the way a consumer does and fail while a version named here
 // is too old.
 require (
-	github.com/ChristopherDavenport/agenttool v0.0.5
-	github.com/ChristopherDavenport/agenttool/mcpclient v0.0.5
+	github.com/ChristopherDavenport/agenttool v0.0.6
+	github.com/ChristopherDavenport/agenttool/mcpclient v0.0.6
 	github.com/ChristopherDavenport/openresponses v0.0.10
 	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0

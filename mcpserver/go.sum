@@ -1,7 +1,7 @@
-github.com/ChristopherDavenport/agenttool v0.0.5 h1:osZw54L1J3f/Awe94Se5XLCLWMIdd2+L1JTqfgnP0yo=
-github.com/ChristopherDavenport/agenttool v0.0.5/go.mod h1:ZwrMvxCq1LTtp0e2EgxYKJ3Nr3NJRpjVkGnEZSM6fO4=
-github.com/ChristopherDavenport/agenttool/mcpclient v0.0.5 h1:IA10CA06GY7LwmYvsw+VtnyG+KYmvP1//7GysXKsH9c=
-github.com/ChristopherDavenport/agenttool/mcpclient v0.0.5/go.mod h1:eTS5cmrEkhlIti8D+dArY4N2E5eSwij3a2dcmA8skds=
+github.com/ChristopherDavenport/agenttool v0.0.6 h1:PHkbo22Dk0qFUwUEmVFEb5MVRfOlqeXJGm2KjfUIp5A=
+github.com/ChristopherDavenport/agenttool v0.0.6/go.mod h1:ZwrMvxCq1LTtp0e2EgxYKJ3Nr3NJRpjVkGnEZSM6fO4=
+github.com/ChristopherDavenport/agenttool/mcpclient v0.0.6 h1:Dk5Vw1w1PEorjsRh+PDTdOS1NJQlSLcTbRAaCm7pjeU=
+github.com/ChristopherDavenport/agenttool/mcpclient v0.0.6/go.mod h1:jx93FwFVGG0ualVERR37y+HNZ7OCrbLjjrB6aR1cr1c=
 github.com/ChristopherDavenport/openresponses v0.0.10 h1:YMPn8vCiObyE9LKez6l84zpx9WWrRYtrINvIDtaGYRg=
 github.com/ChristopherDavenport/openresponses v0.0.10/go.mod h1:oZT6GCySXw3+vL5LzrJrRI5qagBumqvwDZdp6Kr++a8=
 github.com/golang-jwt/jwt/v5 v5.3.1 h1:kYf81DTWFe7t+1VvL7eS+jKFVWaUnK9cB1qbwn63YCY=
