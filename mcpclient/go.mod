@@ -8,7 +8,7 @@ go 1.25.0
 // consumer does and fail while the version named here is too old.
 require (
 	github.com/ChristopherDavenport/agenttool v0.0.5
-	github.com/ChristopherDavenport/openresponses v0.0.9
+	github.com/ChristopherDavenport/openresponses v0.0.10
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 )
 
