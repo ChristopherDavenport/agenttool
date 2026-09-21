@@ -369,3 +369,68 @@ func TestRoundTripAnnotations(t *testing.T) {
 		})
 	}
 }
+
+// TestSessionPerClient is the two-editor-windows case: one server, one
+// Tool value, two clients, and a tool that keeps a working directory
+// per client rather than one for the process.
+func TestSessionPerClient(t *testing.T) {
+	var mu sync.Mutex
+	cwd := map[*sdk.ServerSession]string{}
+	chdir := agenttool.New("cd", "change directory", func(ctx context.Context, a textArgs) (string, error) {
+		session, ok := SessionFrom(ctx)
+		if !ok {
+			return "", errors.New("no session on the call")
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if a.Text != "" {
+			cwd[session] = a.Text
+		}
+		return cwd[session] + " id=" + SessionID(ctx), nil
+	})
+	server := newServer(t, "shells", chdir)
+	first, second := roundTrip(t, server), roundTrip(t, server)
+
+	call := func(s *mcpclient.Remote, dir string) string {
+		t.Helper()
+		tl, ok := agenttool.Set(s.Tools()).Lookup("cd")
+		if !ok {
+			t.Fatal("cd missing")
+		}
+		args, _ := json.Marshal(textArgs{Text: dir})
+		res, err := tl.Execute(context.Background(), agenttool.Call{ID: "c", Args: args})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Output.Text
+	}
+	if got := call(first, "/work/a"); got != "/work/a id=" {
+		t.Errorf("first window = %q", got)
+	}
+	if got := call(second, "/work/b"); got != "/work/b id=" {
+		t.Errorf("second window = %q", got)
+	}
+	// The second window's cd did not move the first window's shell.
+	if got := call(first, ""); got != "/work/a id=" {
+		t.Errorf("first window after the second moved = %q", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(cwd) != 2 {
+		t.Errorf("sessions = %d, want one per client", len(cwd))
+	}
+}
+
+// TestSessionOutsideACall: a tool run directly sees no session, rather
+// than one it would have to guess at.
+func TestSessionOutsideACall(t *testing.T) {
+	if _, ok := SessionFrom(context.Background()); ok {
+		t.Error("a session outside an MCP call")
+	}
+	if id := SessionID(context.Background()); id != "" {
+		t.Errorf("session id = %q", id)
+	}
+	if _, ok := SessionFrom(ContextWithSession(context.Background(), nil)); ok {
+		t.Error("a nil session reported as present")
+	}
+}
