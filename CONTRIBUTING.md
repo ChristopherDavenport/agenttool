@@ -43,6 +43,12 @@ root API addition and the next root tag — a nested module that uses the
 new API cannot name a version that carries it until that version exists.
 That failure is the release ordering, not a bug; see below.
 
+`make no-replace` is what keeps `release-check` honest, and it *is* part
+of `check` and of CI. Re-adding a `replace` makes every other gate green
+again after one `make tidy` — including `release-check`, on a module no
+consumer can build — so the absence of one is asserted on every run
+rather than only at release.
+
 The adapters also have an interoperability run against the upstream
 implementations, the reference `server-everything` and the Inspector
 CLI, both started through `npx`:
@@ -92,7 +98,24 @@ because `go mod tidy` and the `GOWORK=off` build both resolve a sibling
 requirement from the proxy: `mcpclient` has to be published before
 `mcpserver` is bumped. A module is built the way a consumer builds it
 before its tag is written, and the release workflow runs `make
-release-check` again on the tag before publishing.
+release-check` again on the tag — scoped to that tag's module, since the
+others are still on the previous root at that commit.
+
+If a module fails partway, the tags already pushed stay valid and
+self-consistent; nothing has to be deleted. The failure will usually
+have left that module's `go.mod` and `go.sum` rewritten, so:
+
+```sh
+git checkout -- mcpserver                 # the module that failed
+make release-submodules VERSION=v0.1.0 RELEASE_SUBMODULES=mcpserver
+```
+
+Narrow `RELEASE_SUBMODULES`, never `SUBMODULES`: the first is the list to
+release, the second is the list of siblings to bump, and narrowing the
+second would tag `mcpserver` still requiring the old `mcpclient` —
+which `release-check` cannot catch, because the old `mcpclient`
+satisfies it. `release-submodules` refuses a `SUBMODULES` override for
+that reason.
 
 The release workflow publishes a GitHub release per tag, and the Go
 module proxy picks the versions up. Before v1.0.0 the API may change
