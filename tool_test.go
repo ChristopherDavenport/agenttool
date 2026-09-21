@@ -329,3 +329,42 @@ func TestCancellationIsTheInterrupt(t *testing.T) {
 		t.Errorf("close = %v, closes = %d", err, tool.closes)
 	}
 }
+
+// sandboxed is the shape both reference agents have: one shell tool
+// with an OS sandbox under it and a per-call argument that leaves it.
+type sandboxed struct{ bareTool }
+
+func (sandboxed) Name() string { return "bash" }
+
+func (sandboxed) Confined(_ context.Context, args json.RawMessage) (bool, string) {
+	var a struct {
+		Unsandboxed bool `json:"dangerously_disable_sandbox"`
+	}
+	_ = json.Unmarshal(args, &a)
+	if a.Unsandboxed {
+		return false, ""
+	}
+	return true, "seatbelt"
+}
+
+func TestConfinedBy(t *testing.T) {
+	cases := []struct {
+		name     string
+		tool     Tool
+		args     string
+		want     bool
+		wantWhat string
+	}{
+		{name: "a tool that does not say", tool: bareTool{}, args: `{}`},
+		{name: "confined", tool: sandboxed{}, args: `{"command":"ls"}`, want: true, wantWhat: "seatbelt"},
+		{name: "the call that leaves the sandbox", tool: sandboxed{}, args: `{"command":"ls","dangerously_disable_sandbox":true}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, what := ConfinedBy(context.Background(), tc.tool, json.RawMessage(tc.args))
+			if got != tc.want || what != tc.wantWhat {
+				t.Errorf("ConfinedBy = %v %q, want %v %q", got, what, tc.want, tc.wantWhat)
+			}
+		})
+	}
+}
