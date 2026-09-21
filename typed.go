@@ -21,6 +21,7 @@ type options struct {
 	strict       bool
 	sequential   bool
 	resource     string
+	annotations  Annotations
 	schema       json.RawMessage
 	noValidation bool
 }
@@ -37,6 +38,11 @@ func WithSequential() Option { return func(o *options) { o.sequential = true } }
 // the batch runs alongside; see [Resource]. An empty name is no
 // resource.
 func WithResource(name string) Option { return func(o *options) { o.resource = name } }
+
+// WithAnnotations sets the behavioural hints the tool carries; see
+// [Annotations], which a policy layer may read and must not trust
+// alone.
+func WithAnnotations(a Annotations) Option { return func(o *options) { o.annotations = a } }
 
 // WithParameters replaces the reflected schema of a [New] tool with
 // schema. Arguments are then not validated before decoding, because the
@@ -105,6 +111,7 @@ func New[Args, Out any](name, description string, fn func(context.Context, Args)
 		strict:      o.strict,
 		sequential:  o.sequential,
 		resource:    o.resource,
+		annotations: o.annotations,
 		fn:          fn,
 	}
 }
@@ -118,6 +125,7 @@ type typed[Args, Out any] struct {
 	strict      bool
 	sequential  bool
 	resource    string
+	annotations Annotations
 	fn          func(context.Context, Args) (Out, error)
 }
 
@@ -138,6 +146,9 @@ func (t *typed[Args, Out]) Sequential() bool { return t.sequential }
 
 // Resource reports the shared state a call touches.
 func (t *typed[Args, Out]) Resource() string { return t.resource }
+
+// Annotations reports the tool's behavioural hints.
+func (t *typed[Args, Out]) Annotations() Annotations { return t.annotations }
 
 // Execute validates and decodes the arguments, calls the function and
 // converts the output.
@@ -228,4 +239,5 @@ var (
 	_ Strict     = (*typed[NoArgs, string])(nil)
 	_ Sequential = (*typed[NoArgs, string])(nil)
 	_ Resource   = (*typed[NoArgs, string])(nil)
+	_ Annotated  = (*typed[NoArgs, string])(nil)
 )

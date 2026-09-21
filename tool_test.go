@@ -198,3 +198,49 @@ func TestNilRecorderRemoves(t *testing.T) {
 		t.Errorf("WriteRecord with a nil recorder = %v", err)
 	}
 }
+
+func TestAnnotations(t *testing.T) {
+	read := Annotations{Title: "Read a file", ReadOnly: true}
+	del := Annotations{Title: "Delete a repository", Destructive: true, OpenWorld: true}
+	cases := []struct {
+		name string
+		tool Tool
+		want Annotations
+	}{
+		{
+			name: "a tool that says nothing",
+			tool: New("plain", "", func(context.Context, NoArgs) (string, error) { return "", nil }),
+		},
+		{
+			name: "a typed tool",
+			tool: New("read", "", func(context.Context, NoArgs) (string, error) { return "", nil }, WithAnnotations(read)),
+			want: read,
+		},
+		{
+			name: "a raw tool",
+			tool: NewFunc("delete", "", nil, func(context.Context, Call) (Result, error) { return Result{}, nil }, WithAnnotations(del)),
+			want: del,
+		},
+		{
+			name: "a tool from elsewhere",
+			tool: bareTool{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := AnnotationsOf(tc.tool); got != tc.want {
+				t.Errorf("annotations = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// bareTool implements the contract and none of the optional interfaces.
+type bareTool struct{}
+
+func (bareTool) Name() string                { return "bare" }
+func (bareTool) Description() string         { return "" }
+func (bareTool) Parameters() json.RawMessage { return nil }
+func (bareTool) Execute(context.Context, Call) (Result, error) {
+	return Result{}, nil
+}

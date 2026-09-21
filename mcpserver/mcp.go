@@ -83,13 +83,29 @@ func AddTools(s *sdk.Server, tools ...agenttool.Tool) error {
 	return nil
 }
 
-// Definition builds the MCP tool definition for tl.
+// Definition builds the MCP tool definition for tl. A tool that carries
+// [agenttool.Annotations] serves them as MCP tool annotations, each
+// hint stated rather than left to MCP's defaults, so a tool consumed by
+// mcpclient and served again here keeps the hints it arrived with. A
+// tool that carries none serves none.
 func Definition(tl agenttool.Tool) *sdk.Tool {
 	schema := tl.Parameters()
 	if len(schema) == 0 {
 		schema = emptySchema
 	}
-	return &sdk.Tool{Name: tl.Name(), Description: tl.Description(), InputSchema: schema}
+	def := &sdk.Tool{Name: tl.Name(), Description: tl.Description(), InputSchema: schema}
+	if a := agenttool.AnnotationsOf(tl); a != (agenttool.Annotations{}) {
+		destructive, openWorld := a.Destructive, a.OpenWorld
+		def.Title = a.Title
+		def.Annotations = &sdk.ToolAnnotations{
+			Title:           a.Title,
+			ReadOnlyHint:    a.ReadOnly,
+			DestructiveHint: &destructive,
+			IdempotentHint:  a.Idempotent,
+			OpenWorldHint:   &openWorld,
+		}
+	}
+	return def
 }
 
 var callSeq atomic.Int64
