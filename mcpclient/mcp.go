@@ -24,12 +24,13 @@
 // snapshot is the old list: [Remote.Await] blocks until every
 // notification received so far is reflected, and a call that returns
 // after a notification was received waits for that refresh before
-// returning, so a tool that changes the tool list usually returns with
-// the new list in place. The SDK delivers a notification on its own
-// goroutine and a server may send it after the call's result, so that
-// is not a guarantee; a notification that arrives after the call has
-// returned is reflected after the next Await, and a consumer that must
-// see a change now calls Refresh. A refresh that fails leaves the
+// returning, so a tool that changes the tool list returns with the new
+// list in place. A server need not notify before it answers, and the
+// reference Go SDK does not, so a call whose list looks unchanged waits
+// [DefaultNotificationGrace] for a notification before returning; see
+// [WithNotificationGrace], which bounds or disables that wait. A
+// notification that arrives after all of it is reflected after the next
+// Await, and a consumer that must see a change now calls Refresh. A refresh that fails leaves the
 // snapshot as it was and reports through [WithRefreshError], or the
 // SDK logger when one is set; Await returns the same error until a
 // refresh succeeds.
@@ -56,6 +57,13 @@ import (
 // the call returns.
 const progressGrace = time.Second
 
+// DefaultNotificationGrace is how long a call waits for a
+// tool-list-changed notification the server has not sent yet; see
+// [WithNotificationGrace]. The reference Go SDK arms the notification on
+// a 10 ms timer after the change, so a tool that adds a tool returns
+// before it is sent.
+const DefaultNotificationGrace = 50 * time.Millisecond
+
 // Option configures [Connect].
 type Option func(*options)
 
@@ -63,6 +71,7 @@ type options struct {
 	prefix         string
 	sequential     map[string]bool
 	resources      map[string]string
+	grace          *time.Duration
 	client         sdk.Implementation
 	clientOpts     sdk.ClientOptions
 	onRefreshError func(error)
@@ -112,6 +121,25 @@ func WithResource(resource string, names ...string) Option {
 	}
 }
 
+// WithNotificationGrace bounds how long a call waits, after its result
+// has arrived, for a tool-list-changed notification the server may not
+// have sent yet, before returning. The default is
+// [DefaultNotificationGrace] and zero turns the wait off.
+//
+// A server does not have to notify before it answers, and the reference
+// Go SDK does not: it arms the notification on a 10 ms timer, so a tool
+// that adds a tool returns first and the notification follows, which
+// left the new tool out of the list the loop read for its next turn. The
+// grace is the cap and not the cost, since the wait ends as soon as the
+// notification lands, but a call that changes nothing waits the whole
+// window. It is skipped for a server that does not advertise
+// tools.listChanged and for a tool the server annotated read-only,
+// which cannot have changed the list without lying; a change missed
+// that way is reflected at the next [Remote.Await] as before.
+func WithNotificationGrace(d time.Duration) Option {
+	return func(o *options) { o.grace = &d }
+}
+
 // WithClientInfo sets the implementation name and version the client
 // announces during initialisation. The default is "agenttool".
 func WithClientInfo(name, version string) Option {
@@ -144,6 +172,17 @@ type Remote struct {
 	tools    []agenttool.Tool
 	progress map[string]func(agenttool.Result) // by progress token
 
+	// grace bounds the post-call wait for a notification and
+	// listChanged reports whether the server says it sends any. Both are
+	// set before the remote is returned and read-only after.
+	grace       time.Duration
+	listChanged bool
+
+	// notified is closed and replaced when a tool-list-changed
+	// notification arrives, so a call can wait for one that has not come
+	// yet. It is under mu.
+	notified chan struct{}
+
 	// seen counts tool-list-changed notifications as they arrive.
 	// settled is the count the snapshot reflects and settledErr the
 	// error of the refresh that settled it; settledCh is closed and
@@ -167,7 +206,10 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 	for _, opt := range opts {
 		opt(&o)
 	}
-	s := &Remote{opts: o, progress: make(map[string]func(agenttool.Result)), settledCh: make(chan struct{})}
+	s := &Remote{opts: o, progress: make(map[string]func(agenttool.Result)), settledCh: make(chan struct{}), notified: make(chan struct{}), grace: DefaultNotificationGrace}
+	if o.grace != nil {
+		s.grace = *o.grace
+	}
 
 	clientOpts := o.clientOpts
 	userToolsChanged := clientOpts.ToolListChangedHandler
@@ -176,6 +218,10 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 			userToolsChanged(ctx, req)
 		}
 		s.seen.Add(1)
+		s.mu.Lock()
+		close(s.notified)
+		s.notified = make(chan struct{})
+		s.mu.Unlock()
 		// The handler runs on the session's receive path; listing needs
 		// a round trip, so refresh off it.
 		go func() {
@@ -198,6 +244,9 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 		return nil, fmt.Errorf("mcp: connect: %w", err)
 	}
 	s.session = session
+	if res := session.InitializeResult(); res != nil && res.Capabilities != nil && res.Capabilities.Tools != nil {
+		s.listChanged = res.Capabilities.Tools.ListChanged
+	}
 	if err := s.Refresh(ctx); err != nil {
 		_ = session.Close()
 		return nil, err
@@ -326,6 +375,10 @@ func (s *Remote) wrap(t *sdk.Tool) (agenttool.Tool, error) {
 	}
 	remote := t.Name
 	name := s.Name(remote)
+	readOnly := false
+	if a, ok := AnnotationsOf(t); ok {
+		readOnly = a.ReadOnly
+	}
 	var opts []agenttool.Option
 	if s.opts.sequential[remote] || s.opts.sequential[name] {
 		opts = append(opts, agenttool.WithSequential())
@@ -339,7 +392,7 @@ func (s *Remote) wrap(t *sdk.Tool) (agenttool.Tool, error) {
 		opts = append(opts, agenttool.WithAnnotations(a))
 	}
 	return agenttool.NewFunc(name, t.Description, schema, func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
-		return s.call(ctx, remote, call)
+		return s.call(ctx, remote, readOnly, call)
 	}, opts...), nil
 }
 
@@ -378,7 +431,7 @@ func AnnotationsOf(t *sdk.Tool) (agenttool.Annotations, bool) {
 // delivered concurrently with, or just after, the result; the batch
 // executor in the tool package serialises them and drops anything after
 // completion.
-func (s *Remote) call(ctx context.Context, remote string, call agenttool.Call) (agenttool.Result, error) {
+func (s *Remote) call(ctx context.Context, remote string, readOnly bool, call agenttool.Call) (agenttool.Result, error) {
 	args := call.Args
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
@@ -403,6 +456,12 @@ func (s *Remote) call(ctx context.Context, remote string, call agenttool.Call) (
 	if err != nil {
 		return agenttool.Result{}, fmt.Errorf("mcp: call %q: %w", remote, err)
 	}
+	if s.seen.Load() == before && !readOnly {
+		// The server may notify after it answers, and the reference
+		// implementation does, so give the notification a moment to
+		// arrive before deciding the list is unchanged.
+		s.awaitNotification(ctx, before)
+	}
 	if s.seen.Load() != before {
 		// The list changed while this call ran, most likely because of
 		// it. Wait for the refresh so the caller's next Tools reads the
@@ -412,6 +471,32 @@ func (s *Remote) call(ctx context.Context, remote string, call agenttool.Call) (
 		_ = s.Await(ctx)
 	}
 	return ResultOf(res)
+}
+
+// awaitNotification waits up to the grace for a tool-list-changed
+// notification past target, and returns at once when the grace is off,
+// when the server advertises no tool-list-changed notification, or when
+// one has already arrived. It never fails a call: a notification that
+// does not come in time is reflected at the next [Remote.Await].
+func (s *Remote) awaitNotification(ctx context.Context, target int64) {
+	if s.grace <= 0 || !s.listChanged {
+		return
+	}
+	// The channel is taken before the counter is read, so a notification
+	// that lands between the two closes the channel this waits on.
+	s.mu.RLock()
+	notified := s.notified
+	s.mu.RUnlock()
+	if s.seen.Load() > target {
+		return
+	}
+	timer := time.NewTimer(s.grace)
+	defer timer.Stop()
+	select {
+	case <-notified:
+	case <-timer.C:
+	case <-ctx.Done():
+	}
 }
 
 // onProgress routes a progress notification to the call that asked for
