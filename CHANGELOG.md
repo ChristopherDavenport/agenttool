@@ -22,6 +22,21 @@ versions may break the API.
   `RecordOf` read of `Result.Details` at the end of a call is unchanged;
   a value written both ways is recorded under one namespace twice.
 
+- Serialising a tool against itself no longer costs the batch its
+  parallelism. A tool that owns shared state implements `Resource`, one
+  method naming it, or is built with `WithResource("shell:session")`,
+  and `Executor` runs the calls that name the same state one after the
+  other in the model's order while the rest of the batch runs alongside
+  them; `ResourceOf` reads it. `Sequential` keeps its meaning, "the
+  batch is the resource", and a tool that reports both is sequential.
+  `mcpclient.WithResource(resource, names...)` names the state of
+  remote tools, which carry none of their own. The executor's
+  scheduling is rewritten around this: a goroutine per chain of jobs
+  rather than per job, bounded by `MaxParallel` as before. Independent
+  jobs may now start in any order, which the documented completion
+  order already allowed; a serial batch is unchanged, in the model's
+  order from end to end.
+
 ## v0.0.5 - 2026-09-20
 
 - `Recordable` is implemented by a `Result.Details` value that is meant

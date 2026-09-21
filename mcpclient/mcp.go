@@ -57,6 +57,7 @@ type Option func(*options)
 type options struct {
 	prefix         string
 	sequential     map[string]bool
+	resources      map[string]string
 	client         sdk.Implementation
 	clientOpts     sdk.ClientOptions
 	onRefreshError func(error)
@@ -82,6 +83,26 @@ func WithSequential(names ...string) Option {
 		}
 		for _, n := range names {
 			o.sequential[n] = true
+		}
+	}
+}
+
+// WithResource names the shared state the named tools touch, so the
+// executor runs two calls of them one after the other and the rest of
+// the batch alongside; see [agenttool.Resource]. Names are matched
+// before and after prefixing, so either form works, and several tools
+// of one server named in one call share the state. It is what a remote
+// shell or container session needs, since a remote tool names no
+// resource of its own: MCP has no field for one.
+//
+//	mcpclient.WithResource("shell:session", "bash", "run_tests")
+func WithResource(resource string, names ...string) Option {
+	return func(o *options) {
+		if o.resources == nil {
+			o.resources = make(map[string]string, len(names))
+		}
+		for _, n := range names {
+			o.resources[n] = resource
 		}
 	}
 }
@@ -303,6 +324,11 @@ func (s *Remote) wrap(t *sdk.Tool) (agenttool.Tool, error) {
 	var opts []agenttool.Option
 	if s.opts.sequential[remote] || s.opts.sequential[name] {
 		opts = append(opts, agenttool.WithSequential())
+	}
+	if res, ok := s.opts.resources[remote]; ok {
+		opts = append(opts, agenttool.WithResource(res))
+	} else if res, ok := s.opts.resources[name]; ok {
+		opts = append(opts, agenttool.WithResource(res))
 	}
 	return agenttool.NewFunc(name, t.Description, schema, func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
 		return s.call(ctx, remote, call)

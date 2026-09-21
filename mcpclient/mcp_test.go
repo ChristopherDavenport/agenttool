@@ -133,17 +133,21 @@ func mustJSON(v any) string {
 	return string(b)
 }
 
-func TestPrefixAndSequential(t *testing.T) {
+func TestPrefixSequentialAndResource(t *testing.T) {
 	cases := []struct {
-		name       string
-		opts       []Option
-		wantName   string
-		sequential bool
+		name         string
+		opts         []Option
+		wantName     string
+		sequential   bool
+		wantResource string
 	}{
-		{"no prefix", nil, "upper", false},
-		{"prefix", []Option{WithPrefix("fs")}, "fs__upper", false},
-		{"sequential by remote name", []Option{WithPrefix("fs"), WithSequential("upper")}, "fs__upper", true},
-		{"sequential by local name", []Option{WithPrefix("fs"), WithSequential("fs__upper")}, "fs__upper", true},
+		{name: "no prefix", wantName: "upper"},
+		{name: "prefix", opts: []Option{WithPrefix("fs")}, wantName: "fs__upper"},
+		{name: "sequential by remote name", opts: []Option{WithPrefix("fs"), WithSequential("upper")}, wantName: "fs__upper", sequential: true},
+		{name: "sequential by local name", opts: []Option{WithPrefix("fs"), WithSequential("fs__upper")}, wantName: "fs__upper", sequential: true},
+		{name: "resource by remote name", opts: []Option{WithPrefix("fs"), WithResource("shell:session", "upper")}, wantName: "fs__upper", wantResource: "shell:session"},
+		{name: "resource by local name", opts: []Option{WithPrefix("fs"), WithResource("shell:session", "fs__upper")}, wantName: "fs__upper", wantResource: "shell:session"},
+		{name: "sequential wins over resource", opts: []Option{WithSequential("upper"), WithResource("shell:session", "upper")}, wantName: "upper", sequential: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -152,10 +156,25 @@ func TestPrefixAndSequential(t *testing.T) {
 			if agenttool.IsSequential(tl) != tc.sequential {
 				t.Errorf("sequential = %v, want %v", agenttool.IsSequential(tl), tc.sequential)
 			}
-			if agenttool.IsSequential(lookup(t, s, s.Name("image"))) {
-				t.Error("other tools should not be sequential")
+			if got := agenttool.ResourceOf(tl); got != tc.wantResource {
+				t.Errorf("resource = %q, want %q", got, tc.wantResource)
+			}
+			other := lookup(t, s, s.Name("image"))
+			if agenttool.IsSequential(other) || agenttool.ResourceOf(other) != "" {
+				t.Error("other tools should be neither sequential nor resourced")
 			}
 		})
+	}
+}
+
+// TestResourceSharedByTwoTools: two remote tools named in one call
+// share the state, so the executor never runs them together.
+func TestResourceSharedByTwoTools(t *testing.T) {
+	s := connect(t, newServer(t), WithResource("shell:session", "upper", "two_texts"))
+	for _, name := range []string{"upper", "two_texts"} {
+		if got := agenttool.ResourceOf(lookup(t, s, name)); got != "shell:session" {
+			t.Errorf("%s resource = %q", name, got)
+		}
 	}
 }
 

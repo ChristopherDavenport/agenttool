@@ -34,6 +34,8 @@ type Executor struct {
 	MaxParallel int
 	// Sequential forces every batch to run one job at a time in order.
 	// A batch containing a [Sequential] tool runs that way regardless.
+	// Serialising one tool against itself is [Resource], which costs the
+	// rest of the batch nothing.
 	Sequential bool
 	// Recorder, when set, is installed on every job's context with
 	// [ContextWithRecorder], so a tool that calls [WriteRecord] while it
@@ -53,6 +55,12 @@ type Executor struct {
 // the batch and waits for running tools to return. Each job's tool
 // finds its [Call] on the context with [CallFrom], and [Executor.Recorder]
 // on it with [RecorderFrom].
+//
+// Jobs whose tools name the same [Resource] run one after the other in
+// the model's order and alongside the rest of the batch; jobs that name
+// none run in parallel up to MaxParallel. A serial batch, from
+// [Executor.Sequential] or a [Sequential] tool, runs every job in the
+// model's order and ignores resources, since it is already stricter.
 func (e Executor) Execute(ctx context.Context, jobs []Job) iter.Seq[Event] {
 	return func(yield func(Event) bool) {
 		if len(jobs) == 0 {
@@ -89,27 +97,32 @@ func (e Executor) Execute(ctx context.Context, jobs []Job) iter.Seq[Event] {
 			}
 		}
 
-		go func() {
-			sem := make(chan struct{}, limit)
-			for i, job := range jobs {
-				select {
-				case sem <- struct{}{}:
-				case <-ctx.Done():
-					// A job that never started still completes, with the
-					// cancellation as its error, so the consumer sees one
-					// final event per job.
-					final(Event{Index: i, Final: true, Err: ctx.Err()})
-					continue
-				}
-				go func(i int, job Job) {
-					defer func() { <-sem }()
-					res, err := run(ctx, job, func(r Result) {
+		// One goroutine per chain: the jobs of a chain run one after the
+		// other in the model's order, chains run alongside each other,
+		// and the semaphore bounds the batch. A slot is held across the
+		// final send, so the next job of a chain starts once the
+		// consumer has taken the last one's result.
+		sem := make(chan struct{}, limit)
+		for _, chain := range chainsOf(jobs, limit) {
+			go func(chain []int) {
+				for _, i := range chain {
+					select {
+					case sem <- struct{}{}:
+					case <-ctx.Done():
+						// A job that never started still completes, with
+						// the cancellation as its error, so the consumer
+						// sees one final event per job.
+						final(Event{Index: i, Final: true, Err: ctx.Err()})
+						continue
+					}
+					res, err := run(ctx, jobs[i], func(r Result) {
 						progress(Event{Index: i, Result: r})
 					})
 					final(Event{Index: i, Final: true, Result: res, Err: err})
-				}(i, job)
-			}
-		}()
+					<-sem
+				}
+			}(chain)
+		}
 
 		stopped := false
 		finished := make([]bool, len(jobs))
@@ -174,6 +187,40 @@ func run(ctx context.Context, job Job, onUpdate func(Result)) (res Result, err e
 		return Result{}, err
 	}
 	return job.Tool.Execute(ctx, call)
+}
+
+// chainsOf groups the jobs of a batch into the sequences that must run
+// one after the other: every job when the batch is serial, the jobs of
+// each [Resource] together, and a chain of its own for every job that
+// names no resource. Order inside a chain is the model's, which is what
+// a tool that owns state is told it can rely on.
+func chainsOf(jobs []Job, limit int) [][]int {
+	if limit == 1 {
+		all := make([]int, len(jobs))
+		for i := range jobs {
+			all[i] = i
+		}
+		return [][]int{all}
+	}
+	chains := make([][]int, 0, len(jobs))
+	byResource := make(map[string]int) // resource -> index in chains
+	for i, job := range jobs {
+		res := ""
+		if job.Tool != nil {
+			res = ResourceOf(job.Tool)
+		}
+		if res == "" {
+			chains = append(chains, []int{i})
+			continue
+		}
+		if at, ok := byResource[res]; ok {
+			chains[at] = append(chains[at], i)
+			continue
+		}
+		byResource[res] = len(chains)
+		chains = append(chains, []int{i})
+	}
+	return chains
 }
 
 func anySequential(jobs []Job) bool {
