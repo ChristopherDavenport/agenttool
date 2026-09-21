@@ -5,7 +5,7 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
-## Unreleased
+## v0.0.6 - 2026-09-21
 
 - A tool can put a handle on the record before it finishes.
   `agenttool.WriteRecord(ctx, details)` writes a [Recordable] through
