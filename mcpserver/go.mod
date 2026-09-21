@@ -2,6 +2,11 @@ module github.com/ChristopherDavenport/agenttool/mcpserver
 
 go 1.25.0
 
+// The root and sibling requirements name the released versions a
+// consumer fetches. The workspace builds this module against the tree
+// instead; there are deliberately no replaces, so release-check can
+// build it the way a consumer does and fail while a version named here
+// is too old.
 require (
 	github.com/ChristopherDavenport/agenttool v0.0.5
 	github.com/ChristopherDavenport/agenttool/mcpclient v0.0.5
@@ -18,11 +23,4 @@ require (
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-)
-
-// The requires name released versions a consumer fetches; the replaces
-// build against the tree.
-replace (
-	github.com/ChristopherDavenport/agenttool => ../
-	github.com/ChristopherDavenport/agenttool/mcpclient => ../mcpclient
 )

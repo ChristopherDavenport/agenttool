@@ -24,8 +24,24 @@ make check        # gofmt, tidy, vet, deps, staticcheck, govulncheck, race tests
 The root module depends on `openresponses` and the standard library
 only; `make deps` fails if anything else creeps in. The MCP adapters are
 nested modules, `mcpclient` and `mcpserver`, listed under `SUBMODULES`
-in the Makefile. A bare `go test ./...` at the root does not cover
-them; the Makefile targets do.
+in the Makefile and joined to the root by `go.work`. A bare `go test
+./...` at the root does not cover them, even in workspace mode; the
+Makefile targets do. Workspace mode rejects `-mod=mod`, so a
+`GOFLAGS=-mod=mod` in your environment has to go.
+
+A nested module's `go.mod` requires released versions of the root and of
+any sibling, and carries no `replace`: the workspace is what builds it
+against the tree. That is deliberate. A `replace` is a property of the
+main module and consumers ignore it, so a nested module that carried one
+would build green here while shipping a `go.mod` that names versions
+without the API it uses. `make release-check` builds each nested module
+with `GOWORK=off`, against the versions its own `go.mod` requires, which
+is what a consumer gets.
+
+`release-check` is not part of `check`, and it fails by design between a
+root API addition and the next root tag — a nested module that uses the
+new API cannot name a version that carries it until that version exists.
+That failure is the release ordering, not a bug; see below.
 
 The adapters also have an interoperability run against the upstream
 implementations, the reference `server-everything` and the Inspector
@@ -48,20 +64,36 @@ regenerate them with `go test . -update` and review the diff.
 
 ## Releases
 
-Every module in the repository shares one version and is tagged at one
-commit. With the changelog's *Unreleased* section written:
+Every module in the repository shares one version, but not one commit.
+A nested module's requirement cannot name a tag that does not exist
+yet, so the root is released first and the nested modules follow. With
+the changelog's *Unreleased* section written:
 
 ```sh
-make release VERSION=v0.1.0
+make release-root VERSION=v0.1.0
 ```
 
-sets the root requirement in `mcpclient` and `mcpserver`, and the
-`mcpclient` requirement in `mcpserver`, to the version, dates the
-changelog, runs `make check`, commits, tags `v0.1.0`,
-`mcpclient/v0.1.0` and `mcpserver/v0.1.0` with the changelog section as
-the message, and pushes. The nested `go.mod` files require released
-versions next to `replace` directives to the tree, so consumers fetch
-the versions and the checkout builds against the working tree. The
-release workflow publishes a GitHub release per tag, and the Go module
-proxy picks the versions up. Before v1.0.0 the API may change between
-minor versions; the changelog records every break.
+dates the changelog, runs `make check`, commits, tags `v0.1.0` with the
+changelog section as the message, and pushes the branch and the tag.
+The nested modules still require the previous root release across this
+commit, which is correct: `v0.1.0` did not exist when it was written.
+
+Once that tag is on the module proxy:
+
+```sh
+make release-submodules VERSION=v0.1.0
+```
+
+walks `SUBMODULES` in order and, for each, sets its requirement on the
+root and on any already-released sibling to the version, tidies, builds
+and tests it with `GOWORK=off` against exactly those versions, commits,
+tags `<dir>/v0.1.0` and pushes. One commit and one tag per module,
+because `go mod tidy` and the `GOWORK=off` build both resolve a sibling
+requirement from the proxy: `mcpclient` has to be published before
+`mcpserver` is bumped. A module is built the way a consumer builds it
+before its tag is written, and the release workflow runs `make
+release-check` again on the tag before publishing.
+
+The release workflow publishes a GitHub release per tag, and the Go
+module proxy picks the versions up. Before v1.0.0 the API may change
+between minor versions; the changelog records every break.
