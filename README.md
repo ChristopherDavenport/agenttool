@@ -203,7 +203,11 @@ it has landed, and a call that returns after the notification arrived
 waits for it, so a tool that adds a tool usually returns with the list
 already current. `mcpserver` validates arguments against each tool's
 schema, maps outputs back to MCP content and forwards progress when
-the request carries a token. `make interop` checks both against the
+the request carries a token. One `Tool` value serves every client that
+connects, so the call's context carries the session it arrived on:
+`mcpserver.SessionFrom(ctx)` is what a tool holding a working
+directory, a container or a shell keys that state on, and two editor
+windows then get two shells instead of one. `make interop` checks both against the
 upstream reference server and the MCP Inspector over stdio.
 
 ## Development

@@ -14,6 +14,11 @@
 // No policy runs here. A loop's hooks around tool calls belong to
 // whoever hosts the loop, and this package hosts only tools; a caller
 // who wants a policy applies it to the tools before serving them.
+//
+// One server serves many clients and one Tool value serves them all, so
+// the call's context carries the session it arrived on: a tool that
+// owns anything per client, a working directory, a container or a
+// shell, keys it on [SessionFrom].
 package mcpserver
 
 import (
@@ -62,6 +67,10 @@ func NewServer(name, version string, tools ...agenttool.Tool) (*sdk.Server, erro
 // sets isError with the message as text so the calling model can see it
 // and retry.
 //
+// The call's context carries the MCP session it arrived on, which
+// [SessionFrom] returns, so one Tool value can serve two clients
+// without sharing what belongs to each.
+//
 // When the request carries a progress token, Call.OnUpdate forwards each
 // update as a progress notification whose message is the update's text.
 // An update whose Details is an agenttool.ProgressInfo supplies the
@@ -108,6 +117,41 @@ func Definition(tl agenttool.Tool) *sdk.Tool {
 	return def
 }
 
+type sessionKey struct{}
+
+// ContextWithSession returns ctx carrying the MCP session a call
+// arrived on. [Handler] does this for every call, so a tool reaches it
+// with [SessionFrom]; a host that runs a tool outside a server, in a
+// test or a direct call, can install one the same way.
+func ContextWithSession(ctx context.Context, session *sdk.ServerSession) context.Context {
+	return context.WithValue(ctx, sessionKey{}, session)
+}
+
+// SessionFrom returns the MCP session of the call on ctx. One Tool
+// value serves every client that connects, so a tool whose behaviour
+// belongs to a client, one holding a working directory, a container or
+// a shell, keys its state on the session: the pointer is unique to the
+// connection and is what a host maps to whatever it owns per client.
+// It reports false outside an MCP call, where a tool that needs a
+// session must say so rather than share one.
+func SessionFrom(ctx context.Context) (*sdk.ServerSession, bool) {
+	session, ok := ctx.Value(sessionKey{}).(*sdk.ServerSession)
+	return session, ok && session != nil
+}
+
+// SessionID returns the MCP session ID of the call on ctx, and "" when
+// there is no session or the transport has none. Only a transport that
+// negotiates session IDs, streamable HTTP, sets one; over stdio the
+// session is the process and the ID is empty, so a host that keys state
+// on a client uses [SessionFrom] and reads the ID for logs and records.
+func SessionID(ctx context.Context) string {
+	session, ok := SessionFrom(ctx)
+	if !ok {
+		return ""
+	}
+	return session.ID()
+}
+
 var callSeq atomic.Int64
 
 // Handler builds the SDK handler that runs tl. It fails when the tool's
@@ -124,6 +168,9 @@ func Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
 		}
 		if len(call.Args) == 0 {
 			call.Args = json.RawMessage("{}")
+		}
+		if req.Session != nil {
+			ctx = ContextWithSession(ctx, req.Session)
 		}
 		if err := validate(resolved, call.Args); err != nil {
 			return errorResult(err), nil

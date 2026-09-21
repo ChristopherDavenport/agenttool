@@ -22,6 +22,17 @@ versions may break the API.
   `RecordOf` read of `Result.Details` at the end of a call is unchanged;
   a value written both ways is recorded under one namespace twice.
 
+- `mcpserver` can tell one client from another. The call's context now
+  carries the MCP session it arrived on, read with
+  `mcpserver.SessionFrom(ctx)` or `mcpserver.SessionID(ctx)` and
+  installed by `ContextWithSession` for a call made outside a server.
+  One `Tool` value serves every client, so a tool that owns a working
+  directory, a container or a shell keys it on the session instead of
+  serving two clients one environment; the session ID is set only by a
+  transport that negotiates one, so a host maps the session itself.
+  `agenttool.Call` is unchanged, since a field there would oblige every
+  caller and adapter to fill it.
+
 - A tool carries MCP's behavioural hints. `Annotations` holds the
   title, read-only, destructive, idempotent and open-world hints; a
   tool implements `Annotated` or is built with `WithAnnotations`, and
