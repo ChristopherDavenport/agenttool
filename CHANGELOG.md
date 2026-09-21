@@ -5,6 +5,23 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- A tool can put a handle on the record before it finishes.
+  `agenttool.WriteRecord(ctx, details)` writes a [Recordable] through
+  the `RecordFunc` a harness installed with `ContextWithRecorder`, and
+  returns when the write is durable, so the process group a `bash` tool
+  just forked or the temporary directory it just made survives a kill
+  mid-call, where `Result.Details` read at the end of the call does
+  not. It is a no-op returning nil when no recorder is installed, so a
+  tool calls it unconditionally and a test installs nothing.
+  `Executor.Recorder` installs one for a whole batch, and every tool
+  the executor runs now finds its `Call` on the context with `CallFrom`,
+  not only a `New` one, so a recorder can name the call it is writing
+  for. `RecorderFrom` reports whether a recorder is installed. The
+  `RecordOf` read of `Result.Details` at the end of a call is unchanged;
+  a value written both ways is recorded under one namespace twice.
+
 ## v0.0.5 - 2026-09-20
 
 - `Recordable` is implemented by a `Result.Details` value that is meant

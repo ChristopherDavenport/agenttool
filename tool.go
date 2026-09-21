@@ -129,6 +129,68 @@ func RecordOf(details any) (*Record, error) {
 	return &Record{NS: ns, Data: data}, nil
 }
 
+// RecordFunc writes one record durably. A harness installs it with
+// [ContextWithRecorder] so that a tool can put a handle on the record
+// at the moment the side effect begins, rather than at the end of the
+// call, which is where [RecordOf] reads Result.Details. It is called
+// from the tool's goroutine, possibly more than once and possibly
+// concurrently with another call's, so an implementation must be safe
+// for concurrent use and must have written the record durably before it
+// returns; that is the whole point of the seam. The error it returns
+// reaches the tool, which decides whether a record it could not write
+// fails the call.
+//
+// The call the record belongs to is on the context: a recorder reads it
+// with [CallFrom], which [Executor] fills in for every tool it runs.
+type RecordFunc func(ctx context.Context, rec *Record) error
+
+type recorderKey struct{}
+
+// ContextWithRecorder returns ctx carrying fn as the recorder that
+// [WriteRecord] calls. A harness installs it around a tool call, per
+// call, so the record it writes can be filed beside that call; a nil fn
+// removes any recorder already on the context.
+func ContextWithRecorder(ctx context.Context, fn RecordFunc) context.Context {
+	return context.WithValue(ctx, recorderKey{}, fn)
+}
+
+// RecorderFrom returns the recorder on ctx, if any. A tool that would
+// spend real work building its details can ask first; [WriteRecord]
+// makes the same check.
+func RecorderFrom(ctx context.Context) (RecordFunc, bool) {
+	fn, ok := ctx.Value(recorderKey{}).(RecordFunc)
+	return fn, ok && fn != nil
+}
+
+// WriteRecord writes details to the record now, through the recorder on
+// ctx, and returns when the write is durable. It is what a tool calls
+// during Execute for the handle to something it has just started: a
+// process group after the fork, a temporary directory after the
+// mkdir, a remote job ID once the server has answered. A tool that is
+// killed mid-call leaves nothing behind otherwise, since Result.Details
+// is read only when the call ends, and that is the one case where the
+// handle is wanted.
+//
+// It is a no-op returning nil when no recorder is installed, so a tool
+// can call it unconditionally and tests need to install nothing. The
+// namespace and JSON are [RecordOf]'s, so a value written here and
+// returned again as Result.Details is recorded under one namespace
+// twice, the later write describing the call as it ended.
+func WriteRecord(ctx context.Context, details Recordable) error {
+	fn, ok := RecorderFrom(ctx)
+	if !ok || details == nil {
+		return nil
+	}
+	rec, err := RecordOf(details)
+	if err != nil {
+		return err
+	}
+	if rec == nil {
+		return nil
+	}
+	return fn(ctx, rec)
+}
+
 // Text builds a result whose output is a string.
 func Text(s string) Result {
 	return Result{Output: openresponses.FunctionCallOutputData{Text: s}}

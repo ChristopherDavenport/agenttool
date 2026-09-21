@@ -69,14 +69,59 @@ callback; `Result` carries the output the model sees, app-only
 and the output is ignored. `Details` that implement `Recordable`, one
 method naming a namespace, can be written to a session by a recorder
 that does not know their type: `RecordOf` gives the namespace and the
-value's JSON. Two optional interfaces refine a tool:
-`Sequential` forces a batch containing it to run one call at a time,
-and `Strict` marks its schema strict; `WithSequential()` and
-`WithStrict()` set them on a tool from `New` or `NewFunc`. `NewFunc`
-builds a tool from plain values and a raw function for schemas that
-come from elsewhere; `SchemaFor[T]()` gives the schema `New` would
-reflect; `Set` is a list with lookup; `Definition` produces the
-`openresponses.FunctionTool` for a request.
+value's JSON. Optional interfaces refine a tool: `Sequential` forces a
+batch containing it to run one call at a time, `Strict` marks its
+schema strict, and `WithSequential()` and `WithStrict()` set them on a
+tool from `New` or `NewFunc`. `NewFunc` builds a tool from plain values
+and a raw function for schemas that come from elsewhere; `SchemaFor[T]()`
+gives the schema `New` would reflect; `Set` is a list with lookup;
+`Definition` produces the `openresponses.FunctionTool` for a request.
+
+## A handle on the record before the call ends
+
+`Result.Details` is read when the call ends, so a tool that is killed
+while it runs leaves nothing behind, and that is the one case where a
+handle to what it started is wanted. A tool knows the moment the side
+effect begins, so it writes the handle then:
+
+```go
+var Bash = agenttool.New("bash", "Run a shell command",
+	func(ctx context.Context, a BashArgs) (string, error) {
+		cmd := exec.CommandContext(ctx, "bash", "-c", a.Command)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := cmd.Start(); err != nil {
+			return "", err
+		}
+		// Durable before the first byte of output: a daemon that comes
+		// back after a crash can reap the group.
+		if err := agenttool.WriteRecord(ctx, ProcessGroup{PGID: cmd.Process.Pid}); err != nil {
+			return "", err
+		}
+		return wait(cmd)
+	})
+
+type ProcessGroup struct {
+	PGID int `json:"pgid"`
+}
+
+func (ProcessGroup) RecordNS() string { return "shell:process-group" }
+```
+
+`WriteRecord` returns when the write is durable and is a no-op when no
+recorder is installed, so a tool calls it unconditionally and a test
+installs nothing. The harness puts the recorder on the context, either
+per call with `ContextWithRecorder` or once on the executor:
+
+```go
+exec := agenttool.Executor{Recorder: func(ctx context.Context, rec *agenttool.Record) error {
+	call, _ := agenttool.CallFrom(ctx) // which call this belongs to
+	return session.AppendCustom(ctx, rec.NS, call.ID, rec.Data)
+}}
+```
+
+The record a tool writes this way and the `Recordable` it returns as
+`Details` are the same namespace at two moments: what it started, and
+how it ended.
 
 ## A batch
 

@@ -35,6 +35,13 @@ type Executor struct {
 	// Sequential forces every batch to run one job at a time in order.
 	// A batch containing a [Sequential] tool runs that way regardless.
 	Sequential bool
+	// Recorder, when set, is installed on every job's context with
+	// [ContextWithRecorder], so a tool that calls [WriteRecord] while it
+	// runs reaches the host without the host threading a context per
+	// job. It is left unset by a caller that has no record to write, and
+	// a recorder already on the context passed to [Executor.Execute] is
+	// then used as it is.
+	Recorder RecordFunc
 }
 
 // Execute runs jobs and yields their events from the caller's
@@ -43,7 +50,9 @@ type Executor struct {
 // non-final events; the executor installs its own OnUpdate and chains
 // to the one on the job, if any, from the yielding goroutine. A tool
 // that panics completes with an error. Breaking out of the loop cancels
-// the batch and waits for running tools to return.
+// the batch and waits for running tools to return. Each job's tool
+// finds its [Call] on the context with [CallFrom], and [Executor.Recorder]
+// on it with [RecorderFrom].
 func (e Executor) Execute(ctx context.Context, jobs []Job) iter.Seq[Event] {
 	return func(yield func(Event) bool) {
 		if len(jobs) == 0 {
@@ -57,6 +66,9 @@ func (e Executor) Execute(ctx context.Context, jobs []Job) iter.Seq[Event] {
 			limit = 1
 		}
 
+		if e.Recorder != nil {
+			ctx = ContextWithRecorder(ctx, e.Recorder)
+		}
 		ctx, cancel := context.WithCancel(ctx)
 		// Cancelling on the way out is what releases a progress sender
 		// still blocked after the consumer has left: a remote tool may
@@ -154,6 +166,10 @@ func run(ctx context.Context, job Job, onUpdate func(Result)) (res Result, err e
 	}()
 	call := job.Call
 	call.OnUpdate = onUpdate
+	// Every tool the executor runs finds its call on the context, not
+	// only a [New] one, so a tool built by [NewFunc] and a recorder
+	// installed for the batch can both name the call they are serving.
+	ctx = WithCall(ctx, call)
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}

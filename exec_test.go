@@ -196,3 +196,91 @@ func TestExecuteLateProgressIsDropped(t *testing.T) {
 		t.Errorf("updates = %d", updates)
 	}
 }
+
+// TestExecuteRecorderReachesTheTool covers the durable-record seam from
+// the executor's side: the recorder is installed for every job, it runs
+// while the tool is still in Execute, which is the case a tool killed
+// mid-call has to survive, and it can name the call it writes for.
+func TestExecuteRecorderReachesTheTool(t *testing.T) {
+	type written struct {
+		callID string
+		ns     string
+		data   string
+	}
+	var mu sync.Mutex
+	var got []written
+	recorded := make(chan struct{})
+	proceed := make(chan struct{})
+
+	recording := New("recording", "", func(ctx context.Context, _ NoArgs) (string, error) {
+		if err := WriteRecord(ctx, handle{PGID: 4242}); err != nil {
+			return "", err
+		}
+		<-proceed // the record is durable before the call can end
+		return "done", nil
+	})
+	plain := NewFunc("plain", "", nil, func(ctx context.Context, c Call) (Result, error) {
+		if _, ok := CallFrom(ctx); !ok {
+			return Result{}, errors.New("no call on the context")
+		}
+		return Text("plain"), nil
+	})
+
+	exec := Executor{Recorder: func(ctx context.Context, rec *Record) error {
+		call, _ := CallFrom(ctx)
+		mu.Lock()
+		got = append(got, written{callID: call.ID, ns: rec.NS, data: string(rec.Data)})
+		mu.Unlock()
+		close(recorded)
+		return nil
+	}}
+	jobs := []Job{
+		{Tool: recording, Call: Call{ID: "call_1"}},
+		{Tool: plain, Call: Call{ID: "call_2"}},
+	}
+	done := make(chan []Result, 1)
+	go func() {
+		results, errs := exec.Results(context.Background(), jobs)
+		for i, err := range errs {
+			if err != nil {
+				t.Errorf("errs[%d] = %v", i, err)
+			}
+		}
+		done <- results
+	}()
+	select {
+	case <-recorded:
+	case <-time.After(5 * time.Second):
+		t.Fatal("nothing recorded while the tool ran")
+	}
+	close(proceed)
+	results := <-done
+	if results[0].Output.Text != "done" || results[1].Output.Text != "plain" {
+		t.Errorf("results = %+v", results)
+	}
+	want := written{callID: "call_1", ns: "shell:process-group", data: `{"pgid":4242}`}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("records = %+v, want [%+v]", got, want)
+	}
+}
+
+// TestExecuteKeepsAnInstalledRecorder: an executor with no recorder of
+// its own leaves the caller's on the context.
+func TestExecuteKeepsAnInstalledRecorder(t *testing.T) {
+	var calls atomic.Int64
+	ctx := ContextWithRecorder(context.Background(), func(context.Context, *Record) error {
+		calls.Add(1)
+		return nil
+	})
+	tool := New("t", "", func(ctx context.Context, _ NoArgs) (string, error) {
+		return "ok", WriteRecord(ctx, handle{PGID: 1})
+	})
+	if _, errs := (Executor{}).Results(ctx, []Job{{Tool: tool, Call: Call{ID: "c"}}}); errs[0] != nil {
+		t.Fatalf("err = %v", errs[0])
+	}
+	if calls.Load() != 1 {
+		t.Errorf("recorder calls = %d, want 1", calls.Load())
+	}
+}
