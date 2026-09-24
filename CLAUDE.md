@@ -22,6 +22,7 @@ nested modules so it never enters the root's dependency graph.
 
 ```sh
 make check      # fmt, tidiness, vet, deps, replaces, staticcheck, govulncheck, race tests
+make extracted  # build, vet and test each nested module as a consumer gets it; network
 make interop    # MCP interop tests, opt-in
 make release VERSION=vX.Y.Z   # the whole release; see below before running it
 ```
@@ -67,6 +68,14 @@ build are now the same code. `make check` builds each nested module
 against the root in the tree; a consumer builds it against root vX.Y.Z,
 which is that same tree at the tagged commit. Nothing can drift between
 them, so nothing needs a gate to catch the drift.
+
+It holds while the release process is followed, and what enforces it is
+a comparison of version strings: `versions.sh check` reads the requires
+and compares them to the version being tagged. Nothing compiles the pair.
+`make extracted` is the part that compiles — it builds each nested module
+with the replaces dropped, so the require line is resolved from the proxy
+the way a consumer resolves it. Point a nested module at an older root
+and the version checks stay silent while that build fails.
 
 ### Why the `replace` directives are load-bearing
 
