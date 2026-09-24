@@ -5,6 +5,23 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- The nested modules now require the root, and each other, at exactly
+  the version they are released at rather than at the previous release,
+  and carry a `replace` pointing at the tree. Taking `mcpserver` alone
+  now resolves the root and `mcpclient` commits it was built and tested
+  against. Consumers ignore a `replace` in a dependency, so only the
+  `require` reaches them.
+- `mcpclient/go.sum` and `mcpserver/go.sum` no longer carry first-party
+  entries, because `go mod tidy` no longer resolves a first-party module
+  from the proxy. Two of those entries were wrong: `mcpserver/go.sum`
+  recorded hashes for `agenttool v0.0.6` and `mcpclient v0.0.6` that
+  `sum.golang.org` never served, so building in `mcpserver` outside the
+  workspace failed with a checksum `SECURITY ERROR` on a cold module
+  cache. Consumers were unaffected — a dependency's `go.sum` is not
+  consulted — and the entries are now gone rather than corrected.
+
 ## v0.0.6 - 2026-09-21
 
 - A tool can put a handle on the record before it finishes.
