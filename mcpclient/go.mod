@@ -7,7 +7,7 @@ go 1.25.0
 // deliberately no replace, so release-check can build it the way a
 // consumer does and fail while the version named here is too old.
 require (
-	github.com/ChristopherDavenport/agenttool v0.0.6
+	github.com/ChristopherDavenport/agenttool v0.0.7
 	github.com/ChristopherDavenport/openresponses v0.0.12
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 )
