@@ -7,6 +7,8 @@ versions may break the API.
 
 ## Unreleased
 
+- Requires `openresponses` v0.0.12, up from v0.0.10.
+
 - The nested modules now require the root, and each other, at exactly
   the version they are released at rather than at the previous release,
   and carry a `replace` pointing at the tree. Taking `mcpserver` alone
