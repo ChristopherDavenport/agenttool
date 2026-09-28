@@ -25,9 +25,11 @@ import (
 //
 // The wrapper reports each property through the same reader a harness
 // uses, so a property t does not declare reads as its default, which
-// is what t reports too. It implements [io.Closer] and closes t when t
-// is one, and does nothing otherwise. [Unwrap] returns t. A nil exec
-// panics, like a nil function in [NewFunc].
+// is what t reports too. Closer is presence rather than a value, so
+// the wrapper implements [io.Closer] exactly when t does, and its
+// Close closes t; a wrapper around a tool that owns nothing owns
+// nothing. [Unwrap] returns t. A nil exec panics, like a nil function
+// in [NewFunc].
 func Wrap(t Tool, exec func(ctx context.Context, call Call) (Result, error)) Tool {
 	if t == nil {
 		panic("agenttool.Wrap: nil tool")
@@ -35,18 +37,24 @@ func Wrap(t Tool, exec func(ctx context.Context, call Call) (Result, error)) Too
 	if exec == nil {
 		panic(fmt.Sprintf("agenttool.Wrap(%q): nil function", t.Name()))
 	}
-	return &wrapped{Tool: t, exec: exec}
+	w := &wrapped{Tool: t, exec: exec}
+	if c, ok := t.(io.Closer); ok {
+		return &wrappedCloser{wrapped: w, closer: c}
+	}
+	return w
 }
 
 // Unwrap returns the tool t was built around by [Wrap], and nil when t
 // is not a wrapper. A host that needs the concrete tool behind a chain
 // of wrappers calls it until it returns nil.
 func Unwrap(t Tool) Tool {
-	w, ok := t.(*wrapped)
-	if !ok {
-		return nil
+	switch w := t.(type) {
+	case *wrapped:
+		return w.Tool
+	case *wrappedCloser:
+		return w.Tool
 	}
-	return w.Tool
+	return nil
 }
 
 // wrapped forwards every optional interface to the tool it embeds. Each
@@ -80,13 +88,15 @@ func (w *wrapped) Confined(ctx context.Context, args json.RawMessage) (bool, str
 	return ConfinedBy(ctx, w.Tool, args)
 }
 
-func (w *wrapped) Close() error {
-	c, ok := w.Tool.(io.Closer)
-	if !ok {
-		return nil
-	}
-	return c.Close()
+// wrappedCloser is the wrapper around a tool that is an [io.Closer], so
+// that closing the wrapper closes the tool and a wrapper around a tool
+// that owns nothing is not a closer.
+type wrappedCloser struct {
+	*wrapped
+	closer io.Closer
 }
+
+func (w *wrappedCloser) Close() error { return w.closer.Close() }
 
 var (
 	_ Tool       = (*wrapped)(nil)
@@ -95,5 +105,6 @@ var (
 	_ Resource   = (*wrapped)(nil)
 	_ Annotated  = (*wrapped)(nil)
 	_ Confined   = (*wrapped)(nil)
-	_ io.Closer  = (*wrapped)(nil)
+	_ Tool       = (*wrappedCloser)(nil)
+	_ io.Closer  = (*wrappedCloser)(nil)
 )

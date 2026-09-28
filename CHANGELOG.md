@@ -60,8 +60,10 @@ versions may break the API.
   tool that runs `exec` in place of `t.Execute` and is `t` in every
   other way: name, description, parameters, and every optional
   interface `t` declares, `Strict`, `Sequential`, `Resource`,
-  `Annotated`, `Confined` and `io.Closer`, each answered through the
-  package's own reader so a property `t` lacks reads as its default.
+  `Annotated` and `Confined`, each answered through the package's own
+  reader so a property `t` lacks reads as its default, and `io.Closer`
+  exactly when `t` is one, since closer is presence and a wrapper
+  around a tool that owns nothing owns nothing.
   Embedding `Tool` in a struct forwards the four methods alone and
   silently drops the rest, so a wrapped `bash` that was `Sequential`
   ran in a parallel batch and nothing failed; the set of optional

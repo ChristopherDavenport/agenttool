@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"reflect"
 	"strings"
@@ -40,7 +41,9 @@ func (e *everythingTool) Close() error { e.closed++; return nil }
 // correct when each answers the same for it as for the tool it wraps.
 func readers(ctx context.Context, t Tool) map[string]any {
 	confined, by := ConfinedBy(ctx, t, json.RawMessage(`{"sandbox":true}`))
+	_, closer := t.(io.Closer)
 	return map[string]any{
+		"closer":      closer,
 		"name":        t.Name(),
 		"description": t.Description(),
 		"parameters":  string(t.Parameters()),
@@ -95,8 +98,11 @@ func TestWrapOfPlainToolReportsDefaults(t *testing.T) {
 	if got, want := readers(ctx, w), readers(ctx, inner); !reflect.DeepEqual(got, want) {
 		t.Errorf("wrapper reads differently from the tool\n got: %v\nwant: %v", got, want)
 	}
+	if _, ok := w.(io.Closer); ok {
+		t.Error("a wrapper around a tool that owns nothing should not be a closer")
+	}
 	if err := (Set{w}).Close(); err != nil {
-		t.Errorf("Close of a wrapper around a non-closer: %v", err)
+		t.Errorf("Close of a set holding the wrapper: %v", err)
 	}
 }
 
