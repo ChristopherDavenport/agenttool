@@ -65,7 +65,10 @@ type Executor struct {
 	// job in a serial batch, and nothing else. Jobs start concurrently,
 	// so it must be safe to call concurrently. It is not called for a
 	// job cancelled before its turn, which completes with the
-	// cancellation as its error.
+	// cancellation as its error. The job it receives is the job as the
+	// tool will see it, its Call.OnUpdate the executor's own forwarder,
+	// so an update sent from here reaches the consumer as progress
+	// before the tool has run.
 	OnStart func(ctx context.Context, job Job) error
 }
 
