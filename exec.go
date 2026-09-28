@@ -61,6 +61,9 @@ type Executor struct {
 // none run in parallel up to MaxParallel. A serial batch, from
 // [Executor.Sequential] or a [Sequential] tool, runs every job in the
 // model's order and ignores resources, since it is already stricter.
+// Both orderings are within the batch given here: two Execute calls,
+// in one executor or two, order nothing against each other, so a tool
+// whose state outlives a batch guards it itself.
 func (e Executor) Execute(ctx context.Context, jobs []Job) iter.Seq[Event] {
 	return func(yield func(Event) bool) {
 		if len(jobs) == 0 {

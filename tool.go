@@ -227,12 +227,23 @@ type Sequential interface {
 }
 
 // Resource is implemented by a tool that owns shared state, naming it,
-// so that [Executor] runs two calls that touch the same state one after
-// the other, in the model's order, while everything else in the batch
-// runs alongside them. The name is free-form and "<kind>:<id>" by
-// convention, "shell:session" or "container:47"; two tools that return
-// the same name share the lock, which is how a shell tool and a tool
-// that restarts that shell stay apart.
+// so that [Executor] runs two calls of one batch that touch the same
+// state one after the other, in the model's order, while everything
+// else in the batch runs alongside them. The name is free-form and
+// "<kind>:<id>" by convention, "shell:session" or "container:47"; two
+// tools that return the same name share the lock, which is how a shell
+// tool and a tool that restarts that shell stay apart.
+//
+// The scope is one batch. The executor sees one batch at a time and
+// orders nothing across two: a call in a sub-agent's batch, which runs
+// under the parent call and alongside the rest of the parent's batch,
+// or a call in a concurrent run over the same workspace, is not held
+// off by this. A tool whose state outlives a batch, a persistent shell,
+// a container, a pool, guards that state itself, with a mutex around
+// the command or by answering the second call with "the previous
+// command is still running", and declares a resource as well so that
+// within a batch the model's order holds. A tool that pools, and can
+// serve two calls at once, declares nothing.
 //
 // It is the answer for a tool that must not run twice at once, and
 // [Sequential] is the answer for a tool that must not run while

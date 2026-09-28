@@ -235,6 +235,28 @@ and the tool that restarts that shell stay apart, and
 tool, since MCP has no field for one. Whether the second call waits or
 is refused stays the tool's choice.
 
+The scope of both is one batch. The executor sees one batch at a time,
+so a `bash` in a sub-agent's batch, which runs under the parent call
+and alongside the rest of the parent's batch, or a `bash` in a second
+run over the same container, is not held off by the parent's. A tool
+whose state outlives a batch guards it itself, with a mutex around the
+command or by telling the model the previous one is still running, and
+names a resource as well so that within a batch the model's order
+holds:
+
+```go
+func (s *Shell) Execute(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
+	if !s.mu.TryLock() {
+		return agenttool.Result{}, errors.New("the previous command is still running")
+	}
+	defer s.mu.Unlock()
+	return s.run(ctx, call)
+}
+```
+
+The refusal is an error, not text, so the model sees it as one and
+retries rather than reading it as the command's answer.
+
 A tool that panics completes with a
 `PanicError` whose message is one line; the stack is on the value for
 `errors.As`. `Results` is the shortcut when progress is not needed. A

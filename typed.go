@@ -36,9 +36,10 @@ func WithStrict() Option { return func(o *options) { o.strict = true } }
 func WithSequential() Option { return func(o *options) { o.sequential = true } }
 
 // WithResource names the shared state a call of the tool touches, so
-// [Executor] runs two calls of it one after the other while the rest of
-// the batch runs alongside; see [Resource]. An empty name is no
-// resource.
+// [Executor] runs two calls of it in one batch one after the other
+// while the rest of the batch runs alongside; see [Resource], including
+// what a tool whose state outlives a batch owes itself. An empty name
+// is no resource.
 func WithResource(name string) Option { return func(o *options) { o.resource = name } }
 
 // WithAnnotations sets the behavioural hints the tool carries; see

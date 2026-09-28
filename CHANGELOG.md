@@ -72,6 +72,19 @@ versions may break the API.
   reads the package's exported interfaces and refuses one `Wrap` does
   not forward. `Unwrap(t)` returns the wrapped tool, or nil.
 
+- `Resource` says what it covers. Its doc said the executor runs two
+  calls that touch the same state one after the other, and the
+  guarantee is two calls *of one batch*: the executor sees one batch at
+  a time, so a `bash` in a sub-agent's batch, which runs under the
+  parent call and alongside the parent's batch, or a `bash` in a
+  concurrent run over one container, overlapped the parent's and one
+  `cd` was lost with no error. The doc on `Resource`, `WithResource`
+  and `Executor.Execute` now states the scope, says that a tool whose
+  state outlives a batch guards it itself and names a resource as well
+  so the model's order holds within one, and the README shows the
+  shell that does. Whether the executor should hold a lock across
+  batches is an open question in RFC 0001. No behaviour changes.
+
 ## v0.0.7 - 2026-09-23
 
 - Requires `openresponses` v0.0.12, up from v0.0.10.
