@@ -1,6 +1,6 @@
 # RFC 0001: Agent Tool Contract
 
-Status: draft 0.1
+Status: draft 0.2
 Author: Christopher Davenport
 Discussion: to be opened against this repository. The Go module at its
 root is the reference binding; agentturn is the reference harness.
@@ -546,11 +546,158 @@ as content.
 
 ## Schema generation
 
-Reserved. Draft 0.2 specifies the shape of a generated schema, the
-strict rules as schema rules rather than reflection rules, and the
-fixture corpus in `testdata/schema` with a manifest that describes each
-fixture's argument shape without Go (#27). Until then the Go binding's
-output, pinned by those goldens, is the reference.
+A binding that builds a tool from a typed function generates the
+parameters schema from the argument type. That schema is the
+definition's largest member, it goes into the definition hash, and
+agenteval's strict replay compares that hash across runs, so a second
+implementation that generates a different but equivalent schema for
+the same shape breaks every hash it touches. This section states what
+a generated schema looks like in terms of the *shape* it was generated
+from, so that two generators built separately agree byte for byte, and
+the fixture corpus in `testdata/schema` is described the same way.
+
+### The argument shape
+
+An **argument shape** is an ordered list of fields. A field has:
+
+- a `name`, the property name as it appears in the arguments object;
+- a `type`, from the table below;
+- optionally a `description`;
+- optionally an `enum`, a list of JSON values of the field's type,
+  in the order they were declared;
+- `optional`, true when the caller may leave the field out;
+- `nullable`, true when the caller may send `null` for it.
+
+A type is one of:
+
+| Type | Schema |
+| --- | --- |
+| `boolean` | `{"type":"boolean"}` |
+| `integer` | `{"type":"integer"}` |
+| `number` | `{"type":"number"}` |
+| `string` | `{"type":"string"}`, with `"format":"date-time"` when the shape says so |
+| `any` | `{}`, which admits every value |
+| array of T | `{"type":"array","items":<T>}` |
+| map of T | `{"type":"object","additionalProperties":<T>}`; rejected in strict mode |
+| object with fields | an object schema as below |
+
+An argument shape may not contain itself, at any depth: a recursive
+shape is rejected, since a schema with no `$ref` cannot express it.
+
+### The generated schema
+
+An object schema is emitted for the root shape and for every object
+field. It always carries `type`, `properties` and `required`, even when
+the last two are empty, so a tool with no arguments has the schema
+`{"type":"object","properties":{},"required":[]}`. Its properties are
+the shape's fields, in field order, each mapped as its type says with
+`description`, `format` and `enum` added when present.
+
+The members of any generated schema object appear in this order, and
+no others appear:
+
+```
+type, description, format, enum, properties, required, items, additionalProperties
+```
+
+That order is for a reader of the request. RFC 8785 sorts members, so
+the definition hash does not see it. The hash does see array order,
+and the three arrays a generator emits are fixed as follows:
+
+- `required` lists property names in **field order**.
+- `enum` lists values in **declaration order**, as the JSON values they
+  are: `[1, 2, 3]` for integers, `["low","medium","high"]` for strings.
+- A type union is `[<type>, "null"]`, the type first and `"null"`
+  second, and is emitted only under the strict rules.
+
+**Outside strict mode**:
+
+- `required` holds the fields that are not `optional`.
+- Nullability is not expressed. A nullable field's schema is its
+  type's, and a caller sending `null` for it is outside the schema.
+  Nothing more is emitted for it, because outside strict mode the
+  field is also optional and leaving it out is what a caller does.
+- `additionalProperties` is omitted from every object, so unknown
+  properties are allowed and a binding ignores them.
+- A map is an object with `additionalProperties` and neither
+  `properties` nor `required`.
+
+**Under strict mode** (`"strict": true` on the definition):
+
+- `required` holds **every** field, in field order, `optional` or not.
+- A `nullable` field's type is the union `[<type>, "null"]`. A
+  nullable `any` stays `{}`, which already admits `null`. Its `enum`,
+  when it has one, lists the non-null values, and `null` is admitted by
+  the type alone.
+- `additionalProperties` is `false` on **every** object, the root and
+  each nested one.
+- A map is rejected, because strict mode cannot express an object
+  with unknown keys.
+
+A field that is `optional` and not `nullable` is therefore required
+under strict mode with no way to send "absent". That is the current
+rule and a binding MUST follow it; whether it should change is an open
+question below.
+
+### Validation against a generated schema
+
+A binding that generated a schema validates arguments against it
+before decoding them; the [Arguments](#arguments) section gives the
+error form. The checks are the ones the generated schema can express:
+the type, the enum, the required properties, `additionalProperties`
+when false, and the items and properties recursively. A `{}` accepts
+anything. An `integer` accepts a JSON number with no fractional part.
+A `null` is accepted where the type union says so, and where the
+schema is `{}`.
+
+### The Go source mapping
+
+The reference binding reads the argument shape from a Go struct:
+
+| Go | Shape |
+| --- | --- |
+| exported field | a field named by its `json` tag, or the Go name without one; `json:"-"` is skipped |
+| `desc` tag | `description` |
+| `enum` tag, comma separated | `enum`, parsed as the field's kind |
+| `omitempty` or `omitzero` in the tag, or a pointer | `optional` |
+| a pointer | `nullable` |
+| `bool` | `boolean` |
+| the integer kinds, `time.Duration` included | `integer` |
+| `float32`, `float64` | `number` |
+| `string`, `[]byte`, a type implementing `encoding.TextMarshaler` | `string` |
+| `time.Time` | `string` with `format` `date-time` |
+| `json.RawMessage`, an interface, a non-pointer type implementing `json.Marshaler` | `any` |
+| a slice or array of T | array of T |
+| a map with string keys | map of T; a non-string key is rejected |
+| a struct | object |
+| an embedded struct | its fields promoted in place, under encoding/json's rules: the shallowest wins, a tagged one wins among equals, and a tie is dropped |
+
+Everything not in the table is rejected, so a shape the binding cannot
+express fails at registration rather than at call time. An argument
+type that implements `Schemer` supplies its own schema, which is served
+verbatim and not validated by the binding, since the binding cannot
+know what it promises.
+
+### The fixture corpus
+
+`testdata/schema/` holds one golden file per fixture, pretty-printed
+with two-space indentation, and `manifest.json` describes each
+fixture's argument shape in the terms of this section, so the corpus
+can be regenerated by any implementation. Each entry has:
+
+- `name`, which is also the golden file's base name;
+- `strict`, whether the strict rules apply;
+- `source`, a note on the Go declaration the fixture came from, for a
+  reader of the reference binding; it is informative;
+- either `fields`, the argument shape, or `supplied`, a schema the
+  type supplies itself, which the golden is verbatim.
+
+A field is `{"name", "type", "description"?, "enum"?, "optional"?,
+"nullable"?}` with `items`, `values` or `fields` beside `type` for an
+array, a map or an object, and `format` beside a string. The reference
+binding's test suite interprets the manifest with the rules above and
+requires the result to equal each golden, so the manifest, the rules
+and the generator are held to one another.
 
 ## Conformance
 
@@ -578,8 +725,10 @@ batch and waits for them; and closes nothing that the host built.
 **A conforming adapter** maps each row of its binding table and adds
 nothing the contract cannot express.
 
-The fixture corpus for schema generation is `testdata/schema`, whose
-manifest arrives with draft 0.2.
+**A conforming schema generator** produces, for every fixture in
+`testdata/schema/manifest.json`, the bytes of that fixture's golden
+file after canonicalisation, and rejects the shapes the
+[schema section](#schema-generation) says to reject.
 
 ## Versioning
 
@@ -634,3 +783,21 @@ module and is listed in the changelog as one.
   JSON object is done by agentturn before the executor and by
   mcpserver before the handler. Whether the executor should do it, so
   a tool run any other way gets the same guard, is open.
+- **Optional fields under strict mode.** A field that is optional but
+  not nullable, a Go `int` with `omitempty`, is required under strict
+  mode with no way to send "absent", so the model must always supply
+  it. The provider's guidance is to express an optional field as a
+  union with `null`. Widening every optional field to nullable under
+  strict mode would follow that guidance and change every strict
+  schema's hash, so it is a draft change rather than a fix.
+
+## Changes since 0.1
+
+- The schema section is written. It defines the argument shape a
+  generator reads, the members a generated schema carries and their
+  order, the three arrays whose order the definition hash sees, the
+  non-strict and strict rules as schema rules, the validation a
+  generated schema supports, the Go source mapping as a table, and the
+  fixture corpus with its manifest.
+- Conformance gains a schema generator, held to the corpus.
+- Open questions gain optional fields under strict mode.

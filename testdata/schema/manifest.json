@@ -1,0 +1,130 @@
+{
+  "fixtures": [
+    {
+      "name": "read_file",
+      "strict": false,
+      "source": "readFileArgs in schema_test.go",
+      "fields": [
+        {"name": "path", "type": "string", "description": "Absolute path to read"},
+        {"name": "max_bytes", "type": "integer", "optional": true, "description": "Stop after this many bytes"}
+      ]
+    },
+    {
+      "name": "read_file_strict",
+      "strict": true,
+      "source": "readFileArgs in schema_test.go, under WithStrict",
+      "fields": [
+        {"name": "path", "type": "string", "description": "Absolute path to read"},
+        {"name": "max_bytes", "type": "integer", "optional": true, "description": "Stop after this many bytes"}
+      ]
+    },
+    {
+      "name": "everything",
+      "strict": false,
+      "source": "everything in schema_test.go: every supported kind; an unexported field and a json:\"-\" field are not fields",
+      "fields": [
+        {"name": "str", "type": "string"},
+        {"name": "int", "type": "integer", "description": "an integer"},
+        {"name": "uint", "type": "integer"},
+        {"name": "float", "type": "number"},
+        {"name": "bool", "type": "boolean"},
+        {"name": "level", "type": "string", "enum": ["low", "medium", "high"]},
+        {"name": "count", "type": "integer", "optional": true, "nullable": true, "enum": [1, 2, 3]},
+        {"name": "when", "type": "string", "format": "date-time"},
+        {"name": "raw", "type": "any", "optional": true},
+        {"name": "any", "type": "any", "optional": true},
+        {"name": "bytes", "type": "string", "optional": true},
+        {"name": "list", "type": "array", "items": {"type": "object", "fields": [
+          {"name": "name", "type": "string"},
+          {"name": "Tags", "type": "array", "items": {"type": "string"}}
+        ]}},
+        {"name": "matrix", "type": "array", "optional": true, "items": {"type": "array", "items": {"type": "number"}}},
+        {"name": "nested", "type": "object", "fields": [
+          {"name": "name", "type": "string"},
+          {"name": "Tags", "type": "array", "items": {"type": "string"}}
+        ]},
+        {"name": "pointer", "type": "object", "optional": true, "nullable": true, "fields": [
+          {"name": "name", "type": "string"},
+          {"name": "Tags", "type": "array", "items": {"type": "string"}}
+        ]},
+        {"name": "labels", "type": "map", "optional": true, "values": {"type": "string"}},
+        {"name": "duration", "type": "integer", "optional": true}
+      ]
+    },
+    {
+      "name": "embedded",
+      "strict": false,
+      "source": "embedded in schema_test.go: nested is embedded and its fields are promoted in place",
+      "fields": [
+        {"name": "name", "type": "string"},
+        {"name": "Tags", "type": "array", "items": {"type": "string"}},
+        {"name": "extra", "type": "string", "optional": true}
+      ]
+    },
+    {
+      "name": "strict",
+      "strict": true,
+      "source": "strictArgs in schema_test.go, under WithStrict: a pointer field and a nested struct",
+      "fields": [
+        {"name": "query", "type": "string", "description": "Search terms"},
+        {"name": "limit", "type": "integer", "optional": true, "nullable": true, "description": "Maximum results"},
+        {"name": "inner", "type": "object", "fields": [
+          {"name": "deep", "type": "boolean"}
+        ]}
+      ]
+    },
+    {
+      "name": "no_args",
+      "strict": false,
+      "source": "NoArgs",
+      "fields": []
+    },
+    {
+      "name": "no_args_strict",
+      "strict": true,
+      "source": "NoArgs, under WithStrict",
+      "fields": []
+    },
+    {
+      "name": "custom",
+      "strict": false,
+      "source": "custom in schema_test.go implements Schemer, so the schema is the one it supplies",
+      "supplied": {"type": "object", "properties": {"x": {"type": "string"}}}
+    },
+    {
+      "name": "text_marshaler",
+      "strict": false,
+      "source": "textArgs in schema_test.go: textKey implements encoding.TextMarshaler, so it is a string",
+      "fields": [
+        {"name": "key", "type": "string"}
+      ]
+    },
+    {
+      "name": "pointer_to_struct",
+      "strict": false,
+      "source": "*readFileArgs: a pointer to the argument struct is the struct",
+      "fields": [
+        {"name": "path", "type": "string", "description": "Absolute path to read"},
+        {"name": "max_bytes", "type": "integer", "optional": true, "description": "Stop after this many bytes"}
+      ]
+    },
+    {
+      "name": "shadowed",
+      "strict": false,
+      "source": "shadowed in schema_test.go: two embedded structs and an outer field promote under the same names; the outer id wins by depth, the tagged Memo wins among equals, and Name is a tie that is dropped",
+      "fields": [
+        {"name": "Memo", "type": "string"},
+        {"name": "id", "type": "string", "description": "outer wins"}
+      ]
+    },
+    {
+      "name": "json_marshaler",
+      "strict": false,
+      "source": "marshalerArgs in schema_test.go: selfEncoding implements json.Marshaler, so its shape is unknown; word is a uintptr",
+      "fields": [
+        {"name": "value", "type": "any"},
+        {"name": "word", "type": "integer", "enum": [1, 2]}
+      ]
+    }
+  ]
+}
