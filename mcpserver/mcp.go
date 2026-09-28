@@ -31,11 +31,16 @@ import (
 	"sync/atomic"
 
 	"github.com/ChristopherDavenport/agenttool"
-	"github.com/ChristopherDavenport/agenttool/mcpclient"
 	"github.com/ChristopherDavenport/openresponses"
 	"github.com/google/jsonschema-go/jsonschema"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// RecordMetaKey is the _meta key under which a result's record is
+// served; see [Handler]. It is mcpclient.RecordMetaKey byte for byte,
+// spelt out here so this module builds against the mcpclient release
+// that predates it, and a test holds the two together.
+const RecordMetaKey = "io.github.christopherdavenport.agenttool/record"
 
 // emptySchema describes a tool that takes no arguments; MCP requires an
 // object schema on every tool. It is agenttool.NoArgsSchema byte for
@@ -78,17 +83,29 @@ func NewServer(name, version string, tools ...agenttool.Tool) (*sdk.Server, erro
 //
 // A record crosses. A result whose Details implements
 // [agenttool.Recordable] is served with its [agenttool.Record] under
-// [mcpclient.RecordMetaKey] in the result's _meta, and mcpclient makes
-// it the Details on its side, so the container that served a call or
-// the directory it spilled to reaches a session recorder through a
-// server as it would in process; a Details that says it is recordable
-// and cannot be recorded, an empty namespace or a value that does not
-// marshal, fails the call, as it would fail a recorder. A record a
-// tool writes while it runs, with [agenttool.WriteRecord], reaches
-// whatever [agenttool.ContextWithRecorder] installed on the context the
-// host gave the server: the SDK derives every call's context from the
-// one passed to Run or Connect, so a host installs the recorder there,
-// once, and the handler leaves it in place.
+// [RecordMetaKey] in the result's _meta, the data as a JSON string so
+// it arrives byte for byte, and mcpclient makes it the Details on its
+// side, so the container that served a call or the directory it
+// spilled to reaches a session recorder through a server as it would
+// in process. A Details that says it is recordable and cannot be
+// recorded, an empty namespace or a value that does not marshal, does
+// not fail the call, since the side effect has happened and a failure
+// would invite the model to retry it: the output is served and the
+// error text takes the record's place under the same key, where a
+// subscriber reading the SDK result finds it.
+//
+// A record a tool writes while it runs, with [agenttool.WriteRecord],
+// reaches whatever [agenttool.ContextWithRecorder] installed on the
+// context the call runs under, which the handler leaves in place. The
+// go-sdk derives each call's context from the one the session was
+// opened with: over stdio and in memory that is the context the host
+// passed to Run or Connect, and over streamable HTTP it is the
+// initialize request's context, which the SDK says middleware may add
+// values to, so an HTTP host installs the recorder in middleware on
+// the handler. That is how the SDK behaves at v1.8.0 and not a
+// documented guarantee, which is why a test here pins it; a host that
+// wants no dependence on it wraps its tools with [agenttool.Wrap] and
+// installs the recorder on the context there.
 //
 // When the request carries a progress token, Call.OnUpdate forwards each
 // update as a progress notification whose message is the update's text.
@@ -213,30 +230,29 @@ func Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
 		}
 		ctx = agenttool.WithCall(ctx, call)
 		res, err := tl.Execute(ctx, call)
-		meta, recErr := recordMeta(res.Details)
+		meta := recordMeta(res.Details)
 		if err != nil {
 			out := errorResult(err)
 			out.Meta = meta
 			return out, nil
 		}
-		if recErr != nil {
-			return errorResult(recErr), nil
-		}
 		return &sdk.CallToolResult{Content: ContentOf(res.Output), Meta: meta}, nil
 	}, nil
 }
 
-// recordMeta builds the _meta that carries a result's record, and nil
-// when the details are not recordable.
-func recordMeta(details any) (sdk.Meta, error) {
+// recordMeta builds the _meta that carries a result's record: nil when
+// the details are not recordable, the record's namespace and its JSON
+// as a string when they are, and the error's text in the record's
+// place when they claim to be and cannot be.
+func recordMeta(details any) sdk.Meta {
 	rec, err := agenttool.RecordOf(details)
-	if err != nil {
-		return nil, err
+	switch {
+	case err != nil:
+		return sdk.Meta{RecordMetaKey: map[string]any{"error": err.Error()}}
+	case rec == nil:
+		return nil
 	}
-	if rec == nil {
-		return nil, nil
-	}
-	return sdk.Meta{mcpclient.RecordMetaKey: map[string]any{"ns": rec.NS, "data": rec.Data}}, nil
+	return sdk.Meta{RecordMetaKey: map[string]any{"ns": rec.NS, "data": string(rec.Data)}}
 }
 
 // errorResult is the isError result whose text is the message the

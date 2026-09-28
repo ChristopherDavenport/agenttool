@@ -543,9 +543,9 @@ the local side by the host and does not cross.
 | error | `isError` with the message as text; the consuming side returns it as an error and the harness applies `Error:` once | both |
 | progress | `notifications/progress` when the request carries a token; `progress`, `total`, `message` ↔ progress info | both |
 | details | the consuming side sets the raw `CallToolResult` as details | consume |
-| record | the serving side puts a recordable result's record in `_meta` under `mcpclient.RecordMetaKey`; the consuming side makes it the details as a `RemoteRecord`, SDK result inside | both |
+| record | the serving side puts a recordable result's record in `_meta` under `RecordMetaKey`, the data as a JSON string so it crosses byte for byte, or the record error in its place; the consuming side makes a record the details as a `RemoteRecord`, SDK result inside, and leaves the SDK result otherwise | both |
 | call on the context | the server installs it for every call, as the executor does | serve |
-| recorder on the context | the SDK derives each call's context from the one the host gave the server, so a recorder installed there reaches every call | serve |
+| recorder on the context | the handler leaves one it finds; the go-sdk at v1.8.0 derives each call's context from the one the session was opened with, `Run` or `Connect` over stdio and in memory, the initialize request over streamable HTTP, which is observed behaviour a test pins and not a documented guarantee | serve |
 | client identity | the server puts the MCP session on the context: `mcpserver.SessionFrom` | serve |
 
 ### Open Responses

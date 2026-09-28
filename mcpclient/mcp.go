@@ -82,12 +82,16 @@ type options struct {
 
 // RecordMetaKey is the _meta key under which a served tool's record
 // crosses MCP. mcpserver puts the [agenttool.Record] of a result's
-// Details there as {"ns": …, "data": …}, and [ResultOf] makes it the
-// local Details as a [RemoteRecord], so a recorder on this side writes
-// it under the tool's own namespace as it would have in process. MCP
-// reserves _meta for exactly this and a server that knows nothing of
-// the key sets nothing there.
-const RecordMetaKey = "github.com/ChristopherDavenport/agenttool/record"
+// Details there as {"ns": …, "data": …}, the data as a JSON string so
+// it arrives byte for byte, and [ResultOf] makes it the local Details
+// as a [RemoteRecord], so a recorder on this side writes it under the
+// tool's own namespace as it would have in process. MCP reserves _meta
+// for exactly this, in the reverse-DNS form the key takes, and a
+// server that knows nothing of the key sets nothing there. mcpserver
+// spells the same string as its own RecordMetaKey rather than
+// importing this one, so it builds against the mcpclient release that
+// predates it; a test on that side holds the two together.
+const RecordMetaKey = "io.github.christopherdavenport.agenttool/record"
 
 // RemoteRecord is the record a served tool returned with its result,
 // made the local Details so that [agenttool.RecordOf] writes it under
@@ -111,9 +115,13 @@ func (r RemoteRecord) MarshalJSON() ([]byte, error) {
 	return r.Data, nil
 }
 
-// recordFrom reads the record a server put in a result's _meta. A
-// missing or malformed entry is no record, and the SDK result stands
-// as Details.
+// recordFrom reads the record a server put in a result's _meta. The
+// data travels as a JSON string, because the SDK decodes _meta into
+// map[string]any and a record decoded that way would come back with
+// its keys sorted and any integer past 2^53 rounded. A missing or
+// malformed entry, and an entry carrying the server's record error
+// instead of a record, is no record: the SDK result stands as Details,
+// its _meta intact for a subscriber that wants to know why.
 func recordFrom(res *sdk.CallToolResult) (RemoteRecord, bool) {
 	raw, ok := res.Meta[RecordMetaKey]
 	if !ok {
@@ -124,14 +132,11 @@ func recordFrom(res *sdk.CallToolResult) (RemoteRecord, bool) {
 		return RemoteRecord{}, false
 	}
 	ns, _ := m["ns"].(string)
-	if ns == "" {
+	data, _ := m["data"].(string)
+	if ns == "" || !json.Valid([]byte(data)) {
 		return RemoteRecord{}, false
 	}
-	data, err := json.Marshal(m["data"])
-	if err != nil {
-		return RemoteRecord{}, false
-	}
-	return RemoteRecord{NS: ns, Data: data, Result: res}, true
+	return RemoteRecord{NS: ns, Data: json.RawMessage(data), Result: res}, true
 }
 
 // octetStream is the media type for bytes of unknown type.

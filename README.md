@@ -317,9 +317,13 @@ likely to be behind a server, so `mcpserver` puts the `Record` of a
 makes it the `Details` on its side, where `RecordOf` reads it as it
 would in process. The call is on the context in a served tool, as under
 the executor, and a recorder a host installs with
-`ContextWithRecorder` on the context it gives `server.Run` reaches
-`WriteRecord` in every call. `make interop` checks both against the
-upstream reference server and the MCP Inspector over stdio.
+`ContextWithRecorder` on the context it opens the session with, the one
+it gives `server.Run` over stdio or the initialize request's over
+streamable HTTP, reaches `WriteRecord` in every call; that is how the
+SDK behaves today rather than a guarantee, and a host that wants none
+of it installs the recorder in a `Wrap` around its tools. `make
+interop` checks both against the upstream reference server and the
+MCP Inspector over stdio.
 
 ## Development
 
