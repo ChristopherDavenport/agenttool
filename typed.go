@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"reflect"
 
 	"github.com/ChristopherDavenport/openresponses"
@@ -24,6 +25,9 @@ type options struct {
 	annotations  Annotations
 	schema       json.RawMessage
 	noValidation bool
+	closer       func() error
+	confined     func(ctx context.Context, args json.RawMessage) (bool, string)
+	replay       func(ctx context.Context, args json.RawMessage) Replay
 }
 
 // WithStrict sets the strict flag on the function tool, and has [New]
@@ -46,6 +50,33 @@ func WithResource(name string) Option { return func(o *options) { o.resource = n
 // [Annotations], which a policy layer may read and must not trust
 // alone.
 func WithAnnotations(a Annotations) Option { return func(o *options) { o.annotations = a } }
+
+// WithCloser gives the tool something to release: the tool is then an
+// [io.Closer] whose Close calls fn, so [Set.Close] releases what the
+// tool owns across calls, a persistent shell or a container. Without it
+// the tool is not a closer, and a nil fn is no closer.
+//
+// It is how a tool built here comes to own something. Embedding the
+// tool in a struct that adds Close compiles, and drops every other
+// property the tool declares; see [Wrap].
+func WithCloser(fn func() error) Option { return func(o *options) { o.closer = fn } }
+
+// WithConfined has the tool report, through fn, whether a call will run
+// inside a sandbox and what confines it; see [Confined], which says
+// what the answer means and what it does not. A tool built without it,
+// or with a nil fn, answers as [ConfinedBy] does for a tool that
+// declares nothing: false and "".
+func WithConfined(fn func(ctx context.Context, args json.RawMessage) (bool, string)) Option {
+	return func(o *options) { o.confined = fn }
+}
+
+// WithReplay has the tool report, through fn, whether a call that may
+// already have run can run again; see [Replayable]. A tool built
+// without it, or with a nil fn, reads as [ReplayUnknown], and so does
+// an answer this package does not know.
+func WithReplay(fn func(ctx context.Context, args json.RawMessage) Replay) Option {
+	return func(o *options) { o.replay = fn }
+}
 
 // WithParameters replaces the reflected schema of a [New] tool with
 // schema. Arguments are then not validated before decoding, because the
@@ -106,7 +137,7 @@ func New[Args, Out any](name, description string, fn func(context.Context, Args)
 	if o.noValidation {
 		tree = nil
 	}
-	return &typed[Args, Out]{
+	t := &typed[Args, Out]{
 		name:        name,
 		description: description,
 		schema:      schema,
@@ -115,8 +146,14 @@ func New[Args, Out any](name, description string, fn func(context.Context, Args)
 		sequential:  o.sequential,
 		resource:    o.resource,
 		annotations: o.annotations,
+		confined:    o.confined,
+		replay:      o.replay,
 		fn:          fn,
 	}
+	if o.closer != nil {
+		return &typedCloser[Args, Out]{typed: t, close: o.closer}
+	}
+	return t
 }
 
 // typed is the Tool returned by [New].
@@ -129,8 +166,20 @@ type typed[Args, Out any] struct {
 	sequential  bool
 	resource    string
 	annotations Annotations
+	confined    func(ctx context.Context, args json.RawMessage) (bool, string)
+	replay      func(ctx context.Context, args json.RawMessage) Replay
 	fn          func(context.Context, Args) (Out, error)
 }
+
+// typedCloser is the tool [New] returns under [WithCloser], so that a
+// tool built without it is not an [io.Closer].
+type typedCloser[Args, Out any] struct {
+	*typed[Args, Out]
+	close func() error
+}
+
+// Close releases what the tool owns.
+func (t *typedCloser[Args, Out]) Close() error { return t.close() }
 
 // Name returns the tool name.
 func (t *typed[Args, Out]) Name() string { return t.name }
@@ -152,6 +201,33 @@ func (t *typed[Args, Out]) Resource() string { return t.resource }
 
 // Annotations reports the tool's behavioural hints.
 func (t *typed[Args, Out]) Annotations() Annotations { return t.annotations }
+
+// Confined reports whether a call will run confined, and what confines
+// it, as [WithConfined] set.
+func (t *typed[Args, Out]) Confined(ctx context.Context, args json.RawMessage) (bool, string) {
+	return confinedBy(t.confined, ctx, args)
+}
+
+// Replay reports whether a call may run again, as [WithReplay] set.
+func (t *typed[Args, Out]) Replay(ctx context.Context, args json.RawMessage) Replay {
+	return replayBy(t.replay, ctx, args)
+}
+
+// confinedBy and replayBy answer for a tool built with an optional
+// function: the function's answer, or the reader's default without one.
+func confinedBy(fn func(context.Context, json.RawMessage) (bool, string), ctx context.Context, args json.RawMessage) (bool, string) {
+	if fn == nil {
+		return false, ""
+	}
+	return fn(ctx, args)
+}
+
+func replayBy(fn func(context.Context, json.RawMessage) Replay, ctx context.Context, args json.RawMessage) Replay {
+	if fn == nil {
+		return ReplayUnknown
+	}
+	return fn(ctx, args)
+}
 
 // Execute validates and decodes the arguments, calls the function and
 // converts the output.
@@ -243,4 +319,7 @@ var (
 	_ Sequential = (*typed[NoArgs, string])(nil)
 	_ Resource   = (*typed[NoArgs, string])(nil)
 	_ Annotated  = (*typed[NoArgs, string])(nil)
+	_ Confined   = (*typed[NoArgs, string])(nil)
+	_ Replayable = (*typed[NoArgs, string])(nil)
+	_ io.Closer  = (*typedCloser[NoArgs, string])(nil)
 )

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -209,5 +211,97 @@ func TestNewFunc(t *testing.T) {
 	}()
 	if ErrorResult(errors.New("x")).Output.Text != "Error: x" {
 		t.Error("error result format")
+	}
+}
+
+// everythingOptions are the options that make a tool built here read
+// as everythingTool does, property for property.
+func everythingOptions(closed *int) []Option {
+	e := &everythingTool{}
+	return []Option{
+		WithStrict(),
+		WithResource(e.Resource()),
+		WithAnnotations(e.Annotations()),
+		WithConfined(e.Confined),
+		WithReplay(e.Replay),
+		WithCloser(func() error { *closed++; return nil }),
+	}
+}
+
+// A tool built with every option reads as a tool that declares every
+// property, which is what lets a shell built with New own its process
+// and report where it runs without being embedded.
+func TestNewDeclaresEveryProperty(t *testing.T) {
+	ctx := context.Background()
+	want := readers(ctx, &everythingTool{})
+	for _, k := range []string{"name", "description", "parameters", "definition"} {
+		delete(want, k)
+	}
+	var closed int
+	for name, tl := range map[string]Tool{
+		"New":     New("all", "", func(context.Context, NoArgs) (string, error) { return "", nil }, everythingOptions(&closed)...),
+		"NewFunc": NewFunc("all", "", nil, echo, everythingOptions(&closed)...),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := readers(ctx, tl)
+			for _, k := range []string{"name", "description", "parameters", "definition"} {
+				delete(got, k)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("reads differently from a tool declaring everything\n got: %v\nwant: %v", got, want)
+			}
+			before := closed
+			if err := (Set{tl}).Close(); err != nil || closed != before+1 {
+				t.Errorf("Close: err=%v, closed %d times; want once", err, closed-before)
+			}
+			// Wrap keeps all of it, the closer included.
+			w := Wrap(tl, tl.Execute)
+			if got, want := readers(ctx, w), readers(ctx, tl); !reflect.DeepEqual(got, want) {
+				t.Errorf("wrapper reads differently\n got: %v\nwant: %v", got, want)
+			}
+		})
+	}
+}
+
+// A tool built with none of the ownership options reads as it did
+// before they existed: not a closer, unconfined, replay unknown.
+func TestNewWithoutOwnershipOptionsReadsAsBefore(t *testing.T) {
+	ctx := context.Background()
+	args := json.RawMessage(`{"sandbox":true}`)
+	for name, tl := range map[string]Tool{
+		"New":       New("plain", "d", func(context.Context, NoArgs) (string, error) { return "", nil }),
+		"NewFunc":   NewFunc("plain", "d", nil, echo),
+		"nil funcs": NewFunc("plain", "d", nil, echo, WithCloser(nil), WithConfined(nil), WithReplay(nil)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, ok := tl.(io.Closer); ok {
+				t.Error("a tool built without WithCloser should not be a closer")
+			}
+			if ok, by := ConfinedBy(ctx, tl, args); ok || by != "" {
+				t.Errorf("ConfinedBy = %v, %q; want false, \"\"", ok, by)
+			}
+			if r := ReplayOf(ctx, tl, args); r != ReplayUnknown {
+				t.Errorf("ReplayOf = %v; want ReplayUnknown", r)
+			}
+		})
+	}
+}
+
+// The ownership options are properties of the tool value, not of the
+// function tool the model sees, so they leave the definition, and the
+// hash that names the tool in every recorded session, as it was.
+func TestOwnershipOptionsLeaveTheDefinition(t *testing.T) {
+	fn := func(context.Context, readFileArgs) (string, error) { return "", nil }
+	var closed int
+	own := []Option{WithConfined(func(context.Context, json.RawMessage) (bool, string) { return true, "seatbelt" }),
+		WithReplay(func(context.Context, json.RawMessage) Replay { return ReplaySafe }),
+		WithCloser(func() error { closed++; return nil })}
+	for name, pair := range map[string][2]Tool{
+		"New":     {New("r", "d", fn, WithStrict()), New("r", "d", fn, append(own, WithStrict())...)},
+		"NewFunc": {NewFunc("r", "d", nil, echo), NewFunc("r", "d", nil, echo, own...)},
+	} {
+		if a, b := mustJSON(Definition(pair[0])), mustJSON(Definition(pair[1])); a != b {
+			t.Errorf("%s: definition changed\nwithout: %s\n   with: %s", name, a, b)
+		}
 	}
 }

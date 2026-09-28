@@ -402,7 +402,7 @@ func (r Replay) String() string {
 // answers [ReplayUnknown] for a tool that does not implement it, even
 // one whose [Annotations] say ReadOnly or Idempotent: those are hints a
 // policy may use to be stricter, and running a call twice is an allow.
-// A tool from mcpclient does not implement it, since MCP carries no
+// A tool from mcpclient reads as [ReplayUnknown], since MCP carries no
 // such claim and an untrusted server's hints are not one.
 type Replayable interface {
 	Replay(ctx context.Context, args json.RawMessage) Replay
@@ -586,9 +586,10 @@ func (s Set) Validate() error {
 // raw call: the untyped counterpart of [New] for tools whose schema
 // comes from elsewhere, such as a remote server. parameters is served
 // verbatim and never validated; nil means the tool takes no arguments.
-// [WithStrict], [WithSequential], [WithResource] and [WithAnnotations]
-// apply; the options that shape a reflected schema do not. A nil fn panics here, like a bad schema in
-// [New].
+// [WithStrict], [WithSequential], [WithResource], [WithAnnotations],
+// [WithConfined], [WithReplay] and [WithCloser] apply; the options that
+// shape a reflected schema do not. A nil fn panics here, like a bad
+// schema in [New].
 func NewFunc(name, description string, parameters json.RawMessage, fn func(ctx context.Context, call Call) (Result, error), opts ...Option) Tool {
 	if fn == nil {
 		panic(fmt.Sprintf("agenttool.NewFunc(%q): nil function", name))
@@ -597,7 +598,11 @@ func NewFunc(name, description string, parameters json.RawMessage, fn func(ctx c
 	for _, opt := range opts {
 		opt(&o)
 	}
-	return &funcTool{name: name, description: description, schema: parameters, fn: fn, strict: o.strict, sequential: o.sequential, resource: o.resource, annotations: o.annotations}
+	f := &funcTool{name: name, description: description, schema: parameters, fn: fn, strict: o.strict, sequential: o.sequential, resource: o.resource, annotations: o.annotations, confined: o.confined, replay: o.replay}
+	if o.closer != nil {
+		return &funcToolCloser{funcTool: f, close: o.closer}
+	}
+	return f
 }
 
 type funcTool struct {
@@ -609,6 +614,8 @@ type funcTool struct {
 	sequential  bool
 	resource    string
 	annotations Annotations
+	confined    func(ctx context.Context, args json.RawMessage) (bool, string)
+	replay      func(ctx context.Context, args json.RawMessage) Replay
 }
 
 func (f *funcTool) Name() string                { return f.name }
@@ -619,9 +626,26 @@ func (f *funcTool) Strict() bool                { return f.strict }
 func (f *funcTool) Resource() string            { return f.resource }
 func (f *funcTool) Annotations() Annotations    { return f.annotations }
 
+func (f *funcTool) Confined(ctx context.Context, args json.RawMessage) (bool, string) {
+	return confinedBy(f.confined, ctx, args)
+}
+
+func (f *funcTool) Replay(ctx context.Context, args json.RawMessage) Replay {
+	return replayBy(f.replay, ctx, args)
+}
+
 func (f *funcTool) Execute(ctx context.Context, call Call) (Result, error) {
 	return f.fn(ctx, call)
 }
+
+// funcToolCloser is the tool [NewFunc] returns under [WithCloser], so
+// that a tool built without it is not an [io.Closer].
+type funcToolCloser struct {
+	*funcTool
+	close func() error
+}
+
+func (f *funcToolCloser) Close() error { return f.close() }
 
 var (
 	_ Tool       = (*funcTool)(nil)
@@ -629,4 +653,7 @@ var (
 	_ Strict     = (*funcTool)(nil)
 	_ Resource   = (*funcTool)(nil)
 	_ Annotated  = (*funcTool)(nil)
+	_ Confined   = (*funcTool)(nil)
+	_ Replayable = (*funcTool)(nil)
+	_ io.Closer  = (*funcToolCloser)(nil)
 )

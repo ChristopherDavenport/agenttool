@@ -182,12 +182,13 @@ func TestWrapForwardsCloseError(t *testing.T) {
 	}
 }
 
-// TestWrapForwardsEveryOptionalInterface reads the package's source for
-// exported interface types and requires each to be either forwarded by
-// the wrapper or named here as not a property of a tool. A new optional
-// interface therefore fails this test until Wrap forwards it, which is
-// the promise Wrap's doc makes.
-func TestWrapForwardsEveryOptionalInterface(t *testing.T) {
+// toolProperties reads the package's source for exported interface
+// types and returns the methods of each that is a property of a tool:
+// every one except those named here. A new optional interface therefore
+// appears here the moment it is declared, and the tests below fail
+// until every tool this package builds can carry it.
+func toolProperties(t *testing.T) map[string][]string {
+	t.Helper()
 	notToolProperties := map[string]string{
 		"Tool":       "the tool itself",
 		"Recordable": "a property of a Details value",
@@ -210,7 +211,7 @@ func TestWrapForwardsEveryOptionalInterface(t *testing.T) {
 		}
 		files = append(files, f)
 	}
-	wrapper := reflect.TypeFor[*wrapped]()
+	props := map[string][]string{}
 	var found int
 	for _, f := range files {
 		for _, decl := range f.Decls {
@@ -233,9 +234,7 @@ func TestWrapForwardsEveryOptionalInterface(t *testing.T) {
 				// own, so the names are enough.
 				for _, m := range iface.Methods.List {
 					for _, n := range m.Names {
-						if _, ok := wrapper.MethodByName(n.Name); !ok {
-							t.Errorf("optional interface %s is not forwarded by Wrap: wrapped has no %s; add it, or list %s as not a tool property", ts.Name.Name, n.Name, ts.Name.Name)
-						}
+						props[ts.Name.Name] = append(props[ts.Name.Name], n.Name)
 					}
 				}
 			}
@@ -243,5 +242,42 @@ func TestWrapForwardsEveryOptionalInterface(t *testing.T) {
 	}
 	if found < 8 {
 		t.Fatalf("found %d exported interfaces, expected the package's", found)
+	}
+	return props
+}
+
+// TestWrapForwardsEveryOptionalInterface requires the wrapper to carry
+// every optional interface the package declares, which is the promise
+// Wrap's doc makes.
+func TestWrapForwardsEveryOptionalInterface(t *testing.T) {
+	wrapper := reflect.TypeFor[*wrapped]()
+	for iface, methods := range toolProperties(t) {
+		for _, m := range methods {
+			if _, ok := wrapper.MethodByName(m); !ok {
+				t.Errorf("optional interface %s is not forwarded by Wrap: wrapped has no %s; add it, or list %s as not a tool property", iface, m, iface)
+			}
+		}
+	}
+}
+
+// TestNewCanDeclareEveryOptionalInterface requires the tools New and
+// NewFunc build to carry every optional interface too, with an option
+// to set it, so a tool built here never has to be embedded, which drops
+// the rest, to gain one. io.Closer is not the package's and is checked
+// by name.
+func TestNewCanDeclareEveryOptionalInterface(t *testing.T) {
+	props := toolProperties(t)
+	props["io.Closer"] = []string{"Close"}
+	for _, built := range []reflect.Type{
+		reflect.TypeFor[*typedCloser[NoArgs, string]](),
+		reflect.TypeFor[*funcToolCloser](),
+	} {
+		for iface, methods := range props {
+			for _, m := range methods {
+				if _, ok := built.MethodByName(m); !ok {
+					t.Errorf("%s cannot declare %s: it has no %s; give it the method and an Option that sets it", built, iface, m)
+				}
+			}
+		}
 	}
 }

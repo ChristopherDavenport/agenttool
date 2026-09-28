@@ -562,9 +562,9 @@ and everything else is optional.
 | sequential | `Sequential` interface, read by `IsSequential`, set by `WithSequential()` |
 | resource | `Resource` interface, read by `ResourceOf` (which applies the sequential rule), set by `WithResource(name)` |
 | annotations | `Annotated` interface and `Annotations` struct, read by `AnnotationsOf`, set by `WithAnnotations(a)` |
-| confined | `Confined` interface, read by `ConfinedBy(ctx, t, args)` |
-| replay | `Replayable` interface and `Replay` (`ReplayUnknown`, `ReplaySafe`, `ReplayKeyed`), read by `ReplayOf(ctx, t, args)`, which reads an unknown value as `ReplayUnknown` |
-| closer | `io.Closer`; `Set.Close()` closes a list in order and joins errors |
+| confined | `Confined` interface, read by `ConfinedBy(ctx, t, args)`, set by `WithConfined(fn)` |
+| replay | `Replayable` interface and `Replay` (`ReplayUnknown`, `ReplaySafe`, `ReplayKeyed`), read by `ReplayOf(ctx, t, args)`, which reads an unknown value as `ReplayUnknown`, set by `WithReplay(fn)` |
+| closer | `io.Closer`; `Set.Close()` closes a list in order and joins errors; `WithCloser(fn)` makes a `New` or `NewFunc` tool one, and without it the tool is not |
 | forwarding wrapper | `Wrap(t, exec)` forwards every property of `t` and closes it; `Unwrap(t)` returns it |
 | call | `Call{ID, Args, IdempotencyKey, OnUpdate}`; `Call.Update` sends progress |
 | call on the context | `WithCall`, `CallFrom`; `Executor` installs it for every job |
@@ -901,11 +901,6 @@ module and is listed in the changelog as one.
   differ, `retryable` with a not-before time in a `_meta` block, a
   rate-limit error code, so it waits for one to settle. The MCP
   client handles its own transport failures meanwhile.
-- **Replay without a type.** The Go binding offers replay only as an
-  interface, as it does confinement, so a tool built by `New` or
-  `NewFunc` cannot claim it without a type of its own. An option
-  taking a function of the arguments would close that, and would be
-  the first option that is per call.
 
 ## Changes since 0.2
 
@@ -919,6 +914,11 @@ module and is listed in the changelog as one.
   and what a keyed tool owes.
 - Conformance, both bindings and prior art follow.
 - Open questions gain transient errors.
+- The Go binding sets confined, replay and closer on a tool built by
+  `New` or `NewFunc`, through `WithConfined`, `WithReplay` and
+  `WithCloser`, so a tool that owns a process and runs it in a sandbox
+  needs no type of its own (#49). A tool built without them reads as
+  before. The open question on replay without a type is closed by it.
 
 ## Changes since 0.1
 
