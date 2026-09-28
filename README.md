@@ -87,6 +87,21 @@ schemas that come from elsewhere; `SchemaFor[T]()` gives the schema
 `New` would reflect; `Set` is a list with lookup; `Definition` produces
 the `openresponses.FunctionTool` for a request.
 
+A tool that stands in for another, to audit it, to grant on use, to
+record, is built with `Wrap`, which forwards every optional interface
+the wrapped tool declares. Embedding `Tool` in a struct forwards the
+four methods alone, so a wrapped `bash` that was `Sequential` would
+run in a parallel batch and nothing would fail:
+
+```go
+audited := agenttool.Wrap(bash, func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
+	log.Info("call", "tool", bash.Name(), "id", call.ID)
+	return bash.Execute(ctx, call)
+})
+// IsSequential(audited), ResourceOf(audited), AnnotationsOf(audited)
+// all answer as they do for bash; Unwrap(audited) is bash.
+```
+
 The contract itself, language-neutral, is
 [RFC 0001](docs/rfcs/0001-tool-contract.md): what a definition is and
 how it is hashed, which properties a tool may declare and what each

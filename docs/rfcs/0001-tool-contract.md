@@ -489,6 +489,7 @@ and everything else is optional.
 | annotations | `Annotated` interface and `Annotations` struct, read by `AnnotationsOf`, set by `WithAnnotations(a)` |
 | confined | `Confined` interface, read by `ConfinedBy(ctx, t, args)` |
 | closer | `io.Closer`; `Set.Close()` closes a list in order and joins errors |
+| forwarding wrapper | `Wrap(t, exec)` forwards every property of `t` and closes it; `Unwrap(t)` returns it |
 | call | `Call{ID, Args, OnUpdate}`; `Call.Update` sends progress |
 | call on the context | `WithCall`, `CallFrom`; `Executor` installs it for every job |
 | result | `Result{Output, Details, Terminate}`; `Text`, `Parts`, `Output` build one |
@@ -501,14 +502,15 @@ and everything else is optional.
 | executor | `Executor{MaxParallel, Sequential, Recorder}`; `Execute` yields `Event{Index, Final, Result, Err}`; `Results` collects in job order |
 | schema generation | `New`, `SchemaFor`, `SchemaOf`, `Reflect`; `Schemer` supplies a schema; see the [schema section](#schema-generation) |
 
-Two places where the binding does not yet do what this document says,
-both tracked:
+One place where the binding does not yet do what this document says:
+the annotations default is the zero `Annotations` value, which a reader
+cannot tell from a tool that declared every hint false. The doc comment
+says so, and it is an open question below.
 
-- The annotations default is the zero `Annotations` value, which a
-  reader cannot tell from a tool that declared every hint false. The
-  doc comment says so. (Open question below.)
-- There is no wrapper that forwards every property, so a wrapper that
-  embeds `Tool` drops all six. (#33.)
+The forwarding rule is bound by `Wrap`, and a test in the package reads
+its exported interfaces and refuses a new optional interface `Wrap`
+does not forward, which is how the binding stays right as properties
+are added.
 
 ### MCP
 
@@ -771,8 +773,6 @@ module and is listed in the changelog as one.
   them with the raw result, and the server installs neither the call
   nor a recorder on the context. The smallest fix is one reserved
   `_meta` key each way.
-- **Forwarding wrapper** (#33). The binding table says a wrapper must
-  forward every property and offers nothing to do it with.
 - **Unstated versus false annotations.** The Go binding cannot tell a
   tool that declared no annotations from one that declared them all
   false. MCP can, because the block is optional. A pointer, a presence
