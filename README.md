@@ -87,6 +87,12 @@ schemas that come from elsewhere; `SchemaFor[T]()` gives the schema
 `New` would reflect; `Set` is a list with lookup; `Definition` produces
 the `openresponses.FunctionTool` for a request.
 
+The contract itself, language-neutral, is
+[RFC 0001](docs/rfcs/0001-tool-contract.md): what a definition is and
+how it is hashed, which properties a tool may declare and what each
+defaults to, the error convention, the batch rules, and the Go and MCP
+bindings as tables against it. The types above are its Go binding.
+
 ## A handle on the record before the call ends
 
 `Result.Details` is read when the call ends, so a tool that is killed

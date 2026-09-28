@@ -5,6 +5,23 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- The tool contract is written down. `docs/rfcs/0001-tool-contract.md`
+  states what the doc comments carried: a tool is a definition the
+  model reads, a set of defaulted properties a harness reads, and an
+  execute; the definition is the Open Responses function tool, with a
+  canonical form and a `sha256:` hash so a recorder can name a tool by
+  what it is; the properties are strict, sequential, resource,
+  annotations, confined and closer, each with its default and the rule
+  that a wrapper forwards all of them; a failure is a returned error
+  rendered as `Error: ` once at the model boundary; a batch is
+  matched by call, bounded, serialised by a sequential tool or a
+  shared resource within one batch, and terminated only unanimously.
+  The Go module and the MCP adapters are given as binding tables, and
+  where the module falls short of the text the shortfall is listed as
+  an open question with its issue. No behaviour changes.
+
 ## v0.0.7 - 2026-09-23
 
 - Requires `openresponses` v0.0.12, up from v0.0.10.
