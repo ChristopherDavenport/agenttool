@@ -119,14 +119,19 @@ A tool's definition is the Open Responses function tool:
   NOT contain two with the same name.
 - `description` is what the model reads to decide when to call the
   tool. It MAY be empty.
-- `parameters` is a JSON Schema object describing the arguments object,
-  or `null` for a tool that takes no arguments. A tool with no
-  arguments is still called with an arguments object, which is `{}`;
-  see [Arguments](#arguments).
-- `strict` is present and `true` when the schema was generated under
-  the strict rules of the [schema section](#schema-generation), and
-  absent otherwise. It is the one property that reaches the model,
-  because the provider reads it.
+- `parameters` is a JSON Schema object describing the arguments object.
+  It is always an object: a tool that takes no arguments carries the
+  empty object schema, `{"type":"object","properties":{},"required":[]}`,
+  and never `null`, so "no arguments" is one definition and not three.
+  A tool with no arguments is still called with an arguments object,
+  which is `{}`; see [Arguments](#arguments).
+- `strict` is present and `true` when the tool declares strict, and
+  absent otherwise; a reader that receives `"strict": false` treats it
+  as absent. It is the one property that reaches the model, because
+  the provider reads it. A binding sets it when it generated the
+  schema under the strict rules of the [schema section](#schema-generation);
+  a tool that supplies its own schema and declares strict is making
+  its author's claim, and the binding does not check it.
 
 Everything else a tool declares is a property, and no property is on the
 request. A harness MUST NOT put a property on the definition, and a
@@ -136,11 +141,21 @@ requests without its definition changing.
 
 ### Canonical definition and definition hash
 
-The **canonical definition** is the definition object serialised with
-the JSON Canonicalization Scheme (RFC 8785): members sorted by UTF-16
-code units, no insignificant whitespace, numbers and strings in their
-canonical forms. The **definition hash** is `sha256:` followed by the
-lowercase hexadecimal SHA-256 of those bytes.
+The **canonical definition** is an object with exactly these members
+and no others: `type`, always the string `function`; `name`;
+`description`, always present, the empty string when the tool has
+none; `parameters`, always an object schema; and `strict`, present
+only when `true`. It is serialised with the JSON Canonicalization
+Scheme (RFC 8785): members sorted by UTF-16 code units, no
+insignificant whitespace, numbers and strings in their canonical
+forms. The **definition hash** is `sha256:` followed by the lowercase
+hexadecimal SHA-256 of those bytes.
+
+Stating the members matters because the wire form is looser than the
+hash can afford to be. A writer that omits an empty description, sends
+`null` for no parameters, or keeps a decoded `"strict": false` produces
+a different hash for the same tool, so a writer normalises to the
+form above before hashing, whatever it sent.
 
 Two definitions are the same tool when their hashes are equal. This is
 the identity agentsession names a tool by (agentsession #72), and it is
@@ -236,8 +251,10 @@ fill it.
 - An empty arguments string is the empty object `{}`, and a tool with
   no parameters receives `{}`.
 - Arguments that do not parse as a JSON object are refused before the
-  tool runs, with the error `invalid arguments: expected a JSON
-  object`.
+  tool runs, with an error beginning `invalid arguments:`. The
+  reference loop says `invalid arguments: expected a JSON object`; a
+  harness that validates with a general validator says what the
+  validator says after the prefix.
 - A tool whose schema the binding generated validates the arguments
   against it before decoding them, so a missing required property, a
   wrong type or a value outside an enum reaches the model as an error
@@ -247,10 +264,12 @@ fill it.
   tool, as the MCP server does, validates with a general validator
   instead.
 - A validation failure is an error whose message is phrased for the
-  model: `invalid arguments: <path>: <message>`, where `<path>` is the
+  model and begins `invalid arguments:`. The reference binding's own
+  validator continues `<path>: <message>`, where `<path>` is the
   dotted property path with `[i]` for array elements and is omitted at
-  the root. `invalid arguments: max_bytes: expected integer, got
-  "ten"`.
+  the root: `invalid arguments: max_bytes: expected integer, got
+  "ten"`. A general validator, as the MCP server uses, continues in
+  its own words, so only the prefix is the contract.
 
 ## A call
 
@@ -471,7 +490,7 @@ and everything else is optional.
 | call | `Call{ID, Args, OnUpdate}`; `Call.Update` sends progress |
 | call on the context | `WithCall`, `CallFrom`; `Executor` installs it for every job |
 | result | `Result{Output, Details, Terminate}`; `Text`, `Parts`, `Output` build one |
-| error convention | `ErrorResult(err)` renders `Error: ` + message; the harness calls it |
+| error convention | `ErrorResult(err)` renders `Error: ` + message as a fresh result; the harness calls it and copies the failed result's `Details` and `Terminate` onto it, as agentturn does |
 | panic | `PanicError{Tool, Value, Stack}` |
 | progress info | `ProgressInfo{Progress, Total, Message}`; `Progress(ctx, r)` sends from a typed tool |
 | record | `Recordable` (`RecordNS() string`), `Record{NS, Data}`, `RecordOf(details)` |
@@ -505,7 +524,7 @@ the local side by the host and does not cross.
 | confined | no field; not carried | — |
 | closer | not a closer: the remote session is closed through `mcpclient.Remote.Close` | consume |
 | arguments | `arguments`; the server validates against `inputSchema` with a general validator | both |
-| output | text, image, audio and resource content ↔ output parts; text alone ↔ text | both |
+| output | text, image and resource content ↔ output parts; text alone ↔ text; audio content consumed becomes an input file part, and is served back as an embedded blob rather than audio | both |
 | error | `isError` with the message as text; the consuming side returns it as an error and the harness applies `Error:` once | both |
 | progress | `notifications/progress` when the request carries a token; `progress`, `total`, `message` ↔ progress info | both |
 | details | the consuming side sets the raw `CallToolResult` as details; a record does not cross (#36) | consume |
