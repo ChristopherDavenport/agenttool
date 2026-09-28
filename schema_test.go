@@ -77,6 +77,30 @@ type recursive struct {
 	Child *recursive `json:"child,omitempty"`
 }
 
+// recursiveEmbedded contains itself through an embedded pointer, which
+// encoding/json accepts and a schema cannot express.
+type recursiveEmbedded struct {
+	*recursiveEmbedded
+	X int `json:"x"`
+}
+
+// strictNullable covers the strict cases a nullable field raises: an
+// enum that must admit null, an any that stays any, a date-time, and an
+// array of objects that each close their properties.
+type strictNullable struct {
+	Level *string          `json:"level" enum:"low,high"`
+	Raw   *json.RawMessage `json:"raw"`
+	When  *time.Time       `json:"when"`
+	Items []nested         `json:"items"`
+}
+
+// byteArray: a byte slice is a string, a byte array is numbers, as the
+// encoder writes them.
+type byteArray struct {
+	Slice []byte  `json:"slice"`
+	Fixed [4]byte `json:"fixed"`
+}
+
 // base and other promote fields under the same names into shadowed, the
 // way encoding/json resolves them: the outer "id" wins by depth, the
 // tagged "Memo" wins among equals, and "Name" is a tie that is dropped.
@@ -128,6 +152,8 @@ var schemaGoldens = []struct {
 	{"pointer_to_struct", reflect.TypeFor[*readFileArgs](), false},
 	{"shadowed", reflect.TypeFor[shadowed](), false},
 	{"json_marshaler", reflect.TypeFor[marshalerArgs](), false},
+	{"strict_nullable", reflect.TypeFor[strictNullable](), true},
+	{"byte_array", reflect.TypeFor[byteArray](), false},
 }
 
 func TestSchemaGolden(t *testing.T) {
@@ -240,6 +266,7 @@ func TestSchemaErrors(t *testing.T) {
 		want   string
 	}{
 		{"recursive", reflect.TypeFor[recursive](), false, "recursive"},
+		{"recursive embedded", reflect.TypeFor[recursiveEmbedded](), false, "recursive"},
 		{"strict map", reflect.TypeFor[everything](), true, "strict"},
 		{"not a struct", reflect.TypeFor[string](), false, "must be a struct"},
 		{"bad map key", reflect.TypeFor[struct {
@@ -271,7 +298,10 @@ func TestNewPanicsOnBadSchema(t *testing.T) {
 	New("bad", "", func(context.Context, recursive) (string, error) { return "", nil })
 }
 
-var _ = everything{}.hidden
+var (
+	_ = everything{}.hidden
+	_ = recursiveEmbedded{}.recursiveEmbedded
+)
 
 // strictOpts turns a table's strict flag into options.
 func strictOpts(strict bool) []Option {

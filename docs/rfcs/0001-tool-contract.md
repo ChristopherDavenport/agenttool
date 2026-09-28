@@ -482,7 +482,7 @@ and everything else is optional.
 | Contract | Go |
 | --- | --- |
 | definition | `Definition(t)` → `*openresponses.FunctionTool`; `Set.Definitions()` for a request |
-| name, description, parameters | `Tool.Name`, `Tool.Description`, `Tool.Parameters` (nil is no arguments) |
+| name, description, parameters | `Tool.Name`, `Tool.Description`, `Tool.Parameters` (nil is no arguments, and `Definition` serves it as `NoArgsSchema`) |
 | strict | `Strict` interface, read by `IsStrict`, set by `WithStrict()` |
 | sequential | `Sequential` interface, read by `IsSequential`, set by `WithSequential()` |
 | resource | `Resource` interface, read by `ResourceOf` (which applies the sequential rule), set by `WithResource(name)` |
@@ -627,8 +627,10 @@ and the three arrays a generator emits are fixed as follows:
 - `required` holds **every** field, in field order, `optional` or not.
 - A `nullable` field's type is the union `[<type>, "null"]`. A
   nullable `any` stays `{}`, which already admits `null`. Its `enum`,
-  when it has one, lists the non-null values, and `null` is admitted by
-  the type alone.
+  when it has one, lists the declared values and then `null`, last:
+  `enum` is an assertion of its own in JSON Schema, so a validator
+  that reads it would refuse the `null` the type union admits unless
+  the enum admits it too.
 - `additionalProperties` is `false` on **every** object, the root and
   each nested one.
 - A map is rejected, because strict mode cannot express an object
@@ -648,7 +650,7 @@ the type, the enum, the required properties, `additionalProperties`
 when false, and the items and properties recursively. A `{}` accepts
 anything. An `integer` accepts a JSON number with no fractional part.
 A `null` is accepted where the type union says so, and where the
-schema is `{}`.
+schema is `{}`, and only if the enum, when there is one, lists it.
 
 ### The Go source mapping
 
@@ -665,6 +667,7 @@ The reference binding reads the argument shape from a Go struct:
 | the integer kinds, `time.Duration` included | `integer` |
 | `float32`, `float64` | `number` |
 | `string`, `[]byte`, a type implementing `encoding.TextMarshaler` | `string` |
+| `[N]byte` | array of `integer`, since the encoder writes a byte array as numbers and a byte slice as base64 |
 | `time.Time` | `string` with `format` `date-time` |
 | `json.RawMessage`, an interface, a non-pointer type implementing `json.Marshaler` | `any` |
 | a slice or array of T | array of T |
@@ -801,3 +804,8 @@ module and is listed in the changelog as one.
   fixture corpus with its manifest.
 - Conformance gains a schema generator, held to the corpus.
 - Open questions gain optional fields under strict mode.
+- From review of the draft: a nullable field's enum lists `null`
+  under strict mode, since `enum` is an assertion of its own; a byte
+  array is an array of integers, as the encoder writes it; and a tool
+  with no arguments is served the empty object schema by every
+  constructor, never `null`, so its definition has one hash.

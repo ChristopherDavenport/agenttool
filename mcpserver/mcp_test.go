@@ -434,3 +434,16 @@ func TestSessionOutsideACall(t *testing.T) {
 		t.Error("a nil session reported as present")
 	}
 }
+
+// TestEmptySchemaIsTheNoArgsSchema holds the schema served for a nil
+// Parameters to the one the tool package reflects from NoArgs, so a
+// tool with no arguments has one definition on both sides.
+func TestEmptySchemaIsTheNoArgsSchema(t *testing.T) {
+	want, err := agenttool.SchemaFor[agenttool.NoArgs]()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(emptySchema) != string(want) {
+		t.Errorf("emptySchema = %s, NoArgs reflects %s", emptySchema, want)
+	}
+}

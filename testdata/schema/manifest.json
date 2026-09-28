@@ -125,6 +125,29 @@
         {"name": "value", "type": "any"},
         {"name": "word", "type": "integer", "enum": [1, 2]}
       ]
+    },
+    {
+      "name": "strict_nullable",
+      "strict": true,
+      "source": "strictNullable in schema_test.go, under WithStrict: a nullable enum admits null, a nullable any stays any, a nullable date-time, and an array of objects that each close their properties",
+      "fields": [
+        {"name": "level", "type": "string", "optional": true, "nullable": true, "enum": ["low", "high"]},
+        {"name": "raw", "type": "any", "optional": true, "nullable": true},
+        {"name": "when", "type": "string", "format": "date-time", "optional": true, "nullable": true},
+        {"name": "items", "type": "array", "items": {"type": "object", "fields": [
+          {"name": "name", "type": "string"},
+          {"name": "Tags", "type": "array", "items": {"type": "string"}}
+        ]}}
+      ]
+    },
+    {
+      "name": "byte_array",
+      "strict": false,
+      "source": "byteArray in schema_test.go: a byte slice is a string, a byte array is an array of integers, as the encoder writes them",
+      "fields": [
+        {"name": "slice", "type": "string"},
+        {"name": "fixed", "type": "array", "items": {"type": "integer"}}
+      ]
     }
   ]
 }
