@@ -158,6 +158,12 @@ The record a tool writes this way and the `Recordable` it returns as
 `Details` are the same namespace at two moments: what it started, and
 how it ended.
 
+A tool that needs the user's answer before it can go on, "delete the
+branch?", asks through the `Elicitor` the harness put on the call's
+context with `ContextWithElicitor`, so the question reaches the
+harness's policy and its record as part of the call. mcpclient's
+`WithElicitation()` routes an MCP server's elicitation there.
+
 ## Interrupting a call, closing a tool
 
 A tool that owns a process, a container or a persistent shell has two
