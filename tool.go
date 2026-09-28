@@ -33,7 +33,12 @@ import (
 )
 
 // Tool is something the model can call. Name and Parameters become the
-// function tool on the request; Execute runs one call.
+// function tool on the request; Execute runs one call. Everything else
+// a tool declares is an optional interface, [Strict], [Sequential],
+// [Resource], [Annotated], [Confined] and [io.Closer], found by type
+// assertion; a struct that embeds Tool forwards these four methods
+// alone and drops all of those, so a tool that stands in for another is
+// built with [Wrap].
 type Tool interface {
 	Name() string
 	Description() string
