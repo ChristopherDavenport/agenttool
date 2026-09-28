@@ -453,7 +453,16 @@ therefore overlap, and a tool that cannot tolerate that declares
   state outlives a batch, a persistent shell, a container, a pool,
   MUST guard that state itself against a second call arriving while
   one runs, and MAY answer the second call with an error rather than
-  wait. Whether the contract should widen this scope is open (#35).
+  wait. The scope stays one batch (#35): the executor sees one batch,
+  and the tool value is the thing that outlives batches as the state
+  does, so a guard across batches belongs on it. A tool that pools, and
+  can serve two calls at once, names no resource and guards nothing,
+  which is the distinction a lock held by the harness for every tool
+  could not make. OpenHands takes a lock per conversation, taken by the
+  executor for every call, with the terminal declaring a resource for
+  one shell and none for a pool of panes; a contract that one day wants
+  a lock across batches copies that shape, and puts the lock on the
+  tool value rather than in the executor.
 
 ### Termination
 
@@ -868,10 +877,6 @@ module and is listed in the changelog as one.
 
 ## Open questions
 
-- **Resource scope** (#35). Serialisation is per batch. A persistent
-  shell shared by a parent and a sub-agent, or by two concurrent runs,
-  is not protected. The alternative is a lock held on the tool value
-  across batches, which is correct for one shell and wrong for a pool.
 - **Unstated versus false annotations.** The Go binding cannot tell a
   tool that declared no annotations from one that declared them all
   false. MCP can, because the block is optional. A pointer, a presence
@@ -919,6 +924,8 @@ module and is listed in the changelog as one.
   `WithCloser`, so a tool that owns a process and runs it in a sandbox
   needs no type of its own (#49). A tool built without them reads as
   before. The open question on replay without a type is closed by it.
+- Resource scope is settled as one batch, with the guard across
+  batches the tool's own (#35); its open question is closed.
 
 ## Changes since 0.1
 
