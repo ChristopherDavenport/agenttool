@@ -56,6 +56,20 @@ versions may break the API.
   was built; a `NewFunc` tool with a nil schema sends an object
   schema on the wire where it sent `null`.
 
+- A wrapper that keeps a tool's properties. `Wrap(t, exec)` returns a
+  tool that runs `exec` in place of `t.Execute` and is `t` in every
+  other way: name, description, parameters, and every optional
+  interface `t` declares, `Strict`, `Sequential`, `Resource`,
+  `Annotated`, `Confined` and `io.Closer`, each answered through the
+  package's own reader so a property `t` lacks reads as its default.
+  Embedding `Tool` in a struct forwards the four methods alone and
+  silently drops the rest, so a wrapped `bash` that was `Sequential`
+  ran in a parallel batch and nothing failed; the set of optional
+  interfaces is this package's and grows with it, so a wrapper written
+  elsewhere was right only until the next one was added. A test now
+  reads the package's exported interfaces and refuses one `Wrap` does
+  not forward. `Unwrap(t)` returns the wrapped tool, or nil.
+
 ## v0.0.7 - 2026-09-23
 
 - Requires `openresponses` v0.0.12, up from v0.0.10.
