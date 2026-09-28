@@ -496,8 +496,8 @@ func (s *Remote) wrap(t *sdk.Tool) (agenttool.Tool, error) {
 // The hints are the server's word and nothing more: a policy may use
 // them to be stricter and must not use them alone to allow a call. Nor
 // do they make a call safe to run again: the tool this package builds
-// is not [agenttool.Replayable] and reads as [agenttool.ReplayUnknown]
-// whatever its idempotent hint, since MCP defines no deduplication and
+// declares no replay and reads as [agenttool.ReplayUnknown] whatever
+// its idempotent hint, since MCP defines no deduplication and
 // a call whose stream broke may or may not have run.
 func AnnotationsOf(t *sdk.Tool) (agenttool.Annotations, bool) {
 	if t == nil || t.Annotations == nil {

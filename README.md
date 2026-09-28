@@ -78,9 +78,13 @@ MCP's behavioural hints for a policy layer to read; `Confined` says
 whether a call will run in a sandbox and by what, so a shared
 permission preset can ask about the calls that leave one without
 knowing a product's own argument for leaving it; `Strict` marks the
-schema strict. `WithSequential()`, `WithResource()`,
-`WithAnnotations()` and `WithStrict()` set them on a tool from `New` or
-`NewFunc`.
+schema strict; `Replayable` says whether a call may run again; and
+`io.Closer` releases what the tool owns. `WithSequential()`,
+`WithResource()`, `WithAnnotations()`, `WithStrict()`,
+`WithConfined()`, `WithReplay()` and `WithCloser()` set them on a tool
+from `New` or `NewFunc`. Embedding such a tool in a struct to add a
+method compiles and silently drops the rest, so a tool built here gains
+a property through its option.
 
 `NewFunc` builds a tool from plain values and a raw function for
 schemas that come from elsewhere; `SchemaFor[T]()` gives the schema
@@ -190,7 +194,16 @@ argument of the shell tool and needs nothing from the contract.
 Releasing what outlives the call is `io.Closer`. It belongs to the host
 and never to a run or a batch, since a session outlives many runs and
 the executor closes nothing; `agenttool.Set(tools).Close()` closes the
-ones that implement it and joins their errors.
+ones that implement it and joins their errors. A tool built with `New`
+owns something through `WithCloser`, beside the rest of what it
+declares:
+
+```go
+var Bash = agenttool.New("bash", "Run a shell command", shell.run,
+	agenttool.WithResource("shell:session"),
+	agenttool.WithConfined(shell.confined), // (ctx, args) → (bool, "container:agent")
+	agenttool.WithCloser(shell.close))
+```
 
 ## A batch
 

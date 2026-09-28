@@ -21,6 +21,18 @@ versions may break the API.
   ambiguous call for each answer and what a keyed tool owes, and
   transient errors as an open question. No behaviour changes for a tool
   that does not implement it.
+- A tool built by `New` or `NewFunc` can own something and report where
+  it runs (#49). `WithCloser(fn)` makes it an `io.Closer`, so
+  `Set.Close` releases its shell or container; `WithConfined(fn)` and
+  `WithReplay(fn)` answer `ConfinedBy` and `ReplayOf` per call. Until
+  now the only way to add `Close` was to embed the tool in a struct,
+  which compiles and silently drops its resource, annotations and every
+  other property. A tool built without them reads exactly as before and
+  is not a closer, and none of them changes a definition or its hash.
+  `Wrap` forwards all three. Both tools now implement `Confined` and
+  `Replayable`, answering the readers' defaults without the options, so
+  code that reads them through `ConfinedBy` and `ReplayOf` sees no
+  change.
 
 ## v0.0.8 - 2026-09-28
 
