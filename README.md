@@ -247,12 +247,15 @@ holds:
 ```go
 func (s *Shell) Execute(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
 	if !s.mu.TryLock() {
-		return agenttool.Text("the previous command is still running"), nil
+		return agenttool.Result{}, errors.New("the previous command is still running")
 	}
 	defer s.mu.Unlock()
 	return s.run(ctx, call)
 }
 ```
+
+The refusal is an error, not text, so the model sees it as one and
+retries rather than reading it as the command's answer.
 
 A tool that panics completes with a
 `PanicError` whose message is one line; the stack is on the value for
