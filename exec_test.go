@@ -411,7 +411,7 @@ func TestExecuteOnStartMarksTheHandover(t *testing.T) {
 		{Tool: sleeper("b", 0), Call: Call{ID: "b"}},
 		{Tool: sleeper("c", 0), Call: Call{ID: "c"}},
 	}
-	exec := Executor{Sequential: true, OnStart: func(ctx context.Context, job Job) {
+	exec := Executor{Sequential: true, OnStart: func(ctx context.Context, job Job) error {
 		call, ok := CallFrom(ctx)
 		if !ok || call.ID != job.Call.ID {
 			t.Errorf("OnStart: call on ctx = %+v, %v; want job %q", call, ok, job.Call.ID)
@@ -420,6 +420,7 @@ func TestExecuteOnStartMarksTheHandover(t *testing.T) {
 		if job.Call.ID == "a" {
 			cancel()
 		}
+		return nil
 	}}
 	_, errs := exec.Results(ctx, jobs)
 	close(started)
@@ -456,7 +457,7 @@ func TestExecuteOnStartRespectsTheBound(t *testing.T) {
 	for i := range jobs {
 		jobs[i] = Job{Tool: block, Call: Call{ID: fmt.Sprint(i)}}
 	}
-	exec := Executor{MaxParallel: 8, OnStart: func(context.Context, Job) { started.Add(1) }}
+	exec := Executor{MaxParallel: 8, OnStart: func(context.Context, Job) error { started.Add(1); return nil }}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -487,9 +488,31 @@ func TestExecuteOnStartSkipsCancelledJobs(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var n atomic.Int32
-	exec := Executor{OnStart: func(context.Context, Job) { n.Add(1) }}
+	exec := Executor{OnStart: func(context.Context, Job) error { n.Add(1); return nil }}
 	_, errs := exec.Results(ctx, []Job{{Tool: sleeper("x", 0), Call: Call{ID: "x"}}})
 	if n.Load() != 0 || !errors.Is(errs[0], context.Canceled) {
 		t.Errorf("started %d, err %v; want none and the cancellation", n.Load(), errs[0])
+	}
+}
+
+// An OnStart that fails stops the job: the tool never runs and the job
+// completes with the harness's error, so a dispatch that could not be
+// made durable is not followed by a side effect. A panic there is the
+// harness's, not a PanicError blamed on the tool.
+func TestExecuteOnStartRefusesTheJob(t *testing.T) {
+	var ran atomic.Int32
+	tool := New("t", "", func(context.Context, NoArgs) (string, error) { ran.Add(1); return "ran", nil })
+	jobs := []Job{{Tool: tool, Call: Call{ID: "x"}}}
+
+	refused := errors.New("disk full")
+	_, errs := (Executor{OnStart: func(context.Context, Job) error { return refused }}).Results(context.Background(), jobs)
+	if !errors.Is(errs[0], refused) || ran.Load() != 0 {
+		t.Errorf("err = %v, ran = %d; want the refusal and no run", errs[0], ran.Load())
+	}
+
+	_, errs = (Executor{OnStart: func(context.Context, Job) error { panic("harness bug") }}).Results(context.Background(), jobs)
+	var pe *PanicError
+	if errs[0] == nil || errors.As(errs[0], &pe) || !strings.Contains(errs[0].Error(), "OnStart") || ran.Load() != 0 {
+		t.Errorf("err = %v, ran = %d; want an OnStart error that is not the tool's panic", errs[0], ran.Load())
 	}
 }

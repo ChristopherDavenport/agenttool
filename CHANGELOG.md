@@ -92,10 +92,15 @@ versions may break the API.
   once, and a harness that wrote its dispatch records as the batch
   arrived recorded every call as in flight from the first one's start,
   so a resume after a kill treated three side effects as possibly done
-  when at most one could have begun (agentturn #93). It runs on the
-  job's goroutine and blocks that job alone, so a write that must be
-  durable before the tool runs costs the rest of the batch nothing,
-  and it is not called for a job the cancellation reaches first.
+  when at most one could have begun (agentturn #93). An error from it
+  completes the job with that error and the tool does not run, so a
+  dispatch the harness could not make durable is never followed by a
+  side effect the record cannot see, and a panic in it is reported as
+  the harness's rather than as the tool's. It runs on the job's
+  goroutine, holding the job's slot and its turn in its chain, so a
+  durable write there delays that job and what waits behind it and
+  nothing else, and it is not called for a job the cancellation
+  reaches first.
 
 ## v0.0.7 - 2026-09-23
 

@@ -50,13 +50,23 @@ type Executor struct {
 	// batch is handed to the executor all at once and a job whose turn
 	// has not come has not started, so this is where a harness records
 	// that a call was dispatched: a call cut off before OnStart never
-	// reached its tool, and one cut off after may have. It runs on the
-	// job's goroutine and blocks that job alone, so a write that must
-	// be durable before the tool runs costs the rest of the batch
-	// nothing; jobs start concurrently, so it must be safe to call
-	// concurrently. It is not called for a job cancelled before its
-	// turn, which completes with the cancellation as its error.
-	OnStart func(ctx context.Context, job Job)
+	// reached its tool, and one cut off after may have.
+	//
+	// An error stops the job: it completes with that error and the
+	// tool does not run, so a dispatch the harness could not make
+	// durable is never followed by a side effect the record cannot
+	// see, which is the direction that matters. A panic in it is the
+	// harness's and completes the job with an error naming OnStart,
+	// not a [PanicError] blamed on the tool.
+	//
+	// It runs on the job's goroutine, holding the job's slot in the
+	// bound and its turn in its chain while it runs, so a durable write
+	// there delays that job and whatever waits behind it, every later
+	// job in a serial batch, and nothing else. Jobs start concurrently,
+	// so it must be safe to call concurrently. It is not called for a
+	// job cancelled before its turn, which completes with the
+	// cancellation as its error.
+	OnStart func(ctx context.Context, job Job) error
 }
 
 // Execute runs jobs and yields their events from the caller's
@@ -184,8 +194,9 @@ func (e *PanicError) Error() string {
 
 // run executes one job, turning a panic into a [PanicError]. onStart,
 // when set, is told the job has started once its context is confirmed
-// live and carries the call, and before the tool runs.
-func run(ctx context.Context, job Job, onStart func(context.Context, Job), onUpdate func(Result)) (res Result, err error) {
+// live and carries the call, and before the tool runs; its refusal is
+// the job's result and the tool is not run.
+func run(ctx context.Context, job Job, onStart func(context.Context, Job) error, onUpdate func(Result)) (res Result, err error) {
 	if job.Tool == nil {
 		return Result{}, fmt.Errorf("no tool for call %q", job.Call.ID)
 	}
@@ -205,9 +216,22 @@ func run(ctx context.Context, job Job, onStart func(context.Context, Job), onUpd
 		return Result{}, err
 	}
 	if onStart != nil {
-		onStart(ctx, Job{Tool: job.Tool, Call: call})
+		if err := start(ctx, onStart, Job{Tool: job.Tool, Call: call}); err != nil {
+			return Result{}, err
+		}
 	}
 	return job.Tool.Execute(ctx, call)
+}
+
+// start calls the harness's OnStart with a recover of its own, so a
+// panic there is reported as the harness's rather than as the tool's.
+func start(ctx context.Context, onStart func(context.Context, Job) error, job Job) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("agenttool: OnStart for call %q panicked: %v", job.Call.ID, r)
+		}
+	}()
+	return onStart(ctx, job)
 }
 
 // chainsOf groups the jobs of a batch into the sequences that must run

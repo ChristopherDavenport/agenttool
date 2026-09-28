@@ -402,7 +402,9 @@ the model's order, whatever order the results arrived in.
   ran from one that may have, records it at that moment and not
   before. An executor SHOULD tell the harness when each call starts,
   synchronously, so a record that must be durable before the tool runs
-  can be.
+  can be, and MUST let the harness refuse the call there: a dispatch
+  that could not be recorded is never followed by a side effect the
+  record cannot see.
 
 ### Parallelism
 
@@ -508,7 +510,7 @@ and everything else is optional.
 | recorder on the context | `RecordFunc`, `ContextWithRecorder`, `RecorderFrom`, `WriteRecord`; `Executor.Recorder` installs it per batch |
 | arguments validation | `New` validates a reflected schema with `Schema.ValidateJSON`; `ValidationError{Path, Msg}` |
 | executor | `Executor{MaxParallel, Sequential, Recorder, OnStart}`; `Execute` yields `Event{Index, Final, Result, Err}`; `Results` collects in job order |
-| a call starts | `Executor.OnStart(ctx, job)`, on the job's goroutine, after the slot and the turn, with the call on `ctx`, before `Execute` |
+| a call starts | `Executor.OnStart(ctx, job) error`, on the job's goroutine, after the slot and the turn, with the call on `ctx`, before `Execute`; an error completes the job without running the tool |
 | schema generation | `New`, `SchemaFor`, `SchemaOf`, `Reflect`; `Schemer` supplies a schema; see the [schema section](#schema-generation) |
 
 One place where the binding does not yet do what this document says:
