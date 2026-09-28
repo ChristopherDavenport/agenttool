@@ -158,6 +158,12 @@ func SchemaFor[T any](opts ...Option) (json.RawMessage, error) {
 //
 // Outside strict mode a field is optional when its tag says omitempty
 // or omitzero or when it is a pointer.
+//
+// The shape of the output, member order, the order of required, enum
+// and a type union, and the strict rules stated as schema rules rather
+// than reflection rules, is specified in docs/rfcs/0001-tool-contract.md
+// under "Schema generation", and testdata/schema/manifest.json
+// describes the golden corpus in those terms.
 func SchemaOf(t reflect.Type, opts ...Option) (json.RawMessage, error) {
 	if t == nil {
 		return nil, fmt.Errorf("agenttool: schema of nil type")

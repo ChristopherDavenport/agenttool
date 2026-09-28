@@ -107,26 +107,31 @@ type marshalerArgs struct {
 	Word  uintptr      `json:"word" enum:"1,2"`
 }
 
+// schemaGoldens is the fixture corpus: each entry generates
+// testdata/schema/<name>.json, and testdata/schema/manifest.json
+// describes the same shape without Go, which schema_manifest_test.go
+// holds to the same goldens.
+var schemaGoldens = []struct {
+	name   string
+	typ    reflect.Type
+	strict bool
+}{
+	{"read_file", reflect.TypeFor[readFileArgs](), false},
+	{"read_file_strict", reflect.TypeFor[readFileArgs](), true},
+	{"everything", reflect.TypeFor[everything](), false},
+	{"embedded", reflect.TypeFor[embedded](), false},
+	{"strict", reflect.TypeFor[strictArgs](), true},
+	{"no_args", reflect.TypeFor[NoArgs](), false},
+	{"no_args_strict", reflect.TypeFor[NoArgs](), true},
+	{"custom", reflect.TypeFor[custom](), false},
+	{"text_marshaler", reflect.TypeFor[textArgs](), false},
+	{"pointer_to_struct", reflect.TypeFor[*readFileArgs](), false},
+	{"shadowed", reflect.TypeFor[shadowed](), false},
+	{"json_marshaler", reflect.TypeFor[marshalerArgs](), false},
+}
+
 func TestSchemaGolden(t *testing.T) {
-	cases := []struct {
-		name   string
-		typ    reflect.Type
-		strict bool
-	}{
-		{"read_file", reflect.TypeFor[readFileArgs](), false},
-		{"read_file_strict", reflect.TypeFor[readFileArgs](), true},
-		{"everything", reflect.TypeFor[everything](), false},
-		{"embedded", reflect.TypeFor[embedded](), false},
-		{"strict", reflect.TypeFor[strictArgs](), true},
-		{"no_args", reflect.TypeFor[NoArgs](), false},
-		{"no_args_strict", reflect.TypeFor[NoArgs](), true},
-		{"custom", reflect.TypeFor[custom](), false},
-		{"text_marshaler", reflect.TypeFor[textArgs](), false},
-		{"pointer_to_struct", reflect.TypeFor[*readFileArgs](), false},
-		{"shadowed", reflect.TypeFor[shadowed](), false},
-		{"json_marshaler", reflect.TypeFor[marshalerArgs](), false},
-	}
-	for _, tc := range cases {
+	for _, tc := range schemaGoldens {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := SchemaOf(tc.typ, strictOpts(tc.strict)...)
 			if err != nil {
