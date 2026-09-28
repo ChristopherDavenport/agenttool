@@ -33,6 +33,11 @@ versions may break the API.
   `Replayable`, answering the readers' defaults without the options, so
   code that reads them through `ConfinedBy` and `ReplayOf` sees no
   change.
+- RFC 0001 settles resource scope (#35): serialisation stays within one
+  batch, and a tool whose state outlives a batch guards it itself, as
+  the `Resource` doc already said. A lock across batches, if one is ever
+  wanted, belongs on the tool value, not the executor. No behaviour
+  changes.
 
 ## v0.0.8 - 2026-09-28
 
