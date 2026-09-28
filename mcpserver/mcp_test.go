@@ -624,8 +624,10 @@ func TestHandlerInstallsCallAndRecorder(t *testing.T) {
 // TestRecordMetaKeyMatchesClient holds this module's key to mcpclient's.
 // It reads the constant out of the sibling's source rather than naming
 // it, because naming it would not compile against the previous
-// mcpclient release the extracted build uses; the sibling's tree is
-// absent from that copy, so the test skips there.
+// mcpclient release the extracted build uses. The extracted build
+// copies the sibling's tree beside this one, so the test runs there
+// too, against the tree's source; it skips only where no sibling sits
+// beside the module at all.
 func TestRecordMetaKeyMatchesClient(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("..", "mcpclient", "mcp.go"))
 	if err != nil {

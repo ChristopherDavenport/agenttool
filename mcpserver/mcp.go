@@ -100,12 +100,15 @@ func NewServer(name, version string, tools ...agenttool.Tool) (*sdk.Server, erro
 // go-sdk derives each call's context from the one the session was
 // opened with: over stdio and in memory that is the context the host
 // passed to Run or Connect, and over streamable HTTP it is the
-// initialize request's context, which the SDK says middleware may add
+// initialize request's context in stateful mode and each request's
+// own in stateless mode, both of which the SDK says middleware may add
 // values to, so an HTTP host installs the recorder in middleware on
 // the handler. That is how the SDK behaves at v1.8.0 and not a
-// documented guarantee, which is why a test here pins it; a host that
-// wants no dependence on it wraps its tools with [agenttool.Wrap] and
-// installs the recorder on the context there.
+// documented guarantee; a test here pins it for the in-memory
+// transport, and the HTTP routes are described from the SDK's source
+// rather than pinned. A host that wants no dependence on any of it
+// wraps its tools with [agenttool.Wrap] and installs the recorder on
+// the context there.
 //
 // When the request carries a progress token, Call.OnUpdate forwards each
 // update as a progress notification whose message is the update's text.
