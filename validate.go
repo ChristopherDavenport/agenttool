@@ -57,19 +57,20 @@ func (s *Schema) validate(v any, path string) error {
 	if s == nil {
 		return nil
 	}
-	if v == nil && s.Enum == nil {
-		if s.Nullable || s.Type == "" || s.Type == "null" {
-			return nil
+	if v == nil {
+		if !(s.Nullable || s.Type == "" || s.Type == "null") {
+			return &ValidationError{Path: path, Msg: "expected " + s.Type + ", got null"}
 		}
-		return &ValidationError{Path: path, Msg: "expected " + s.Type + ", got null"}
+		// The type admits null; an enum is an assertion of its own, so
+		// it has to list null too, as it must for any other validator
+		// to agree.
+		if s.Enum != nil && !inEnum(s.Enum, v) {
+			return &ValidationError{Path: path, Msg: fmt.Sprintf("expected one of %s, got %s", describeEnum(s.Enum), describe(v))}
+		}
+		return nil
 	}
-	// An enum is an assertion of its own, so null passes it only when
-	// listed, as it must be for any other validator to agree.
 	if s.Enum != nil && !inEnum(s.Enum, v) {
 		return &ValidationError{Path: path, Msg: fmt.Sprintf("expected one of %s, got %s", describeEnum(s.Enum), describe(v))}
-	}
-	if v == nil {
-		return nil
 	}
 	switch s.Type {
 	case "":

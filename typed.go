@@ -26,8 +26,10 @@ type options struct {
 	noValidation bool
 }
 
-// WithStrict generates the schema under the strict rules and sets the
-// strict flag on the function tool.
+// WithStrict sets the strict flag on the function tool, and has [New]
+// reflect the schema under the strict rules so the flag is true of it.
+// On a schema the author supplied, through [NewFunc], [WithParameters]
+// or a [Schemer], it is the author's claim and nothing checks it.
 func WithStrict() Option { return func(o *options) { o.strict = true } }
 
 // WithSequential marks the tool [Sequential].
