@@ -193,8 +193,10 @@ sandbox and owns nothing that outlives a call.
 | confined | (ctx, args) → (boolean, string) | (false, `""`), unstated | a policy layer, per call |
 | closer | presence | absent, owns nothing | the host |
 
-- **strict** says the parameters schema was generated under the strict
-  rules and the provider may enforce them. It is set on the definition.
+- **strict** is the tool's claim that its parameters schema keeps the
+  strict rules, so the provider may enforce them. It is set on the
+  definition. A binding makes the claim true for a schema it generated
+  under those rules and does not check one the author supplied.
 - **sequential** says the tool must not run alongside any other tool in
   the same batch. When any tool in a batch reports it, the whole batch
   runs one call at a time in the model's order.
