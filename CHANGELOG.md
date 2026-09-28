@@ -85,6 +85,18 @@ versions may break the API.
   shell that does. Whether the executor should hold a lock across
   batches is an open question in RFC 0001. No behaviour changes.
 
+- The executor says when a call starts. `Executor.OnStart`, when set,
+  is called the moment a job is handed to its tool: after it has taken
+  a slot in the bound and its turn in its chain, with the `Call` on the
+  context, and before `Execute`. A batch reaches the executor all at
+  once, and a harness that wrote its dispatch records as the batch
+  arrived recorded every call as in flight from the first one's start,
+  so a resume after a kill treated three side effects as possibly done
+  when at most one could have begun (agentturn #93). It runs on the
+  job's goroutine and blocks that job alone, so a write that must be
+  durable before the tool runs costs the rest of the batch nothing,
+  and it is not called for a job the cancellation reaches first.
+
 ## v0.0.7 - 2026-09-23
 
 - Requires `openresponses` v0.0.12, up from v0.0.10.

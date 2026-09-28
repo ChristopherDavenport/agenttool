@@ -393,3 +393,103 @@ func TestExecuteResourceGrouping(t *testing.T) {
 		t.Errorf("ResourceOf = %q", res)
 	}
 }
+
+// TestExecuteOnStartMarksTheHandover pins that OnStart fires when a job
+// is handed to its tool and not when the batch is: in a serial batch
+// whose first job blocks, only the first job has started when the batch
+// is cut, and the other two complete with the cancellation.
+func TestExecuteOnStartMarksTheHandover(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan string, 3)
+	blocker := New("blocker", "", func(ctx context.Context, _ NoArgs) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	})
+	jobs := []Job{
+		{Tool: blocker, Call: Call{ID: "a"}},
+		{Tool: sleeper("b", 0), Call: Call{ID: "b"}},
+		{Tool: sleeper("c", 0), Call: Call{ID: "c"}},
+	}
+	exec := Executor{Sequential: true, OnStart: func(ctx context.Context, job Job) {
+		call, ok := CallFrom(ctx)
+		if !ok || call.ID != job.Call.ID {
+			t.Errorf("OnStart: call on ctx = %+v, %v; want job %q", call, ok, job.Call.ID)
+		}
+		started <- job.Call.ID
+		if job.Call.ID == "a" {
+			cancel()
+		}
+	}}
+	_, errs := exec.Results(ctx, jobs)
+	close(started)
+	var ids []string
+	for id := range started {
+		ids = append(ids, id)
+	}
+	if strings.Join(ids, ",") != "a" {
+		t.Errorf("started = %v, want only the job that was handed over", ids)
+	}
+	for i, err := range errs {
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("job %d: err = %v, want the cancellation", i, err)
+		}
+	}
+}
+
+// TestExecuteOnStartRespectsTheBound pins the pigeonhole: with twelve
+// blocking jobs under a bound of eight, exactly eight have started
+// while the rest wait, so a recorder that writes a dispatch from
+// OnStart never claims a call that provably has not reached its tool.
+func TestExecuteOnStartRespectsTheBound(t *testing.T) {
+	release := make(chan struct{})
+	var started atomic.Int32
+	block := New("block", "", func(ctx context.Context, _ NoArgs) (string, error) {
+		select {
+		case <-release:
+			return "ok", nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	})
+	jobs := make([]Job, 12)
+	for i := range jobs {
+		jobs[i] = Job{Tool: block, Call: Call{ID: fmt.Sprint(i)}}
+	}
+	exec := Executor{MaxParallel: 8, OnStart: func(context.Context, Job) { started.Add(1) }}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, errs := exec.Results(context.Background(), jobs)
+		for i, err := range errs {
+			if err != nil {
+				t.Errorf("job %d: %v", i, err)
+			}
+		}
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for started.Load() < 8 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if n := started.Load(); n != 8 {
+		t.Errorf("started = %d while the bound is 8", n)
+	}
+	close(release)
+	<-done
+	if n := started.Load(); n != 12 {
+		t.Errorf("started = %d after release, want every job", n)
+	}
+}
+
+// OnStart is not called for a job the cancellation reaches first.
+func TestExecuteOnStartSkipsCancelledJobs(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var n atomic.Int32
+	exec := Executor{OnStart: func(context.Context, Job) { n.Add(1) }}
+	_, errs := exec.Results(ctx, []Job{{Tool: sleeper("x", 0), Call: Call{ID: "x"}}})
+	if n.Load() != 0 || !errors.Is(errs[0], context.Canceled) {
+		t.Errorf("started %d, err %v; want none and the cancellation", n.Load(), errs[0])
+	}
+}

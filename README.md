@@ -215,7 +215,12 @@ for ev := range (agenttool.Executor{MaxParallel: 4}).Execute(ctx, jobs) {
 
 An `Event` names its job by `Index`. It is `Final` exactly once per
 job, carrying the `Result` or the `Err`, and completions arrive in
-completion order, not job order.
+completion order, not job order. A batch reaches the executor all at
+once and a job waits for a slot in the bound or its turn behind a
+shared resource, so the moment a call is handed to its tool is later,
+and `OnStart` is called then, on the job's goroutine, with the call on
+the context; a session recorder writes its dispatch entry there, so a
+call cut off before it is known never to have run.
 
 A tool that owns shared state names it, and only the calls that touch
 it wait for each other:

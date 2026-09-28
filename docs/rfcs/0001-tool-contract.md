@@ -395,6 +395,14 @@ the model's order, whatever order the results arrived in.
 - **Every call completes exactly once**, with a result or an error,
   including a call that never started: a call cancelled before it ran
   completes with the cancellation as its error.
+- **A call starts when it is handed to its tool**, not when its batch
+  is handed to the executor. A call waiting for a slot in the bound or
+  for its turn in a chain has not started, and a harness that records
+  that a call was dispatched, so a reader can tell a call that never
+  ran from one that may have, records it at that moment and not
+  before. An executor SHOULD tell the harness when each call starts,
+  synchronously, so a record that must be durable before the tool runs
+  can be.
 
 ### Parallelism
 
@@ -499,7 +507,8 @@ and everything else is optional.
 | record | `Recordable` (`RecordNS() string`), `Record{NS, Data}`, `RecordOf(details)` |
 | recorder on the context | `RecordFunc`, `ContextWithRecorder`, `RecorderFrom`, `WriteRecord`; `Executor.Recorder` installs it per batch |
 | arguments validation | `New` validates a reflected schema with `Schema.ValidateJSON`; `ValidationError{Path, Msg}` |
-| executor | `Executor{MaxParallel, Sequential, Recorder}`; `Execute` yields `Event{Index, Final, Result, Err}`; `Results` collects in job order |
+| executor | `Executor{MaxParallel, Sequential, Recorder, OnStart}`; `Execute` yields `Event{Index, Final, Result, Err}`; `Results` collects in job order |
+| a call starts | `Executor.OnStart(ctx, job)`, on the job's goroutine, after the slot and the turn, with the call on `ctx`, before `Execute` |
 | schema generation | `New`, `SchemaFor`, `SchemaOf`, `Reflect`; `Schemer` supplies a schema; see the [schema section](#schema-generation) |
 
 One place where the binding does not yet do what this document says:
