@@ -37,8 +37,10 @@ import (
 )
 
 // emptySchema describes a tool that takes no arguments; MCP requires an
-// object schema on every tool.
-var emptySchema = json.RawMessage(`{"type":"object","properties":{}}`)
+// object schema on every tool. It is agenttool.NoArgsSchema byte for
+// byte, spelt out here so this module builds against the root release
+// that predates it, and a test holds the two together.
+var emptySchema = json.RawMessage(`{"type":"object","properties":{},"required":[]}`)
 
 // octetStream is the media type for bytes of unknown type.
 const octetStream = "application/octet-stream"

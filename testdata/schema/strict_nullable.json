@@ -1,0 +1,53 @@
+{
+  "type": "object",
+  "properties": {
+    "level": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "low",
+        "high",
+        null
+      ]
+    },
+    "raw": {},
+    "when": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "Tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "Tags"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "level",
+    "raw",
+    "when",
+    "items"
+  ],
+  "additionalProperties": false
+}

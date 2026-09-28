@@ -153,11 +153,18 @@ func SchemaFor[T any](opts ...Option) (json.RawMessage, error) {
 // value) and types implementing encoding.TextMarshaler (a string).
 //
 // In strict mode every property is required, additionalProperties is
-// false on every object, pointer fields are nullable, and maps are
-// rejected because strict mode cannot express them.
+// false on every object, pointer fields are nullable with null added
+// to their enum when they have one, and maps are rejected because
+// strict mode cannot express them.
 //
 // Outside strict mode a field is optional when its tag says omitempty
 // or omitzero or when it is a pointer.
+//
+// The shape of the output, member order, the order of required, enum
+// and a type union, and the strict rules stated as schema rules rather
+// than reflection rules, is specified in docs/rfcs/0001-tool-contract.md
+// under "Schema generation", and testdata/schema/manifest.json
+// describes the golden corpus in those terms.
 func SchemaOf(t reflect.Type, opts ...Option) (json.RawMessage, error) {
 	if t == nil {
 		return nil, fmt.Errorf("agenttool: schema of nil type")
@@ -271,7 +278,17 @@ func (g *generator) collect(t reflect.Type, depth int, out *[]field) error {
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct {
-				if err := g.collect(ft, depth+1, out); err != nil {
+				// An embedded struct that contains its embedder, through
+				// a pointer, is a recursive shape as much as a field
+				// is, and without this guard it is a stack overflow
+				// rather than an error.
+				if g.seen[ft] {
+					return fmt.Errorf("agenttool: recursive type %s cannot be expressed as a schema", ft)
+				}
+				g.seen[ft] = true
+				err := g.collect(ft, depth+1, out)
+				delete(g.seen, ft)
+				if err != nil {
 					return err
 				}
 				continue
@@ -300,6 +317,12 @@ func (g *generator) collect(t reflect.Type, depth int, out *[]field) error {
 		}
 		if g.strict && f.Type.Kind() == reflect.Pointer {
 			prop.Nullable = true
+			// enum is an assertion of its own in JSON Schema, so a
+			// nullable field's enum has to admit null itself or no
+			// validator but this one accepts it.
+			if prop.Enum != nil {
+				prop.Enum = append(prop.Enum, nil)
+			}
 		}
 		*out = append(*out, field{name: name, schema: prop, required: g.strict || !optional, depth: depth, tagged: tagged})
 	}
@@ -390,7 +413,9 @@ func (g *generator) schema(t reflect.Type, field string) (*Schema, error) {
 	case reflect.Interface:
 		return &Schema{}, nil
 	case reflect.Slice, reflect.Array:
-		if t.Elem().Kind() == reflect.Uint8 {
+		// encoding/json writes a byte slice as a base64 string and a
+		// byte array as an array of numbers, and the schema follows it.
+		if t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
 			return &Schema{Type: "string"}, nil
 		}
 		items, err := g.schema(t.Elem(), field)
