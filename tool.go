@@ -365,9 +365,23 @@ func ResourceOf(t Tool) string {
 	return r.Resource()
 }
 
-// Definition builds the function tool that describes t on a request.
+// NoArgsSchema is the parameters schema of a tool that takes no
+// arguments, and what [Definition] serves for a nil Parameters, so
+// "no arguments" is one definition however the tool was built: it is
+// the schema [New] reflects from [NoArgs], and mcpserver serves the
+// same bytes for a nil schema.
+var NoArgsSchema = json.RawMessage(`{"type":"object","properties":{},"required":[]}`)
+
+// Definition builds the function tool that describes t on a request. A
+// nil Parameters is served as [NoArgsSchema] rather than null, so the
+// definition's parameters is always an object schema and its hash does
+// not depend on which constructor built the tool.
 func Definition(t Tool) *openresponses.FunctionTool {
-	ft := openresponses.NewFunctionTool(t.Name(), t.Description(), t.Parameters())
+	params := t.Parameters()
+	if len(params) == 0 {
+		params = NoArgsSchema
+	}
+	ft := openresponses.NewFunctionTool(t.Name(), t.Description(), params)
 	if IsStrict(t) {
 		strict := true
 		ft.Strict = &strict

@@ -1,0 +1,18 @@
+{
+  "type": "object",
+  "properties": {
+    "slice": {
+      "type": "string"
+    },
+    "fixed": {
+      "type": "array",
+      "items": {
+        "type": "integer"
+      }
+    }
+  },
+  "required": [
+    "slice",
+    "fixed"
+  ]
+}

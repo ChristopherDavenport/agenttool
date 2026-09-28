@@ -55,6 +55,8 @@ func TestSchemaValidate(t *testing.T) {
 		{"not json", plain, `{`, `not valid JSON`},
 		{"strict requires everything", strict, `{"path":"/x"}`, `missing required property "level"`},
 		{"strict nullable pointer", strict, `{"path":"/x","level":"low","count":null,"tags":[],"nested":{"deep":false},"ratio":1}`, ""},
+		{"strict enum admits null", &Schema{Type: "string", Nullable: true, Enum: []any{"a", nil}}, `null`, ""},
+		{"nullable enum without null rejects it", &Schema{Type: "string", Nullable: true, Enum: []any{"a"}}, `null`, `expected one of ["a"], got null`},
 		{"strict rejects extra", strict, `{"path":"/x","level":"low","count":null,"tags":[],"nested":{"deep":false},"ratio":1,"bogus":true}`, `unexpected property "bogus"`},
 	}
 	for _, tc := range cases {

@@ -57,14 +57,19 @@ func (s *Schema) validate(v any, path string) error {
 	if s == nil {
 		return nil
 	}
-	if v == nil {
+	if v == nil && s.Enum == nil {
 		if s.Nullable || s.Type == "" || s.Type == "null" {
 			return nil
 		}
 		return &ValidationError{Path: path, Msg: "expected " + s.Type + ", got null"}
 	}
+	// An enum is an assertion of its own, so null passes it only when
+	// listed, as it must be for any other validator to agree.
 	if s.Enum != nil && !inEnum(s.Enum, v) {
 		return &ValidationError{Path: path, Msg: fmt.Sprintf("expected one of %s, got %s", describeEnum(s.Enum), describe(v))}
+	}
+	if v == nil {
+		return nil
 	}
 	switch s.Type {
 	case "":
@@ -177,6 +182,10 @@ func toFloat(v any) (float64, bool) {
 func inEnum(enum []any, v any) bool {
 	for _, e := range enum {
 		switch ev := e.(type) {
+		case nil:
+			if v == nil {
+				return true
+			}
 		case string:
 			if s, ok := v.(string); ok && s == ev {
 				return true

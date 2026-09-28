@@ -1,6 +1,7 @@
 package agenttool
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -89,6 +90,11 @@ func buildShape(t shapeType, strict bool) (*Schema, error) {
 			p.Description = f.Description
 			p.Enum = f.Enum
 			p.Nullable = strict && f.Nullable
+			// A nullable enum lists null last under strict, since enum
+			// is an assertion of its own.
+			if p.Nullable && p.Enum != nil {
+				p.Enum = append(append([]any(nil), p.Enum...), nil)
+			}
 			s.Properties = append(s.Properties, Property{Name: f.Name, Schema: p})
 			if strict || !f.Optional {
 				s.Required = append(s.Required, f.Name)
@@ -97,6 +103,101 @@ func buildShape(t shapeType, strict bool) (*Schema, error) {
 		return s, nil
 	}
 	return nil, fmt.Errorf("unknown type %q", t.Type)
+}
+
+// writeSchema serialises a schema tree in the RFC's member order
+// without Schema.MarshalJSON, so the bytes the manifest produces come
+// from the RFC's list and not from the generator's own encoder: a
+// change to either that the other does not follow fails the goldens.
+func writeSchema(s *Schema) ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	first := true
+	raw := func(key string, v []byte) {
+		if !first {
+			buf.WriteByte(',')
+		}
+		first = false
+		k, _ := json.Marshal(key)
+		buf.Write(k)
+		buf.WriteByte(':')
+		buf.Write(v)
+	}
+	leaf := func(key string, v any) error {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		raw(key, b)
+		return nil
+	}
+	if s.Type != "" {
+		var typ any = s.Type
+		if s.Nullable {
+			typ = []string{s.Type, "null"}
+		}
+		if err := leaf("type", typ); err != nil {
+			return nil, err
+		}
+	}
+	if s.Description != "" {
+		if err := leaf("description", s.Description); err != nil {
+			return nil, err
+		}
+	}
+	if s.Format != "" {
+		if err := leaf("format", s.Format); err != nil {
+			return nil, err
+		}
+	}
+	if s.Enum != nil {
+		if err := leaf("enum", s.Enum); err != nil {
+			return nil, err
+		}
+	}
+	if s.Properties != nil {
+		var props bytes.Buffer
+		props.WriteByte('{')
+		for i, p := range s.Properties {
+			if i > 0 {
+				props.WriteByte(',')
+			}
+			k, _ := json.Marshal(p.Name)
+			props.Write(k)
+			props.WriteByte(':')
+			child, err := writeSchema(p.Schema)
+			if err != nil {
+				return nil, err
+			}
+			props.Write(child)
+		}
+		props.WriteByte('}')
+		raw("properties", props.Bytes())
+	}
+	if s.Required != nil {
+		if err := leaf("required", s.Required); err != nil {
+			return nil, err
+		}
+	}
+	if s.Items != nil {
+		items, err := writeSchema(s.Items)
+		if err != nil {
+			return nil, err
+		}
+		raw("items", items)
+	}
+	switch {
+	case s.NoAdditional:
+		raw("additionalProperties", []byte("false"))
+	case s.AdditionalProperties != nil:
+		add, err := writeSchema(s.AdditionalProperties)
+		if err != nil {
+			return nil, err
+		}
+		raw("additionalProperties", add)
+	}
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
 }
 
 func readManifest(t *testing.T) manifest {
@@ -131,7 +232,7 @@ func TestManifestProducesGoldens(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				got, err = json.Marshal(s)
+				got, err = writeSchema(s)
 				if err != nil {
 					t.Fatal(err)
 				}

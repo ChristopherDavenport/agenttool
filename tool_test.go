@@ -368,3 +368,20 @@ func TestConfinedBy(t *testing.T) {
 		})
 	}
 }
+
+// A tool with no arguments has one definition however it was built:
+// NewFunc with a nil schema and New with NoArgs serve the same
+// parameters, and a request never carries null.
+func TestDefinitionServesNoArgsSchema(t *testing.T) {
+	bare := NewFunc("bare", "", nil, func(context.Context, Call) (Result, error) { return Result{}, nil })
+	typed := New("typed", "", func(context.Context, NoArgs) (string, error) { return "", nil })
+	for _, tl := range []Tool{bare, typed} {
+		def, err := json.Marshal(Definition(tl))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(def), `"parameters":`+string(NoArgsSchema)) {
+			t.Errorf("%s: definition = %s, want NoArgsSchema", tl.Name(), def)
+		}
+	}
+}
