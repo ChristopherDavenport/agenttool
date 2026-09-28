@@ -102,6 +102,28 @@ versions may break the API.
   nothing else, and it is not called for a job the cancellation
   reaches first.
 
+- A tool's record survives being served over MCP. v0.0.7 made
+  `Result.Details` durable and made one `Tool` value serve two clients
+  apart, for overlapping reasons, and a product using both got
+  neither: `mcpserver` never read `Details`, `mcpclient` overwrote it
+  with the raw SDK result, and the tool that most wants a record, a
+  shell inside a sandbox naming the container that served the call, is
+  the one most likely to be behind a server. `mcpserver` now serves
+  the `Record` of a `Recordable` result under `mcpclient.RecordMetaKey`
+  in the result's `_meta`, on a failure as on a success, and
+  `mcpclient.ResultOf` makes it the `Details` as a `RemoteRecord`,
+  which `RecordOf` reads as it would in process and which keeps the
+  SDK result inside for a subscriber that wants it; a result without
+  one keeps the SDK result as its `Details` as before. A `Details`
+  that claims to be recordable and cannot be, an empty namespace or a
+  value that does not marshal, fails the call rather than vanish.
+  `mcpserver.Handler` puts the `Call` on the context, so
+  `agenttool.CallFrom` answers in a served tool as under the executor,
+  and a recorder a host installs with `ContextWithRecorder` on the
+  context it gives `Run` or `Connect` reaches `WriteRecord` in every
+  call, since the SDK derives each call's context from it; the doc
+  says so and a test pins it.
+
 ## v0.0.7 - 2026-09-23
 
 - Requires `openresponses` v0.0.12, up from v0.0.10.

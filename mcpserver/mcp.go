@@ -31,6 +31,7 @@ import (
 	"sync/atomic"
 
 	"github.com/ChristopherDavenport/agenttool"
+	"github.com/ChristopherDavenport/agenttool/mcpclient"
 	"github.com/ChristopherDavenport/openresponses"
 	"github.com/google/jsonschema-go/jsonschema"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -71,7 +72,23 @@ func NewServer(name, version string, tools ...agenttool.Tool) (*sdk.Server, erro
 //
 // The call's context carries the MCP session it arrived on, which
 // [SessionFrom] returns, so one Tool value can serve two clients
-// without sharing what belongs to each.
+// without sharing what belongs to each. It carries the [agenttool.Call]
+// too, as the executor's does, so a tool finds its call with
+// [agenttool.CallFrom] on either side of the boundary.
+//
+// A record crosses. A result whose Details implements
+// [agenttool.Recordable] is served with its [agenttool.Record] under
+// [mcpclient.RecordMetaKey] in the result's _meta, and mcpclient makes
+// it the Details on its side, so the container that served a call or
+// the directory it spilled to reaches a session recorder through a
+// server as it would in process; a Details that says it is recordable
+// and cannot be recorded, an empty namespace or a value that does not
+// marshal, fails the call, as it would fail a recorder. A record a
+// tool writes while it runs, with [agenttool.WriteRecord], reaches
+// whatever [agenttool.ContextWithRecorder] installed on the context the
+// host gave the server: the SDK derives every call's context from the
+// one passed to Run or Connect, so a host installs the recorder there,
+// once, and the handler leaves it in place.
 //
 // When the request carries a progress token, Call.OnUpdate forwards each
 // update as a progress notification whose message is the update's text.
@@ -194,12 +211,32 @@ func Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
 				_ = session.NotifyProgress(ctx, params)
 			}
 		}
+		ctx = agenttool.WithCall(ctx, call)
 		res, err := tl.Execute(ctx, call)
+		meta, recErr := recordMeta(res.Details)
 		if err != nil {
-			return errorResult(err), nil
+			out := errorResult(err)
+			out.Meta = meta
+			return out, nil
 		}
-		return &sdk.CallToolResult{Content: ContentOf(res.Output)}, nil
+		if recErr != nil {
+			return errorResult(recErr), nil
+		}
+		return &sdk.CallToolResult{Content: ContentOf(res.Output), Meta: meta}, nil
 	}, nil
+}
+
+// recordMeta builds the _meta that carries a result's record, and nil
+// when the details are not recordable.
+func recordMeta(details any) (sdk.Meta, error) {
+	rec, err := agenttool.RecordOf(details)
+	if err != nil {
+		return nil, err
+	}
+	if rec == nil {
+		return nil, nil
+	}
+	return sdk.Meta{mcpclient.RecordMetaKey: map[string]any{"ns": rec.NS, "data": rec.Data}}, nil
 }
 
 // errorResult is the isError result whose text is the message the

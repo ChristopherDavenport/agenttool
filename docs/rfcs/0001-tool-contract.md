@@ -542,8 +542,10 @@ the local side by the host and does not cross.
 | output | text, image and resource content ↔ output parts; text alone ↔ text; audio content consumed becomes an input file part, and is served back as an embedded blob rather than audio | both |
 | error | `isError` with the message as text; the consuming side returns it as an error and the harness applies `Error:` once | both |
 | progress | `notifications/progress` when the request carries a token; `progress`, `total`, `message` ↔ progress info | both |
-| details | the consuming side sets the raw `CallToolResult` as details; a record does not cross (#36) | consume |
-| call on the context | the server does not install it (#36) | — |
+| details | the consuming side sets the raw `CallToolResult` as details | consume |
+| record | the serving side puts a recordable result's record in `_meta` under `mcpclient.RecordMetaKey`; the consuming side makes it the details as a `RemoteRecord`, SDK result inside | both |
+| call on the context | the server installs it for every call, as the executor does | serve |
+| recorder on the context | the SDK derives each call's context from the one the host gave the server, so a recorder installed there reaches every call | serve |
 | client identity | the server puts the MCP session on the context: `mcpserver.SessionFrom` | serve |
 
 ### Open Responses
@@ -779,11 +781,6 @@ module and is listed in the changelog as one.
   shell shared by a parent and a sub-agent, or by two concurrent runs,
   is not protected. The alternative is a lock held on the tool value
   across batches, which is correct for one shell and wrong for a pool.
-- **Records over MCP** (#36). A served tool's record does not cross:
-  the server does not read the result's details, the client overwrites
-  them with the raw result, and the server installs neither the call
-  nor a recorder on the context. The smallest fix is one reserved
-  `_meta` key each way.
 - **Unstated versus false annotations.** The Go binding cannot tell a
   tool that declared no annotations from one that declared them all
   false. MCP can, because the block is optional. A pointer, a presence

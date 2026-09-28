@@ -15,7 +15,10 @@
 // A remote tool's annotations, the read-only and destructive hints MCP
 // carries, reach the local tool through [agenttool.AnnotationsOf]; they
 // are the server's word, so a policy may read them and must not trust
-// them alone.
+// them alone. A record a served tool returned with its result, under
+// [RecordMetaKey] in the result's _meta, becomes the local Details as a
+// [RemoteRecord], so [agenttool.RecordOf] reads it here as it would in
+// process.
 //
 // Tools returns a snapshot. The remote subscribes to the server's
 // tool-list-changed notification and refreshes it, so a loop that reads
@@ -75,6 +78,60 @@ type options struct {
 	client         sdk.Implementation
 	clientOpts     sdk.ClientOptions
 	onRefreshError func(error)
+}
+
+// RecordMetaKey is the _meta key under which a served tool's record
+// crosses MCP. mcpserver puts the [agenttool.Record] of a result's
+// Details there as {"ns": …, "data": …}, and [ResultOf] makes it the
+// local Details as a [RemoteRecord], so a recorder on this side writes
+// it under the tool's own namespace as it would have in process. MCP
+// reserves _meta for exactly this and a server that knows nothing of
+// the key sets nothing there.
+const RecordMetaKey = "github.com/ChristopherDavenport/agenttool/record"
+
+// RemoteRecord is the record a served tool returned with its result,
+// made the local Details so that [agenttool.RecordOf] writes it under
+// the namespace the tool chose. Result is the SDK result it came with,
+// which is the Details of a result carrying no record, kept here for a
+// subscriber that reads it.
+type RemoteRecord struct {
+	NS     string
+	Data   json.RawMessage
+	Result *sdk.CallToolResult
+}
+
+// RecordNS returns the namespace the served tool chose.
+func (r RemoteRecord) RecordNS() string { return r.NS }
+
+// MarshalJSON returns the record's data as the served tool wrote it.
+func (r RemoteRecord) MarshalJSON() ([]byte, error) {
+	if len(r.Data) == 0 {
+		return []byte("null"), nil
+	}
+	return r.Data, nil
+}
+
+// recordFrom reads the record a server put in a result's _meta. A
+// missing or malformed entry is no record, and the SDK result stands
+// as Details.
+func recordFrom(res *sdk.CallToolResult) (RemoteRecord, bool) {
+	raw, ok := res.Meta[RecordMetaKey]
+	if !ok {
+		return RemoteRecord{}, false
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return RemoteRecord{}, false
+	}
+	ns, _ := m["ns"].(string)
+	if ns == "" {
+		return RemoteRecord{}, false
+	}
+	data, err := json.Marshal(m["data"])
+	if err != nil {
+		return RemoteRecord{}, false
+	}
+	return RemoteRecord{NS: ns, Data: data, Result: res}, true
 }
 
 // octetStream is the media type for bytes of unknown type.
@@ -525,10 +582,19 @@ func (s *Remote) onProgress(p *sdk.ProgressNotificationParams) {
 // Output.Parts with the matching openresponses content types; structured
 // content is appended as JSON text. An isError result becomes an error
 // whose message is the text content, so the loop produces the error
-// output the model sees. Details carries the SDK result verbatim.
+// output the model sees. Details carries the SDK result verbatim, or,
+// when the server put a record under [RecordMetaKey], a [RemoteRecord]
+// holding it and the SDK result both, so [agenttool.RecordOf] on this
+// side gives the record the tool wrote on that side. An error result
+// keeps its record too, since a failed call is the one a reader most
+// wants to trace.
 func ResultOf(res *sdk.CallToolResult) (agenttool.Result, error) {
 	if res == nil {
 		return agenttool.Result{}, errors.New("mcp: empty result")
+	}
+	var details any = res
+	if rec, ok := recordFrom(res); ok {
+		details = rec
 	}
 	var parts openresponses.Contents
 	var texts []string
@@ -580,9 +646,9 @@ func ResultOf(res *sdk.CallToolResult) (agenttool.Result, error) {
 		if text == "" {
 			text = "tool call failed"
 		}
-		return agenttool.Result{Details: res}, errors.New(text)
+		return agenttool.Result{Details: details}, errors.New(text)
 	}
-	out := agenttool.Result{Details: res}
+	out := agenttool.Result{Details: details}
 	if textOnly {
 		out.Output.Text = text
 	} else {
