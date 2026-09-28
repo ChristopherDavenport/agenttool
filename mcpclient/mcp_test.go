@@ -758,3 +758,30 @@ func TestResultOfRecord(t *testing.T) {
 		}
 	}
 }
+
+// TestServerInfoAndInstructions: the server's own name, version and
+// instructions from the handshake, which is what a host composing
+// several servers names them by when two dial the same binary.
+func TestServerInfoAndInstructions(t *testing.T) {
+	dial := func(name, instructions string) *Remote {
+		t.Helper()
+		server := sdk.NewServer(&sdk.Implementation{Name: name, Version: "2.1"}, &sdk.ServerOptions{Instructions: instructions})
+		return connect(t, server)
+	}
+	a, b := dial("git:repo-a", "Use search before edit."), dial("git:repo-b", "")
+	if got := a.ServerInfo(); got.Name != "git:repo-a" || got.Version != "2.1" {
+		t.Errorf("a.ServerInfo = %+v", got)
+	}
+	if got := b.ServerInfo(); got.Name != "git:repo-b" {
+		t.Errorf("b.ServerInfo = %+v", got)
+	}
+	if a.ServerInfo().Name == b.ServerInfo().Name {
+		t.Error("two servers over one transport type should be told apart by their own names")
+	}
+	if got := a.Instructions(); got != "Use search before edit." {
+		t.Errorf("a.Instructions = %q", got)
+	}
+	if got := b.Instructions(); got != "" {
+		t.Errorf("b.Instructions = %q, want none", got)
+	}
+}

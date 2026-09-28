@@ -135,6 +135,16 @@ versions may break the API.
   request's context over streamable HTTP, which is how the go-sdk
   behaves at v1.8.0 and is pinned by a test rather than promised.
 
+- `mcpclient.Remote` says which server it is. `ServerInfo` returns
+  the name and version the server gave at initialize and
+  `Instructions` its own account of how to use it, both from the
+  handshake the remote already validated. A host composing several
+  servers into one namespace could name them only positionally or by
+  command line, and two instances of one binary, one `mcp-server-git`
+  per repository, were indistinguishable in a message about which two
+  claimed one tool name; reaching the name meant dropping to the SDK
+  session and nil-checking a result this package had already read.
+
 ## v0.0.7 - 2026-09-23
 
 - Requires `openresponses` v0.0.12, up from v0.0.10.

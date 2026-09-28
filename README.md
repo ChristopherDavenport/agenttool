@@ -277,7 +277,8 @@ is a subset of `Tool`. Both adapters use
 ```go
 // Consume: a remote server's tools as Tool values.
 s, err := mcpclient.Connect(ctx, &mcp.CommandTransport{Command: cmd}, mcpclient.WithPrefix("fs"))
-tools := s.Tools() // fs__read, fs__write, ...
+tools := s.Tools()   // fs__read, fs__write, ...
+info := s.ServerInfo() // the server's own name and version, for a host naming several
 
 // Serve: Go tools over MCP.
 server, err := mcpserver.NewServer("my-tools", "0.1.0", ReadFile)
