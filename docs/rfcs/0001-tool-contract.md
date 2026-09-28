@@ -583,6 +583,7 @@ and everything else is optional.
 | progress info | `ProgressInfo{Progress, Total, Message}`; `Progress(ctx, r)` sends from a typed tool |
 | record | `Recordable` (`RecordNS() string`), `Record{NS, Data}`, `RecordOf(details)` |
 | recorder on the context | `RecordFunc`, `ContextWithRecorder`, `RecorderFrom`, `WriteRecord`; `Executor.Recorder` installs it per batch |
+| elicitor on the context | `Elicitor` answers an `Elicitation{Message, Schema, URL}` with an `Answer{Action, Content}`, `ActionAccept`, `ActionDecline` or `ActionCancel`; `ContextWithElicitor`, `ElicitorFrom`; the harness installs it, and a tool with none has nobody to ask |
 | arguments validation | `New` validates a reflected schema with `Schema.ValidateJSON`; `ValidationError{Path, Msg}` |
 | executor | `Executor{MaxParallel, Sequential, Recorder, OnStart}`; `Execute` yields `Event{Index, Final, Result, Err}`; `Results` collects in job order |
 | a call starts | `Executor.OnStart(ctx, job) error`, on the job's goroutine, after the slot and the turn, with the call on `ctx`, before `Execute`; an error completes the job without running the tool |
@@ -624,6 +625,7 @@ the local side by the host and does not cross.
 | call on the context | the server installs it for every call, as the executor does | serve |
 | recorder on the context | the handler leaves one it finds; the go-sdk at v1.8.0 derives each call's context from the one the session was opened with, `Run` or `Connect` over stdio and in memory, the initialize request over streamable HTTP, which is observed behaviour a test pins and not a documented guarantee | serve |
 | client identity | the server puts the MCP session on the context: `mcpserver.SessionFrom` | serve |
+| elicitation | `elicitation/create` ↔ the elicitor on the call's context, opted into with `mcpclient.WithElicitation`, without which the client does not offer it; from 2026-07-28 the question returns with its call and is that call's, and before it a question the server sends on its own is put to the one call in flight, and to nobody when there is none or several; nobody to ask answers `cancel` | consume |
 
 ### Open Responses
 
@@ -924,6 +926,9 @@ module and is listed in the changelog as one.
   `WithCloser`, so a tool that owns a process and runs it in a sandbox
   needs no type of its own (#49). A tool built without them reads as
   before. The open question on replay without a type is closed by it.
+- The Go binding gains an elicitor on the call's context, so a question
+  a tool asks the user mid-call reaches the harness as part of that
+  call, and mcpclient carries MCP's elicitation to it (#48).
 - Resource scope is settled as one batch, with the guard across
   batches the tool's own (#35); its open question is closed.
 

@@ -33,6 +33,23 @@ versions may break the API.
   `Replayable`, answering the readers' defaults without the options, so
   code that reads them through `ConfinedBy` and `ReplayOf` sees no
   change.
+- A question a tool asks the user mid-call reaches the harness as part
+  of that call (#48). `Elicitor`, installed with `ContextWithElicitor`
+  beside the recorder, answers an `Elicitation` (a message, and a form
+  schema or a URL) with an `Answer` (`ActionAccept` with the form's
+  content, `ActionDecline`, or `ActionCancel` when nobody chose).
+  mcpclient's new `WithElicitation()` carries MCP's elicitation to it:
+  from protocol 2026-07-28 the question comes back with the call that
+  asked and is that call's, and from an older server it is put to the
+  one call in flight, and to nobody when several are. The elicitor is
+  called with the call's context, the call on it, so a harness records
+  the question under the call. The entry agentturn's session should
+  write is a custom entry under the call with the message, the schema
+  or URL, the action and content, and `by`, who answered. Without the
+  option the client offers no elicitation, as before, and an
+  `ElicitationHandler` set through `WithClientOptions` still takes
+  precedence. Deferring a question through the loop is not part of
+  this.
 - RFC 0001 settles resource scope (#35): serialisation stays within one
   batch, and a tool whose state outlives a batch guards it itself, as
   the `Resource` doc already said. A lock across batches, if one is ever

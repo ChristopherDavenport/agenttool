@@ -78,6 +78,10 @@ type options struct {
 	client         sdk.Implementation
 	clientOpts     sdk.ClientOptions
 	onRefreshError func(error)
+	elicitation    bool
+	// protocolVersion is the version the session offers, the SDK's
+	// latest when empty; tests set it to reach an older server's path.
+	protocolVersion string
 }
 
 // RecordMetaKey is the _meta key under which a served tool's record
@@ -223,6 +227,36 @@ func WithRefreshError(fn func(error)) Option {
 	return func(o *options) { o.onRefreshError = fn }
 }
 
+// WithElicitation lets the server ask the user a question in the middle
+// of a call, through the [agenttool.Elicitor] the harness put on that
+// call's context, so the question reaches the harness's policy and its
+// record as part of the call that asked, rather than as an SDK callback
+// the harness never sees. Without it the client does not offer
+// elicitation to the server, as before.
+//
+// From protocol version 2026-07-28 a server asks by returning the
+// question as the call's result, and the SDK answers it and calls
+// again, so the question arrives with the call that asked it and the
+// elicitor is that call's. An older server sends the question as a
+// request of its own, which names no call, so it is put to the one call
+// running on this remote; when there is none, or more than one, nobody
+// is asked. A harness that wants every question from an older server
+// asked names its tools [WithSequential] or one [WithResource], so that
+// no two of its calls in a batch overlap.
+//
+// Either way the elicitor is called with the call's context, the call
+// on it through [agenttool.CallFrom], and is stopped when the call or
+// the server's question is cancelled. A call whose context carries no
+// elicitor has nobody to ask, and the server is answered
+// [agenttool.ActionCancel], which says nobody chose, rather than
+// [agenttool.ActionDecline], which says somebody did.
+//
+// An ElicitationHandler set through [WithClientOptions] takes precedence
+// and this option then does nothing.
+func WithElicitation() Option {
+	return func(o *options) { o.elicitation = true }
+}
+
 // Remote is one connected MCP server: its session and the tools it
 // offers. It is the consume-side handle; mcpserver.NewServer returns
 // the SDK server for the serve side.
@@ -258,6 +292,13 @@ type Remote struct {
 	settledCh  chan struct{}
 
 	token atomic.Int64
+
+	// running holds the context of each call in flight, by a sequence
+	// number, while elicitation is on, so a question an older server
+	// sends on its own can be put to the call that asked it. It is under
+	// mu.
+	running map[int64]context.Context
+	callSeq atomic.Int64
 }
 
 // Connect opens one session over t, lists its tools and returns the
@@ -292,6 +333,10 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 			}
 		}()
 	}
+	if o.elicitation && clientOpts.ElicitationHandler == nil {
+		s.running = make(map[int64]context.Context)
+		clientOpts.ElicitationHandler = s.elicit
+	}
 	userProgress := clientOpts.ProgressNotificationHandler
 	clientOpts.ProgressNotificationHandler = func(ctx context.Context, req *sdk.ProgressNotificationClientRequest) {
 		if userProgress != nil {
@@ -301,7 +346,11 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 	}
 
 	client := sdk.NewClient(&o.client, &clientOpts)
-	session, err := client.Connect(ctx, t, nil)
+	var sessionOpts *sdk.ClientSessionOptions
+	if o.protocolVersion != "" {
+		sessionOpts = &sdk.ClientSessionOptions{ProtocolVersion: o.protocolVersion}
+	}
+	session, err := client.Connect(ctx, t, sessionOpts)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: connect: %w", err)
 	}
@@ -544,6 +593,21 @@ func (s *Remote) call(ctx context.Context, remote string, readOnly bool, call ag
 			s.mu.Unlock()
 		})
 	}
+	if s.running != nil {
+		if _, ok := agenttool.CallFrom(ctx); !ok {
+			ctx = agenttool.WithCall(ctx, call)
+		}
+		ctx = context.WithValue(ctx, ownCallKey{}, s)
+		id := s.callSeq.Add(1)
+		s.mu.Lock()
+		s.running[id] = ctx
+		s.mu.Unlock()
+		defer func() {
+			s.mu.Lock()
+			delete(s.running, id)
+			s.mu.Unlock()
+		}()
+	}
 	before := s.seen.Load()
 	res, err := s.session.CallTool(ctx, params)
 	if err != nil {
@@ -564,6 +628,76 @@ func (s *Remote) call(ctx context.Context, remote string, readOnly bool, call ag
 		_ = s.Await(ctx)
 	}
 	return ResultOf(res)
+}
+
+// ownCallKey marks the context of a call this remote made, with the
+// remote as its value, so the elicitation handler can tell a question
+// the SDK is answering on the call's behalf from one a server sent on
+// its own.
+type ownCallKey struct{}
+
+// elicit answers a server's elicitation through the elicitor of the
+// call that asked; see [WithElicitation].
+func (s *Remote) elicit(ctx context.Context, req *sdk.ElicitRequest) (*sdk.ElicitResult, error) {
+	nobody := &sdk.ElicitResult{Action: string(agenttool.ActionCancel)}
+	if req == nil || req.Params == nil {
+		return nobody, nil
+	}
+	callCtx := ctx
+	if ctx.Value(ownCallKey{}) != s {
+		// Sent by the server on its own, before 2026-07-28: no call is
+		// named, so only an unambiguous one is asked.
+		var ok bool
+		if callCtx, ok = s.soleCall(); !ok {
+			return nobody, nil
+		}
+	}
+	ask, ok := agenttool.ElicitorFrom(callCtx)
+	if !ok {
+		return nobody, nil
+	}
+	q := agenttool.Elicitation{Message: req.Params.Message, URL: req.Params.URL}
+	if req.Params.RequestedSchema != nil {
+		schema, err := json.Marshal(req.Params.RequestedSchema)
+		if err != nil {
+			return nil, fmt.Errorf("mcp: elicitation schema: %w", err)
+		}
+		q.Schema = schema
+	}
+	askCtx, stop := context.WithCancel(callCtx)
+	defer stop()
+	defer context.AfterFunc(ctx, stop)()
+	ans, err := ask(askCtx, q)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: elicitation: %w", err)
+	}
+	res := &sdk.ElicitResult{Action: string(ans.Action)}
+	switch ans.Action {
+	case agenttool.ActionAccept:
+		if len(ans.Content) > 0 {
+			if err := json.Unmarshal(ans.Content, &res.Content); err != nil {
+				return nil, fmt.Errorf("mcp: elicitation answer: content is not an object: %w", err)
+			}
+		}
+	case agenttool.ActionDecline, agenttool.ActionCancel:
+	default:
+		return nil, fmt.Errorf("mcp: elicitation answer: unknown action %q", ans.Action)
+	}
+	return res, nil
+}
+
+// soleCall returns the context of the call in flight when there is
+// exactly one.
+func (s *Remote) soleCall() (context.Context, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.running) != 1 {
+		return nil, false
+	}
+	for _, ctx := range s.running {
+		return ctx, true
+	}
+	return nil, false
 }
 
 // awaitNotification waits up to the grace for a tool-list-changed
