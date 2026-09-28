@@ -213,3 +213,43 @@ func TestElicitationHandlerFromClientOptionsWins(t *testing.T) {
 		t.Errorf("res = %q, err = %v; want the product handler's decline", res.Output.Text, err)
 	}
 }
+
+// A server asks for a credential by sending the user to a page, which
+// needs the client to offer URL elicitation as well as forms.
+func TestElicitationByURL(t *testing.T) {
+	s := sdk.NewServer(&sdk.Implementation{Name: "asker", Version: "1"}, nil)
+	s.AddTool(&sdk.Tool{Name: "login", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			answer, ok := req.Params.InputResponses["login"].(*sdk.ElicitResult)
+			if !ok {
+				return &sdk.CallToolResult{InputRequests: sdk.InputRequestMap{"login": &sdk.ElicitParams{
+					Mode: "url", Message: "sign in", URL: "https://example.test/login", ElicitationID: "e1",
+				}}}, nil
+			}
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: answer.Action}}}, nil
+		})
+	for name, opts := range map[string][]Option{"current": {WithElicitation()}, "older": {WithElicitation(), older}} {
+		t.Run(name, func(t *testing.T) {
+			r := connect(t, s, opts...)
+			var got agenttool.Elicitation
+			ctx := agenttool.ContextWithElicitor(context.Background(), func(_ context.Context, q agenttool.Elicitation) (agenttool.Answer, error) {
+				got = q
+				return agenttool.Answer{Action: agenttool.ActionAccept}, nil
+			})
+			res, err := lookup(t, r, "login").Execute(ctx, agenttool.Call{ID: "c", Args: json.RawMessage(`{}`)})
+			if err != nil || res.Output.Text != "accept" || got.URL != "https://example.test/login" || got.Schema != nil {
+				t.Errorf("res = %q, err = %v, question = %+v", res.Output.Text, err, got)
+			}
+		})
+	}
+}
+
+// With the SDK's multi round-trip handling off, a server's question is
+// a failed call, not an empty success.
+func TestElicitationWithMultiRoundTripOff(t *testing.T) {
+	s := connect(t, eliciting(nil), WithElicitation(), WithClientOptions(sdk.ClientOptions{MultiRoundTrip: &sdk.MultiRoundTripOptions{Disabled: true}}))
+	_, err := lookup(t, s, "ask").Execute(context.Background(), agenttool.Call{ID: "c", Args: json.RawMessage(`{}`)})
+	if err == nil || !strings.Contains(err.Error(), "needs input") {
+		t.Errorf("err = %v; want the call to fail as needing input", err)
+	}
+}

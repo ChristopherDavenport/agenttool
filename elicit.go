@@ -55,6 +55,10 @@ type Answer struct {
 // through [CallFrom], so the harness can file the question and the
 // answer under the call that asked and say who answered.
 //
+// It may be called for two questions of one call at once, since a tool
+// can ask several together; a harness that shows one question at a time
+// serialises them itself.
+//
 // An error is the harness failing to ask, not the user saying no, and
 // the tool sees it as an error; a refusal is an [Answer] with
 // [ActionDecline] or [ActionCancel].

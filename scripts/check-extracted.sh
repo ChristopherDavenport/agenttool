@@ -91,7 +91,10 @@ replace_target() {
 ahead_of_release() {
   local m="$1" dir="$2" v="$3" top prefix latest
   top="$(git rev-parse --show-toplevel)"
-  prefix="$(git -C "$m/$dir" rev-parse --show-prefix)"
+  # Called under ! and ||, where set -e does not apply, so every step
+  # that can fail says so.
+  prefix="$(git -C "$m/$dir" rev-parse --show-prefix)" \
+    || die "$m/$dir is not inside this repository"
   git -C "$top" rev-parse -q --verify "refs/tags/$prefix$v" >/dev/null \
     || die "tag $prefix$v is not in this clone; fetch tags (a CI checkout needs fetch-depth: 0)"
   latest="$(git -C "$top" tag -l "${prefix}v*" | grep -E "^${prefix}v[0-9]+\.[0-9]+\.[0-9]+$" | sort -V | tail -n1)"
@@ -102,7 +105,10 @@ ahead_of_release() {
     sub="${sub%/go.mod}"
     case "$sub/" in "$prefix"?*) specs+=(":(exclude)$sub") ;; esac
   done < <(git -C "$top" ls-files '*/go.mod')
-  ! git -C "$top" diff --quiet "$prefix$v" -- "${specs[@]}"
+  # A file not yet added moves the tree as much as one that changed, and
+  # diff sees only tracked files.
+  ! git -C "$top" diff --quiet "$prefix$v" -- "${specs[@]}" \
+    || [ -n "$(git -C "$top" ls-files --others --exclude-standard -- "${specs[@]}")" ]
 }
 
 # One parent for every copy. mktemp -d lands outside any module, which is
@@ -149,8 +155,11 @@ for m in "$@"; do
   # defect a consumer can meet: nobody gets this module with that
   # require until make release points it at a version holding the same
   # tree. So a module is skipped when a sibling it drops is ahead of the
-  # latest release its require names, and built otherwise: always on a
-  # release commit, and on a change that touches this module alone.
+  # latest release its require names, and built otherwise: on the tagged
+  # commit once it is published, and on main or a change that touches
+  # this module alone until the root moves. Between the first change to
+  # the root and the next release that leaves it skipped, and make check
+  # is what builds the module; the release puts it back in force.
   moved=""
   for p in $dropped; do
     v="$(required_version "$m/go.mod" "$p")"
