@@ -5,6 +5,23 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- A tool can say whether a call that may already have run can run
+  again. `Replayable` answers per call, `ReplayOf(ctx, t, args)` reads
+  it, and the answer is `ReplayUnknown` by default, `ReplaySafe` when a
+  second run has no further effect, or `ReplayKeyed` when the tool
+  deduplicates on the new `Call.IdempotencyKey`, which the harness
+  mints and keeps when it runs the call again. Annotations do not stand
+  in for it: a tool whose hints say read-only or idempotent and that
+  does not implement it is unknown, and so is every tool from
+  mcpclient, since MCP defines no deduplication. `Wrap` forwards it.
+  RFC 0001 is draft 0.3: it adds the property and the key, a section on
+  running a call again that says what a harness may do with an
+  ambiguous call for each answer and what a keyed tool owes, and
+  transient errors as an open question. No behaviour changes for a tool
+  that does not implement it.
+
 ## v0.0.8 - 2026-09-28
 
 - The tool contract is written down. `docs/rfcs/0001-tool-contract.md`

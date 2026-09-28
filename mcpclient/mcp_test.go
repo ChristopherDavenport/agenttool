@@ -590,6 +590,11 @@ func TestAnnotationsMapped(t *testing.T) {
 			if got := agenttool.AnnotationsOf(lookup(t, s, tc.tool.Name)); got != tc.want {
 				t.Errorf("local tool's annotations = %+v, want %+v", got, tc.want)
 			}
+			// No hint, read-only or idempotent, makes a remote call safe
+			// to run again.
+			if got := agenttool.ReplayOf(context.Background(), lookup(t, s, tc.tool.Name), json.RawMessage(`{}`)); got != agenttool.ReplayUnknown {
+				t.Errorf("local tool's replay = %v, want unknown", got)
+			}
 		})
 	}
 	if _, ok := AnnotationsOf(nil); ok {

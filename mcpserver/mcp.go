@@ -201,6 +201,8 @@ func Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
 		return nil, fmt.Errorf("mcpserver: tool %q: schema: %w", tl.Name(), err)
 	}
 	return func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		// The call carries no idempotency key: MCP has none to carry, so
+		// a keyed tool served here deduplicates nothing.
 		call := agenttool.Call{
 			ID:   "mcp_" + strconv.FormatInt(callSeq.Add(1), 10),
 			Args: req.Params.Arguments,

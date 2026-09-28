@@ -10,10 +10,10 @@ import (
 // Wrap returns a tool that runs exec in place of t.Execute and is t in
 // every other way: its name, description and parameters, and every
 // property t declares, strict, sequential, resource, annotations,
-// confined and closer, reported exactly as t reports them. It is how a
-// policy that grants on use, a decorator that records, or a proxy that
-// audits stands in for a tool without changing what the executor and a
-// policy layer learn about it.
+// confined, replay and closer, reported exactly as t reports them. It
+// is how a policy that grants on use, a decorator that records, or a
+// proxy that audits stands in for a tool without changing what the
+// executor and a policy layer learn about it.
 //
 // Embedding [Tool] in a struct forwards the four methods alone and
 // silently drops every optional interface, so a wrapped bash that was
@@ -88,6 +88,13 @@ func (w *wrapped) Confined(ctx context.Context, args json.RawMessage) (bool, str
 	return ConfinedBy(ctx, w.Tool, args)
 }
 
+// Replay forwards the tool's claim, which is exec's to keep: a wrapper
+// whose exec adds an effect of its own that is not safe to repeat
+// reports less, and is built without Wrap.
+func (w *wrapped) Replay(ctx context.Context, args json.RawMessage) Replay {
+	return ReplayOf(ctx, w.Tool, args)
+}
+
 // wrappedCloser is the wrapper around a tool that is an [io.Closer], so
 // that closing the wrapper closes the tool and a wrapper around a tool
 // that owns nothing is not a closer.
@@ -105,6 +112,7 @@ var (
 	_ Resource   = (*wrapped)(nil)
 	_ Annotated  = (*wrapped)(nil)
 	_ Confined   = (*wrapped)(nil)
+	_ Replayable = (*wrapped)(nil)
 	_ Tool       = (*wrappedCloser)(nil)
 	_ io.Closer  = (*wrappedCloser)(nil)
 )

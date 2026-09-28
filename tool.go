@@ -35,10 +35,10 @@ import (
 // Tool is something the model can call. Name and Parameters become the
 // function tool on the request; Execute runs one call. Everything else
 // a tool declares is an optional interface, [Strict], [Sequential],
-// [Resource], [Annotated], [Confined] and [io.Closer], found by type
-// assertion; a struct that embeds Tool forwards these four methods
-// alone and drops all of those, so a tool that stands in for another is
-// built with [Wrap].
+// [Resource], [Annotated], [Confined], [Replayable] and [io.Closer],
+// found by type assertion; a struct that embeds Tool forwards these
+// four methods alone and drops all of those, so a tool that stands in
+// for another is built with [Wrap].
 type Tool interface {
 	Name() string
 	Description() string
@@ -61,6 +61,15 @@ type Call struct {
 	ID string
 	// Args is the raw JSON arguments object as the model wrote it.
 	Args json.RawMessage
+	// IdempotencyKey names the logical operation this call is, for a
+	// tool that deduplicates on it; see [ReplayKeyed]. The harness mints
+	// it and keeps it the same when it runs this call again, and a new
+	// call from the model, which has a new ID, gets a new key. It is
+	// opaque, and it is not the ID: a call ID is unique within one
+	// response, which is too narrow to deduplicate against a service
+	// that outlives the session. Empty means the harness supplies none,
+	// and a keyed tool then deduplicates nothing.
+	IdempotencyKey string
 	// OnUpdate, when set, receives progress before the final result. It
 	// may be called from the tool's goroutine; the caller serialises it.
 	OnUpdate func(Result)
@@ -345,6 +354,74 @@ func ConfinedBy(ctx context.Context, t Tool, args json.RawMessage) (bool, string
 		return false, ""
 	}
 	return c.Confined(ctx, args)
+}
+
+// Replay is a tool's answer to whether a call that may already have run
+// can run again: after a kill between the dispatch and the result, when
+// a harness resuming the session cannot know whether the side effect
+// happened, or after an error that may have come after it.
+type Replay int
+
+const (
+	// ReplayUnknown says nothing about running the call again, so it
+	// must not be run again: the outcome of the first attempt is
+	// ambiguous, and the harness completes the call telling the model
+	// so, for it to check before it tries again. It is the default.
+	ReplayUnknown Replay = iota
+	// ReplaySafe says that running the call again with these arguments
+	// has no effect beyond the first run's: it reads, or it sets state
+	// to a value the arguments fix. Its output may differ.
+	ReplaySafe
+	// ReplayKeyed says the tool deduplicates on [Call.IdempotencyKey]:
+	// a second call with the key of a call that completed has no
+	// further effect. It should return that call's outcome, its error
+	// included, should refuse the key while the first call is still
+	// running, and should refuse it with different arguments. It is
+	// safe to run again only with the key the first attempt carried,
+	// and without one it is [ReplayUnknown].
+	ReplayKeyed
+)
+
+func (r Replay) String() string {
+	switch r {
+	case ReplaySafe:
+		return "safe"
+	case ReplayKeyed:
+		return "keyed"
+	}
+	return "unknown"
+}
+
+// Replayable is implemented by a tool that knows whether a call can run
+// again, and says so for the call args describe, with the context it
+// would run under. It is per call because the answer is: a shell runs
+// ls again harmlessly and git push not, and a tool that writes a file
+// is safe to repeat and one that appends to it is not.
+//
+// It is a claim, and nothing weaker stands in for it. [ReplayOf]
+// answers [ReplayUnknown] for a tool that does not implement it, even
+// one whose [Annotations] say ReadOnly or Idempotent: those are hints a
+// policy may use to be stricter, and running a call twice is an allow.
+// A tool from mcpclient does not implement it, since MCP carries no
+// such claim and an untrusted server's hints are not one.
+type Replayable interface {
+	Replay(ctx context.Context, args json.RawMessage) Replay
+}
+
+// ReplayOf reports whether a call of t with args may run again. A tool
+// that does not implement [Replayable], or answers with a value this
+// package does not know, reports [ReplayUnknown], so a value added
+// later reads as the safe mistake to an older harness.
+func ReplayOf(ctx context.Context, t Tool, args json.RawMessage) Replay {
+	r, ok := t.(Replayable)
+	if !ok {
+		return ReplayUnknown
+	}
+	switch v := r.Replay(ctx, args); v {
+	case ReplaySafe, ReplayKeyed:
+		return v
+	}
+	return ReplayUnknown
 }
 
 // Strict is implemented by a tool that claims its schema keeps the

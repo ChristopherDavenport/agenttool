@@ -369,6 +369,55 @@ func TestConfinedBy(t *testing.T) {
 	}
 }
 
+// shell is replayable per command: a read runs again harmlessly, a
+// push deduplicates on its key, and anything else is unknown.
+type shell struct{ bareTool }
+
+func (shell) Replay(_ context.Context, args json.RawMessage) Replay {
+	var a struct{ Command string }
+	_ = json.Unmarshal(args, &a)
+	switch a.Command {
+	case "ls":
+		return ReplaySafe
+	case "push":
+		return ReplayKeyed
+	case "future":
+		return Replay(7)
+	}
+	return ReplayUnknown
+}
+
+// annotatedSafe says in every hint it can that it is harmless, and does
+// not claim replay.
+type annotatedSafe struct{ bareTool }
+
+func (annotatedSafe) Annotations() Annotations {
+	return Annotations{ReadOnly: true, Idempotent: true}
+}
+
+func TestReplayOf(t *testing.T) {
+	cases := []struct {
+		name string
+		tool Tool
+		args string
+		want Replay
+	}{
+		{name: "a tool that does not say", tool: bareTool{}, args: `{}`, want: ReplayUnknown},
+		{name: "annotations are not a claim", tool: annotatedSafe{}, args: `{}`, want: ReplayUnknown},
+		{name: "safe for this call", tool: shell{}, args: `{"command":"ls"}`, want: ReplaySafe},
+		{name: "keyed for this call", tool: shell{}, args: `{"command":"push"}`, want: ReplayKeyed},
+		{name: "unknown for this call", tool: shell{}, args: `{"command":"rm"}`, want: ReplayUnknown},
+		{name: "a value this package does not know", tool: shell{}, args: `{"command":"future"}`, want: ReplayUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ReplayOf(context.Background(), tc.tool, json.RawMessage(tc.args)); got != tc.want {
+				t.Errorf("ReplayOf = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // A tool with no arguments has one definition however it was built:
 // NewFunc with a nil schema and New with NoArgs serve the same
 // parameters, and a request never carries null.

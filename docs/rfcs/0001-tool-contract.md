@@ -1,6 +1,6 @@
 # RFC 0001: Agent Tool Contract
 
-Status: draft 0.2
+Status: draft 0.3
 Author: Christopher Davenport
 Discussion: to be opened against this repository. The Go module at its
 root is the reference binding; agentturn is the reference harness.
@@ -92,13 +92,14 @@ RFC 2119.
   description, parameters and the strict flag.
 - **Property**: an optional, defaulted fact about a tool that a harness
   reads and the model does not: sequential, resource, annotations,
-  confinement, and whether the tool owns something to close.
+  confinement, whether a call may run again, and whether the tool owns
+  something to close.
 - **Harness**: whatever builds requests, hands calls to tools and
   returns their outputs: an agent loop, an MCP server serving Go
   tools, a test.
 - **Executor**: the part of a harness that runs one batch of calls.
-- **Call**: one invocation: a call ID, an arguments object, and a
-  progress channel.
+- **Call**: one invocation: a call ID, an arguments object, an
+  idempotency key, and a progress channel.
 - **Result**: what one call produced: an output for the model, details
   for the harness, and a terminate hint.
 - **Batch**: the function calls of one model response, in the order the
@@ -182,7 +183,7 @@ A property is a fact about a tool that a harness reads and the model
 does not. Each is optional and has a default, and a tool that declares
 none of them is a complete tool that runs in parallel with everything,
 claims no shared state, says nothing about its behaviour, claims no
-sandbox and owns nothing that outlives a call.
+sandbox, never runs a call twice and owns nothing that outlives a call.
 
 | Property | Type | Default | Read by |
 | --- | --- | --- | --- |
@@ -191,6 +192,7 @@ sandbox and owns nothing that outlives a call.
 | resource | string | `""`, none | the executor |
 | annotations | object | unstated | a policy layer |
 | confined | (ctx, args) → (boolean, string) | (false, `""`), unstated | a policy layer, per call |
+| replay | (ctx, args) → unknown, safe or keyed | unknown | a harness resuming or retrying, per call |
 | closer | presence | absent, owns nothing | the host |
 
 - **strict** is the tool's claim that its parameters schema keeps the
@@ -221,6 +223,18 @@ sandbox and owns nothing that outlives a call.
   that does not answer is read as *unconfined*, since the safe mistake
   is to ask. Nothing here enforces anything: this is what a tool
   reports, never what it runs.
+- **replay** answers, for one call's arguments under one context,
+  whether a call that may already have run can run again. *Safe* says
+  a second run has no effect beyond the first's; *keyed* says the tool
+  deduplicates on the call's [idempotency key](#a-call); *unknown*,
+  the default, says nothing, and a call that says nothing is not run
+  twice. See [Running a call again](#running-a-call-again). It is a
+  claim, and the annotations do not stand in for it: a tool whose hints
+  say read-only or idempotent and that does not answer is *unknown*,
+  since running a call twice is an allow and a hint MUST NOT allow
+  alone. A reader MUST treat a value it does not know as *unknown*, so
+  a value added to this list later is read by an older harness as the
+  safe mistake.
 - **closer** says the tool owns something that outlives a call, a
   container, a persistent shell, a pool, and how to release it. See
   [Lifecycle](#lifecycle).
@@ -275,13 +289,23 @@ fill it.
 
 ## A call
 
-A call is a call ID, an arguments object and a progress channel.
+A call is a call ID, an arguments object, an idempotency key and a
+progress channel.
 
 - The **call ID** is the `call_id` of the function call item, and it is
   what the result is matched to and what a record is filed beside. A
   harness that invents a call outside a model turn MUST still give it
   an ID unique within the batch.
 - The **arguments** are as above.
+- The **idempotency key** names the logical operation the call is, for
+  a tool that deduplicates on it. The harness mints it, opaque, and it
+  is not the call ID: a call ID is unique within one response, which
+  is too narrow to deduplicate against a service that outlives the
+  session. A harness that runs a call again MUST give it the key the
+  first attempt carried, and MUST give every other call a key of its
+  own, so a call the model makes again, with a new call ID, is a new
+  operation. A harness MAY supply none; a keyed tool then deduplicates
+  nothing, and its calls read as *unknown*.
 - **Progress** is a channel from the tool back to the harness that the
   harness opens when it wants updates and leaves closed otherwise. A
   tool MAY send any number of intermediate results before its final
@@ -481,6 +505,47 @@ executor closes nothing, and a host closes what it built when it is
 done with it. A harness that builds tools on the host's behalf, per
 turn or per session, MUST say who closes them.
 
+### Running a call again
+
+A call's outcome is **ambiguous** when the tool may have started it
+and the harness does not have its result: the harness was killed
+between the dispatch and the result and is resuming, or a transport to
+a remote tool broke mid-call, or the call failed in a way that may have
+come after its effect. The dispatch is the moment the executor hands
+the call to its tool, and a harness that records it knows which calls
+of a batch can be ambiguous and which provably never started, which
+it runs as it would have.
+
+For an ambiguous call the harness asks the tool's **replay** property
+with the call's arguments, under a context like the one the call would
+run under:
+
+- **safe**: the harness MAY run it again.
+- **keyed**: the harness MAY run it again with the idempotency key
+  the first attempt carried, and MUST NOT run it with any other or
+  with none.
+- **unknown**: the harness MUST NOT run it again. It completes the
+  call with an error saying the outcome is unknown, so the model sees
+  that the call may or may not have taken effect and can check before
+  it asks again.
+
+A tool that answers *keyed* MUST give a second call carrying the key of
+a call that completed no effect beyond the first's. It SHOULD return
+that call's outcome, its error included; SHOULD refuse the key while
+the first call is still running; and SHOULD refuse it with different
+arguments. Those three are the behaviour a service with idempotency
+keys commonly gives, and they are recommended rather than required so
+that a tool over a service that gives only the first stays conforming.
+Where the tool keeps what it deduplicates on, and for how long, is the
+tool's: a tool over a service that deduplicates passes the key
+through, and one that deduplicates itself keeps a record that outlives
+the harness process, or its claim does not survive the kill it is for.
+
+Running a call again is the harness's decision and never the
+executor's: an executor runs what it is given once. Nothing here says
+when a failure is worth retrying, only whether a retry is safe; see
+the open questions.
+
 ## Bindings
 
 ### Go
@@ -498,9 +563,10 @@ and everything else is optional.
 | resource | `Resource` interface, read by `ResourceOf` (which applies the sequential rule), set by `WithResource(name)` |
 | annotations | `Annotated` interface and `Annotations` struct, read by `AnnotationsOf`, set by `WithAnnotations(a)` |
 | confined | `Confined` interface, read by `ConfinedBy(ctx, t, args)` |
+| replay | `Replayable` interface and `Replay` (`ReplayUnknown`, `ReplaySafe`, `ReplayKeyed`), read by `ReplayOf(ctx, t, args)`, which reads an unknown value as `ReplayUnknown` |
 | closer | `io.Closer`; `Set.Close()` closes a list in order and joins errors |
 | forwarding wrapper | `Wrap(t, exec)` forwards every property of `t` and closes it; `Unwrap(t)` returns it |
-| call | `Call{ID, Args, OnUpdate}`; `Call.Update` sends progress |
+| call | `Call{ID, Args, IdempotencyKey, OnUpdate}`; `Call.Update` sends progress |
 | call on the context | `WithCall`, `CallFrom`; `Executor` installs it for every job |
 | result | `Result{Output, Details, Terminate}`; `Text`, `Parts`, `Output` build one |
 | error convention | `ErrorResult(err)` renders `Error: ` + message as a fresh result; the harness calls it and copies the failed result's `Details` and `Terminate` onto it, as agentturn does |
@@ -537,6 +603,8 @@ the local side by the host and does not cross.
 | sequential, resource | no field; `mcpclient.WithResource(resource, names…)` names a remote tool's state locally | consume |
 | annotations | `annotations`: `title`, `readOnlyHint`, `destructiveHint` (absent is true), `idempotentHint`, `openWorldHint` (absent is true); a tool with no block is unstated | both |
 | confined | no field; not carried | — |
+| replay | no field; a consumed tool is *unknown* whatever its `idempotentHint`, since MCP defines no deduplication and a call whose stream broke may or may not have run; a served tool's claim does not cross | — |
+| idempotency key | no field; a consumed call's key is not sent, and a served call has none | — |
 | closer | not a closer: the remote session is closed through `mcpclient.Remote.Close` | consume |
 | arguments | `arguments`; the server validates against `inputSchema` with a general validator | both |
 | output | text, image and resource content ↔ output parts; text alone ↔ text; audio content consumed becomes an input file part, and is served back as an embedded blob rather than audio | both |
@@ -724,8 +792,10 @@ that is a JSON Schema object or none; returns an error rather than
 encoding one; sends progress only before its final result; stops what a
 call started when the context is cancelled and keeps what the value
 owns; declares sequential or a resource if two of its calls must not
-overlap; declares a closer if it owns something beyond a call; and
-reports every property of a tool it wraps.
+overlap; declares a closer if it owns something beyond a call; answers
+*safe* only for a call whose second run has no further effect, and
+*keyed* only when it deduplicates on the key; and reports every
+property of a tool it wraps.
 
 **A conforming harness** offers a set of tools with distinct names;
 hands each call its arguments as a JSON object, `{}` when empty, and
@@ -738,7 +808,11 @@ asks; serialises calls that name one resource in the model's order;
 honours terminate only when unanimous and reports a partial batch as
 partial; puts the call on the context for every tool it runs; installs
 a recorder if it has one; cancels running calls when it abandons a
-batch and waits for them; and closes nothing that the host built.
+batch and waits for them; gives each call its own idempotency key, if
+it gives keys, and a call it runs again the key it first carried; runs
+an ambiguous call again only when replay allows it, and otherwise
+completes it saying the outcome is unknown; and closes nothing that
+the host built.
 
 **A conforming adapter** maps each row of its binding table and adds
 nothing the contract cannot express.
@@ -771,6 +845,23 @@ module and is listed in the changelog as one.
   taken from MCP, a per-conversation resource lock, and an
   interrupt method, the last of which this document deliberately
   omits.
+- **Idempotency keys** are how services that take writes make them
+  safe to retry: Stripe's `Idempotency-Key` header and AWS's
+  `ClientToken` are per request and minted by the caller, and the IETF
+  HTTP API working group's `Idempotency-Key` header draft states the
+  common behaviour, which *keyed* recommends. RPC protocols stop
+  short of a key: protobuf's `idempotency_level` is per method,
+  `NO_SIDE_EFFECTS` or `IDEMPOTENT`, as MCP's `idempotentHint` is per
+  tool, and neither can answer for one call of a shell.
+- **MCP's request idempotency proposal**, SEP-3182, closed unmerged,
+  would have added an `idempotencyKey` to `tools/call` with the three
+  behaviours *keyed* recommends: replay a completed call's outcome,
+  refuse a key in progress, refuse a key with different arguments.
+  The name of the key here is chosen to meet it if it returns. The
+  2026-07-28 specification removed stream resumption, so a call whose
+  stream breaks is re-issued with a new request ID and its first
+  attempt's outcome is ambiguous, which is the word this document
+  uses.
 - **agentsession RFC 0001** is the record a tool's outputs and records
   land in, and the source of the canonicalisation and hash notation
   used here.
@@ -801,6 +892,33 @@ module and is listed in the changelog as one.
   union with `null`. Widening every optional field to nullable under
   strict mode would follow that guidance and change every strict
   schema's hash, so it is a draft change rather than a fix.
+- **Transient errors.** Replay says whether running a call again is
+  safe, not whether it is worth it. A harness that retries a dropped
+  connection or a rate limit without the model needs a tool to mark
+  the failure transient, and perhaps when to try again; a transient
+  failure of a call that is *unknown* is still ambiguous and still
+  not run again. MCP has no merged shape for it, and the proposals
+  differ, `retryable` with a not-before time in a `_meta` block, a
+  rate-limit error code, so it waits for one to settle. The MCP
+  client handles its own transport failures meanwhile.
+- **Replay without a type.** The Go binding offers replay only as an
+  interface, as it does confinement, so a tool built by `New` or
+  `NewFunc` cannot claim it without a type of its own. An option
+  taking a function of the arguments would close that, and would be
+  the first option that is per call.
+
+## Changes since 0.2
+
+- Properties gain **replay**, per call, *unknown* by default, with the
+  rule that annotations do not stand in for it and that an unknown
+  value reads as *unknown*.
+- A call gains an **idempotency key**, minted by the harness and kept
+  when a call runs again.
+- Lifecycle gains [Running a call again](#running-a-call-again): what
+  makes an outcome ambiguous, what a harness may do for each answer,
+  and what a keyed tool owes.
+- Conformance, both bindings and prior art follow.
+- Open questions gain transient errors.
 
 ## Changes since 0.1
 

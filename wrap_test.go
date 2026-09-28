@@ -35,6 +35,12 @@ func (*everythingTool) Annotations() Annotations {
 func (*everythingTool) Confined(_ context.Context, args json.RawMessage) (bool, string) {
 	return string(args) == `{"sandbox":true}`, "seatbelt"
 }
+func (*everythingTool) Replay(_ context.Context, args json.RawMessage) Replay {
+	if string(args) == `{"sandbox":true}` {
+		return ReplayKeyed
+	}
+	return ReplayUnknown
+}
 func (e *everythingTool) Close() error { e.closed++; return nil }
 
 // readers is every way a harness asks a tool about itself. A wrapper is
@@ -53,6 +59,7 @@ func readers(ctx context.Context, t Tool) map[string]any {
 		"annotations": AnnotationsOf(t),
 		"confined":    confined,
 		"confinedBy":  by,
+		"replay":      ReplayOf(ctx, t, json.RawMessage(`{"sandbox":true}`)),
 		"definition":  mustJSON(Definition(t)),
 	}
 }
