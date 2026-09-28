@@ -57,6 +57,8 @@ func TestSchemaValidate(t *testing.T) {
 		{"strict nullable pointer", strict, `{"path":"/x","level":"low","count":null,"tags":[],"nested":{"deep":false},"ratio":1}`, ""},
 		{"strict enum admits null", &Schema{Type: "string", Nullable: true, Enum: []any{"a", nil}}, `null`, ""},
 		{"nullable enum without null rejects it", &Schema{Type: "string", Nullable: true, Enum: []any{"a"}}, `null`, `expected one of ["a"], got null`},
+		{"enum listing null does not make a type nullable", &Schema{Type: "string", Enum: []any{"a", nil}}, `null`, `expected string, got null`},
+		{"non-strict pointer enum rejects null by type", plain, `{"path":"/x","count":null}`, `count: expected integer, got null`},
 		{"strict rejects extra", strict, `{"path":"/x","level":"low","count":null,"tags":[],"nested":{"deep":false},"ratio":1,"bogus":true}`, `unexpected property "bogus"`},
 	}
 	for _, tc := range cases {

@@ -331,9 +331,13 @@ func ConfinedBy(ctx context.Context, t Tool, args json.RawMessage) (bool, string
 	return c.Confined(ctx, args)
 }
 
-// Strict is implemented by tools whose schema was generated under the
+// Strict is implemented by a tool that claims its schema keeps the
 // strict rules (every field required, additionalProperties false,
-// optional fields nullable). The flag is set on the function tool.
+// optional fields nullable), so the provider may enforce them. The
+// flag is set on the function tool. [New] makes the claim true for a
+// schema it reflected under [WithStrict]; for a schema the author
+// supplied, through [NewFunc], [WithParameters] or a [Schemer], the
+// claim is the author's and is not checked.
 type Strict interface {
 	Strict() bool
 }
