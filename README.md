@@ -308,8 +308,22 @@ the request carries a token. One `Tool` value serves every client that
 connects, so the call's context carries the session it arrived on:
 `mcpserver.SessionFrom(ctx)` is what a tool holding a working
 directory, a container or a shell keys that state on, and two editor
-windows then get two shells instead of one. `make interop` checks both against the
-upstream reference server and the MCP Inspector over stdio.
+windows then get two shells instead of one.
+
+A record crosses too. The tool that most wants one, a shell inside a
+sandbox recording which container served the call, is the tool most
+likely to be behind a server, so `mcpserver` puts the `Record` of a
+`Recordable` result under one reserved `_meta` key and `mcpclient`
+makes it the `Details` on its side, where `RecordOf` reads it as it
+would in process. The call is on the context in a served tool, as under
+the executor, and a recorder a host installs with
+`ContextWithRecorder` on the context it opens the session with, the one
+it gives `server.Run` over stdio or the initialize request's over
+streamable HTTP, reaches `WriteRecord` in every call; that is how the
+SDK behaves today rather than a guarantee, and a host that wants none
+of it installs the recorder in a `Wrap` around its tools. `make
+interop` checks both against the upstream reference server and the
+MCP Inspector over stdio.
 
 ## Development
 

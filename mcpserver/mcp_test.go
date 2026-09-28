@@ -4,6 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -445,5 +452,212 @@ func TestEmptySchemaIsTheNoArgsSchema(t *testing.T) {
 	}
 	if string(emptySchema) != string(want) {
 		t.Errorf("emptySchema = %s, NoArgs reflects %s", emptySchema, want)
+	}
+}
+
+// workspace is the record a sandboxed shell leaves: which container
+// served the call. It is the whole value of such a tool's Details. The
+// field order and the integer past 2^53 are there so a round trip
+// that re-encoded the JSON through a map would be caught.
+type workspace struct {
+	Zone string `json:"zone"`
+	Kind string `json:"kind"`
+	Ref  string `json:"ref"`
+	Big  uint64 `json:"big"`
+}
+
+func (workspace) RecordNS() string { return "workspace:shell" }
+
+type badRecord struct{}
+
+func (badRecord) RecordNS() string { return "" }
+
+// TestRoundTripRecord: a record a served tool returns as Details is the
+// record the consuming side reads, byte for byte, on a success and on a
+// failure; a Details that cannot be recorded is served with its output
+// and the record error in its place; a Details that is not a record
+// leaves the SDK result. It needs the mcpclient in this tree, so it
+// skips itself in the extracted build, where the sibling is the
+// previous release.
+func TestRoundTripRecord(t *testing.T) {
+	if os.Getenv("AGENTTOOL_EXTRACTED") != "" {
+		t.Skip("needs the mcpclient of this tree, not the previous release")
+	}
+	ws := workspace{Zone: "z", Kind: "container", Ref: "sha256:aa", Big: 9007199254740993}
+	recorded := agenttool.NewFunc("recorded", "", nil, func(context.Context, agenttool.Call) (agenttool.Result, error) {
+		r := agenttool.Text("ran")
+		r.Details = ws
+		return r, nil
+	})
+	failing := agenttool.NewFunc("failing", "", nil, func(context.Context, agenttool.Call) (agenttool.Result, error) {
+		r := agenttool.Result{Details: ws}
+		return r, errors.New("command not found")
+	})
+	unrecordable := agenttool.NewFunc("unrecordable", "", nil, func(context.Context, agenttool.Call) (agenttool.Result, error) {
+		r := agenttool.Text("ran")
+		r.Details = badRecord{}
+		return r, nil
+	})
+	plain := agenttool.NewFunc("plain", "", nil, func(context.Context, agenttool.Call) (agenttool.Result, error) {
+		r := agenttool.Text("ran")
+		r.Details = "a live handle"
+		return r, nil
+	})
+	s := roundTrip(t, newServer(t, "records", recorded, failing, unrecordable, plain))
+	set := agenttool.Set(s.Tools())
+	ctx := context.Background()
+	inProcess, err := agenttool.RecordOf(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	call := func(name string) (agenttool.Result, error) {
+		t.Helper()
+		tl, ok := set.Lookup(name)
+		if !ok {
+			t.Fatalf("%s missing", name)
+		}
+		return tl.Execute(ctx, agenttool.Call{ID: "c", Args: json.RawMessage(`{}`)})
+	}
+	same := func(t *testing.T, res agenttool.Result) {
+		t.Helper()
+		rec, err := agenttool.RecordOf(res.Details)
+		if err != nil || rec == nil {
+			t.Fatalf("RecordOf over MCP = %+v, %v; want the record", rec, err)
+		}
+		if rec.NS != inProcess.NS || string(rec.Data) != string(inProcess.Data) {
+			t.Errorf("record over MCP = %s %s, in process %s %s", rec.NS, rec.Data, inProcess.NS, inProcess.Data)
+		}
+		if _, ok := res.Details.(agenttool.Recordable); !ok {
+			t.Errorf("details = %T, want the record itself", res.Details)
+		}
+	}
+
+	res, err := call("recorded")
+	if err != nil || res.Output.Text != "ran" {
+		t.Fatalf("recorded: %+v, %v", res, err)
+	}
+	same(t, res)
+
+	res, err = call("failing")
+	if err == nil || !strings.Contains(err.Error(), "command not found") {
+		t.Fatalf("failing: err = %v", err)
+	}
+	same(t, res)
+
+	res, err = call("unrecordable")
+	if err != nil || res.Output.Text != "ran" {
+		t.Fatalf("unrecordable: the output should be served: %+v, %v", res, err)
+	}
+	sdkRes, ok := res.Details.(*sdk.CallToolResult)
+	if !ok {
+		t.Fatalf("unrecordable: details = %T, want the SDK result", res.Details)
+	}
+	if m, _ := sdkRes.Meta[RecordMetaKey].(map[string]any); m == nil || !strings.Contains(fmt.Sprint(m["error"]), "empty namespace") {
+		t.Errorf("unrecordable: _meta = %v, want the record error in the record's place", sdkRes.Meta)
+	}
+
+	res, err = call("plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := res.Details.(*sdk.CallToolResult); !ok {
+		t.Errorf("details without a record = %T, want the SDK result", res.Details)
+	}
+	if rec, err := agenttool.RecordOf(res.Details); rec != nil || err != nil {
+		t.Errorf("RecordOf without a record = %+v, %v", rec, err)
+	}
+}
+
+// TestHandlerInstallsCallAndRecorder: a served tool finds its call on
+// the context as it does under the executor, and a recorder a host put
+// on the context it gave the server reaches WriteRecord in the tool
+// with that call beside it.
+func TestHandlerInstallsCallAndRecorder(t *testing.T) {
+	type seen struct {
+		callID string
+		rec    *agenttool.Record
+	}
+	got := make(chan seen, 1)
+	tl := agenttool.NewFunc("forks", "", nil, func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
+		if c, ok := agenttool.CallFrom(ctx); !ok || c.ID != call.ID || !strings.HasPrefix(c.ID, "mcp_") {
+			return agenttool.Result{}, errors.New("the call is not on the context")
+		}
+		if _, ok := agenttool.RecorderFrom(ctx); !ok {
+			return agenttool.Result{}, errors.New("no recorder on the context")
+		}
+		if err := agenttool.WriteRecord(ctx, workspace{Kind: "pgid", Ref: "4242"}); err != nil {
+			return agenttool.Result{}, err
+		}
+		return agenttool.Text("forked"), nil
+	})
+	server := newServer(t, "forks", tl)
+	ct, st := sdk.NewInMemoryTransports()
+	hostCtx := agenttool.ContextWithRecorder(context.Background(), func(ctx context.Context, rec *agenttool.Record) error {
+		c, _ := agenttool.CallFrom(ctx)
+		got <- seen{callID: c.ID, rec: rec}
+		return nil
+	})
+	if _, err := server.Connect(hostCtx, st, nil); err != nil {
+		t.Fatal(err)
+	}
+	s, err := mcpclient.Connect(context.Background(), ct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	rt, _ := agenttool.Set(s.Tools()).Lookup("forks")
+	res, err := rt.Execute(context.Background(), agenttool.Call{ID: "local", Args: json.RawMessage(`{}`)})
+	if err != nil || res.Output.Text != "forked" {
+		t.Fatalf("execute = %+v, %v", res, err)
+	}
+	select {
+	case s := <-got:
+		if !strings.HasPrefix(s.callID, "mcp_") || s.rec.NS != "workspace:shell" || normalise(t, s.rec.Data) != `{"big":0,"kind":"pgid","ref":"4242","zone":""}` {
+			t.Errorf("recorder saw %+v %s", s, s.rec.Data)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the record never reached the host's recorder")
+	}
+}
+
+// TestRecordMetaKeyMatchesClient holds this module's key to mcpclient's.
+// It reads the constant out of the sibling's source rather than naming
+// it, because naming it would not compile against the previous
+// mcpclient release the extracted build uses. The extracted build
+// copies the sibling's tree beside this one, so the test runs there
+// too, against the tree's source; it skips only where no sibling sits
+// beside the module at all.
+func TestRecordMetaKeyMatchesClient(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "mcpclient", "mcp.go"))
+	if err != nil {
+		t.Skip("mcpclient is not beside this module here: " + err.Error())
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), "mcp.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var theirs string
+	for _, decl := range f.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs := spec.(*ast.ValueSpec)
+			for i, name := range vs.Names {
+				if name.Name == "RecordMetaKey" && i < len(vs.Values) {
+					if lit, ok := vs.Values[i].(*ast.BasicLit); ok {
+						theirs, _ = strconv.Unquote(lit.Value)
+					}
+				}
+			}
+		}
+	}
+	if theirs == "" {
+		t.Fatal("mcpclient declares no RecordMetaKey string constant")
+	}
+	if RecordMetaKey != theirs {
+		t.Errorf("mcpserver key %q != mcpclient key %q", RecordMetaKey, theirs)
 	}
 }

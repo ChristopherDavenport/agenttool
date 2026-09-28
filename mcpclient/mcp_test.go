@@ -710,3 +710,51 @@ func TestReadOnlyCallDoesNotWait(t *testing.T) {
 		t.Errorf("an unannotated call waited %v, want the grace", waited)
 	}
 }
+
+// TestResultOfRecord: a record under RecordMetaKey becomes the Details,
+// readable by agenttool.RecordOf; anything else leaves the SDK result.
+func TestResultOfRecord(t *testing.T) {
+	ok := &sdk.CallToolResult{
+		Content: []sdk.Content{&sdk.TextContent{Text: "ran"}},
+		Meta:    sdk.Meta{RecordMetaKey: map[string]any{"ns": "workspace:shell", "data": `{"z":1,"a":9007199254740993}`}},
+	}
+	res, err := ResultOf(ok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr, isRecord := res.Details.(RemoteRecord)
+	if !isRecord || rr.NS != "workspace:shell" || string(rr.Data) != `{"z":1,"a":9007199254740993}` || rr.Result != ok {
+		t.Fatalf("details = %#v", res.Details)
+	}
+	rec, err := agenttool.RecordOf(res.Details)
+	if err != nil || rec == nil || rec.NS != "workspace:shell" || string(rec.Data) != `{"z":1,"a":9007199254740993}` {
+		t.Errorf("RecordOf = %+v, %v", rec, err)
+	}
+
+	failed := &sdk.CallToolResult{IsError: true, Content: []sdk.Content{&sdk.TextContent{Text: "boom"}}, Meta: ok.Meta}
+	res, err = ResultOf(failed)
+	if err == nil || err.Error() != "boom" {
+		t.Fatalf("err = %v", err)
+	}
+	if _, isRecord := res.Details.(RemoteRecord); !isRecord {
+		t.Errorf("an error result's record should cross: %T", res.Details)
+	}
+
+	for name, meta := range map[string]sdk.Meta{
+		"none":          nil,
+		"other key":     {"x": 1},
+		"not an object": {RecordMetaKey: "nope"},
+		"no namespace":  {RecordMetaKey: map[string]any{"data": `1`}},
+		"data not json": {RecordMetaKey: map[string]any{"ns": "a:b", "data": `{`}},
+		"data not text": {RecordMetaKey: map[string]any{"ns": "a:b", "data": map[string]any{"x": 1}}},
+		"server error":  {RecordMetaKey: map[string]any{"error": "agenttool: record x: empty namespace"}},
+	} {
+		res, err := ResultOf(&sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "t"}}, Meta: meta})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, isSDK := res.Details.(*sdk.CallToolResult); !isSDK {
+			t.Errorf("%s: details = %T, want the SDK result", name, res.Details)
+		}
+	}
+}

@@ -102,6 +102,39 @@ versions may break the API.
   nothing else, and it is not called for a job the cancellation
   reaches first.
 
+- A tool's record survives being served over MCP. v0.0.7 made
+  `Result.Details` durable and made one `Tool` value serve two clients
+  apart, for overlapping reasons, and a product using both got
+  neither: `mcpserver` never read `Details`, `mcpclient` overwrote it
+  with the raw SDK result, and the tool that most wants a record, a
+  shell inside a sandbox naming the container that served the call, is
+  the one most likely to be behind a server. `mcpserver` now serves
+  the `Record` of a `Recordable` result under `RecordMetaKey` in the
+  result's `_meta`, the data as a JSON string so it arrives byte for
+  byte rather than re-encoded through a map with its keys sorted and
+  large integers rounded, on a failure as on a success, and
+  `mcpclient.ResultOf` makes it the `Details` as a `RemoteRecord`,
+  which `RecordOf` reads as it would in process and which keeps the
+  SDK result inside for a subscriber that wants it. That is a change
+  to what `Details` holds for such a result: it was the SDK result
+  and is now the `RemoteRecord` with the SDK result inside; a result
+  carrying no record keeps the SDK result as before. A `Details` that
+  claims to be recordable and cannot be, an empty namespace or a value
+  that does not marshal, is served with its output and the error's
+  text in the record's place, since the side effect has happened and a
+  failed call would invite the model to retry it. The key is the same
+  string in both packages, in MCP's reverse-DNS form, and `mcpserver`
+  spells it rather than importing it so it builds against the previous
+  `mcpclient` release; `make extracted` sets `AGENTTOOL_EXTRACTED` and
+  a test that needs both sides of this tree skips itself there.
+  `mcpserver.Handler` puts the `Call` on the context, so
+  `agenttool.CallFrom` answers in a served tool as under the executor,
+  and a recorder a host installs with `ContextWithRecorder` on the
+  context it opens the session with reaches `WriteRecord` in every
+  call: `Run` or `Connect` over stdio and in memory, the initialize
+  request's context over streamable HTTP, which is how the go-sdk
+  behaves at v1.8.0 and is pinned by a test rather than promised.
+
 ## v0.0.7 - 2026-09-23
 
 - Requires `openresponses` v0.0.12, up from v0.0.10.

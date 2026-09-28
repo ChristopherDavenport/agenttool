@@ -126,6 +126,11 @@ for m in "$@"; do
     # the replace hollowed it out. Named one by one, because "it does not
     # build extracted" and "its tests cannot run from its own zip" are
     # different problems with different owners.
+    # The siblings are the previous release here, not the tree, so a
+    # test of a feature that spans two modules cannot pass until both
+    # are released. Such a test skips itself under this variable and
+    # runs everywhere else, including the release's own make check.
+    export AGENTTOOL_EXTRACTED=1
     go build ./... || { echo "  !!  go build failed" >&2; exit 1; }
     go vet ./...   || { echo "  !!  go vet failed" >&2; exit 1; }
     go test ./...  || { echo "  !!  go test failed" >&2; exit 1; }

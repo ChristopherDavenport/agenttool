@@ -2,10 +2,11 @@ module github.com/ChristopherDavenport/agenttool/mcpclient
 
 go 1.25.0
 
-// The root requirement names the released version a consumer fetches.
-// The workspace builds this module against the tree instead; there is
-// deliberately no replace, so release-check can build it the way a
-// consumer does and fail while the version named here is too old.
+// The root requirement names the version this module is released at,
+// and the replace below points at the tree so the release commit can
+// name a version the proxy does not serve yet. Consumers ignore the
+// replace and get the require; make extracted builds the module with
+// it dropped, the way a consumer does.
 require (
 	github.com/ChristopherDavenport/agenttool v0.0.7
 	github.com/ChristopherDavenport/openresponses v0.0.12
