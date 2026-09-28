@@ -48,8 +48,12 @@ versions may break the API.
   or URL, the action and content, and `by`, who answered. Without the
   option the client offers no elicitation, as before, and an
   `ElicitationHandler` set through `WithClientOptions` still takes
-  precedence. Deferring a question through the loop is not part of
-  this.
+  precedence. The option offers form and URL elicitation unless the
+  capabilities set through `WithClientOptions` say which. Deferring a
+  question through the loop is not part of this.
+- mcpclient: a call whose server needs input, which reaches the tool
+  only when the SDK's multi round-trip handling is turned off, now
+  fails saying so. It used to read as a success with no output.
 - RFC 0001 settles resource scope (#35): serialisation stays within one
   batch, and a tool whose state outlives a batch guards it itself, as
   the `Resource` doc already said. A lock across batches, if one is ever

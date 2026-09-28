@@ -251,7 +251,18 @@ func WithRefreshError(fn func(error)) Option {
 // [agenttool.ActionCancel], which says nobody chose, rather than
 // [agenttool.ActionDecline], which says somebody did.
 //
-// An ElicitationHandler set through [WithClientOptions] takes precedence
+// The elicitor may be called for two questions of one call at once:
+// a server can ask several in one round, and the SDK answers them
+// concurrently. Before 2026-07-28 the one call in flight is all the
+// client knows, so a question a server sends outside any call, or late,
+// after its call returned, is put to whichever single call is running
+// then.
+//
+// The client offers form and URL elicitation unless the capabilities
+// set through [WithClientOptions] say otherwise. The SDK's multi
+// round-trip handling must be left on: with it disabled, a call whose
+// server asks a question fails, since there is nobody to ask. An
+// ElicitationHandler set through [WithClientOptions] takes precedence
 // and this option then does nothing.
 func WithElicitation() Option {
 	return func(o *options) { o.elicitation = true }
@@ -336,6 +347,23 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 	if o.elicitation && clientOpts.ElicitationHandler == nil {
 		s.running = make(map[int64]context.Context)
 		clientOpts.ElicitationHandler = s.elicit
+		// The SDK offers form elicitation alone for a handler, and a
+		// server then refuses to ask by URL, which is how a tool asks for
+		// a credential it must not see. Offer both, over the SDK's own
+		// default capabilities or the caller's, unless the caller has
+		// said which elicitation it takes.
+		// The SDK's default when none are set, reproduced so that
+		// offering URL elicitation does not also stop offering roots.
+		//lint:ignore SA1019 roots are deprecated, and still what the SDK offers by default
+		caps := &sdk.ClientCapabilities{RootsV2: &sdk.RootCapabilities{ListChanged: true}}
+		if clientOpts.Capabilities != nil {
+			c := *clientOpts.Capabilities
+			caps = &c
+		}
+		if caps.Elicitation == nil {
+			caps.Elicitation = &sdk.ElicitationCapabilities{Form: &sdk.FormElicitationCapabilities{}, URL: &sdk.URLElicitationCapabilities{}}
+		}
+		clientOpts.Capabilities = caps
 	}
 	userProgress := clientOpts.ProgressNotificationHandler
 	clientOpts.ProgressNotificationHandler = func(ctx context.Context, req *sdk.ProgressNotificationClientRequest) {
@@ -612,6 +640,12 @@ func (s *Remote) call(ctx context.Context, remote string, readOnly bool, call ag
 	res, err := s.session.CallTool(ctx, params)
 	if err != nil {
 		return agenttool.Result{}, fmt.Errorf("mcp: call %q: %w", remote, err)
+	}
+	if res.NeedsInput() {
+		// The SDK answers a server's questions and calls again unless the
+		// caller turned that off, and then the result is a request for
+		// input, not an outcome: read as one, it is an empty success.
+		return agenttool.Result{}, fmt.Errorf("mcp: call %q: the server needs input the client did not give; multi round-trip handling is off", remote)
 	}
 	if s.seen.Load() == before && !readOnly {
 		// The server may notify after it answers, and the reference
