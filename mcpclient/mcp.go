@@ -320,6 +320,33 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 // anything else this package does not map.
 func (s *Remote) Session() *sdk.ClientSession { return s.session }
 
+// ServerInfo returns the name and version the server gave at
+// initialize, and the zero value when it gave none. It is what a host
+// composing several servers names them by: [WithPrefix] names the
+// tools and [WithClientInfo] names this side, and neither tells two
+// instances of one binary apart in a message about which server a tool
+// came from, which two claimed one name, or which one failed to
+// refresh.
+func (s *Remote) ServerInfo() sdk.Implementation {
+	res := s.session.InitializeResult()
+	if res == nil || res.ServerInfo == nil {
+		return sdk.Implementation{}
+	}
+	return *res.ServerInfo
+}
+
+// Instructions returns the instructions the server gave at initialize,
+// its own account of how to use it and its tools, and "" when it gave
+// none. A host that composes servers puts them where the model reads
+// them; this package does not.
+func (s *Remote) Instructions() string {
+	res := s.session.InitializeResult()
+	if res == nil {
+		return ""
+	}
+	return res.Instructions
+}
+
 // Tools returns a snapshot of the server's tools as of the last listing.
 func (s *Remote) Tools() []agenttool.Tool {
 	s.mu.RLock()
