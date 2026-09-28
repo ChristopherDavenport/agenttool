@@ -77,6 +77,14 @@ with the replaces dropped, so the require line is resolved from the proxy
 the way a consumer resolves it. Point a nested module at an older root
 and the version checks stay silent while that build fails.
 
+Between releases it skips a nested module whose sibling's Go files have
+moved on since the latest release its require names, because a change
+that uses new root API cannot compile against the previous release and
+no consumer can meet that pairing: the release re-points the require.
+It needs the tags, so the CI job checks out with `fetch-depth: 0`. A
+require naming anything but the latest release is still built, since
+that is drift.
+
 ### Why the `replace` directives are load-bearing
 
 Each nested `go.mod` carries `replace …/agenttool => ../`, and `make
