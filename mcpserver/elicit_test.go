@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -216,7 +218,17 @@ func TestElicitationModeNotOffered(t *testing.T) {
 // of a first call.
 func manual(t *testing.T, tl agenttool.Tool) (*sdk.ClientSession, *sdk.CallToolResult) {
 	t.Helper()
-	cs := rawClient(t, newServer(t, "deployer", tl), &sdk.ClientOptions{
+	return manualWith(t, Options{}, tl)
+}
+
+// manualWith is manual serving tl with o.
+func manualWith(t *testing.T, o Options, tl agenttool.Tool) (*sdk.ClientSession, *sdk.CallToolResult) {
+	t.Helper()
+	server, err := o.NewServer("deployer", "1", tl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := rawClient(t, server, &sdk.ClientOptions{
 		ElicitationHandler: func(context.Context, *sdk.ElicitRequest) (*sdk.ElicitResult, error) {
 			return nil, errors.New("unused")
 		},
@@ -302,23 +314,100 @@ func TestElicitationStateAnswersOnce(t *testing.T) {
 // TestElicitationAbandoned: a call whose client never comes back with
 // the answer is stopped, so its tool does not hold what it owns forever.
 func TestElicitationAbandoned(t *testing.T) {
-	defer func(d time.Duration) { abandonAfter = d }(abandonAfter)
-	abandonAfter = 20 * time.Millisecond
+	tool, stopped := askAndWait()
+	manualWith(t, Options{AbandonAfter: 20 * time.Millisecond}, tool)
+	wantStopped(t, stopped, "the abandoned call was never stopped")
+}
+
+// askAndWait is a tool that asks once and reports the error its
+// question ended with.
+func askAndWait() (agenttool.Tool, chan error) {
 	stopped := make(chan error, 1)
-	tool := agenttool.NewFunc("deploy", "asks and waits", nil, func(ctx context.Context, _ agenttool.Call) (agenttool.Result, error) {
+	return agenttool.NewFunc("deploy", "asks and waits", nil, func(ctx context.Context, _ agenttool.Call) (agenttool.Result, error) {
 		ask, _ := agenttool.ElicitorFrom(ctx)
 		_, err := ask(ctx, confirm)
 		stopped <- err
 		return agenttool.Result{}, err
-	})
-	manual(t, tool)
+	}), stopped
+}
+
+func wantStopped(t *testing.T, stopped chan error, msg string) {
+	t.Helper()
 	select {
 	case err := <-stopped:
 		if !errors.Is(err, context.Canceled) {
 			t.Errorf("the tool saw %v; want its context cancelled", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("the abandoned call was never stopped")
+		t.Fatal(msg)
+	}
+}
+
+// TestElicitationSessionClosed: a call parked on a question is stopped
+// when its session ends, rather than holding its tool until the
+// abandon timer, since no answer can come back on it (#54).
+func TestElicitationSessionClosed(t *testing.T) {
+	tool, stopped := askAndWait()
+	cs, _ := manual(t, tool)
+	if err := cs.Close(); err != nil {
+		t.Fatal(err)
+	}
+	wantStopped(t, stopped, "the call ran on after its session closed")
+}
+
+// TestElicitationLastRequest: the Go SDK's client makes ten requests of
+// a call, so a tenth question is answered with an error at once rather
+// than sent to a client that would give up on the call, and the tool
+// returns its result on that last request (#54).
+func TestElicitationLastRequest(t *testing.T) {
+	tool := agenttool.NewFunc("deploy", "asks one step at a time", nil, func(ctx context.Context, _ agenttool.Call) (agenttool.Result, error) {
+		ask, _ := agenttool.ElicitorFrom(ctx)
+		var out []string
+		for range 10 {
+			ans, err := ask(ctx, confirm)
+			if err != nil {
+				out = append(out, "error: "+err.Error())
+				break
+			}
+			out = append(out, string(ans.Action))
+		}
+		return agenttool.Text(strings.Join(out, "; ")), nil
+	})
+	s := roundTrip(t, newServer(t, "deployer", tool), mcpclient.WithElicitation())
+	host := &answering{content: `{"confirm":true}`}
+	res, err := callVia(t, s, agenttool.ContextWithElicitor(context.Background(), host.elicit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(host.asked); n != 9 {
+		t.Errorf("the client was asked %d questions; want 9", n)
+	}
+	want := strings.Repeat("accept; ", 9) + "error: mcpserver: elicitation: the client makes 10 requests of a call at most"
+	if !strings.HasPrefix(res.Output.Text, want) {
+		t.Errorf("output = %q; want it to start %q", res.Output.Text, want)
+	}
+}
+
+// TestElicitationStatelessHTTP: over stateless HTTP each request is a
+// session of its own that ends with it, so the end of the session that
+// started a call must not stop the call.
+func TestElicitationStatelessHTTP(t *testing.T) {
+	server := newServer(t, "deployer", asker(confirm))
+	handler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{Stateless: true})
+	hs := httptest.NewServer(handler)
+	t.Cleanup(hs.Close)
+	s, err := mcpclient.Connect(context.Background(), &sdk.StreamableClientTransport{Endpoint: hs.URL}, mcpclient.WithElicitation())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	host := &answering{content: `{"confirm":true}`}
+	res, err := callVia(t, s, agenttool.ContextWithElicitor(context.Background(), host.elicit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `accept {"confirm":true}`; res.Output.Text != want {
+		t.Errorf("output = %q, want %q", res.Output.Text, want)
 	}
 }
 

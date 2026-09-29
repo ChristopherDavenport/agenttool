@@ -147,6 +147,8 @@ func TestPrefixSequentialAndResource(t *testing.T) {
 		{name: "sequential by local name", opts: []Option{WithPrefix("fs"), WithSequential("fs__upper")}, wantName: "fs__upper", sequential: true},
 		{name: "resource by remote name", opts: []Option{WithPrefix("fs"), WithResource("shell:session", "upper")}, wantName: "fs__upper", wantResource: "shell:session"},
 		{name: "resource by local name", opts: []Option{WithPrefix("fs"), WithResource("shell:session", "fs__upper")}, wantName: "fs__upper", wantResource: "shell:session"},
+		{name: "resource, last wins across spellings", opts: []Option{WithPrefix("fs"), WithResource("shell:a", "upper"), WithResource("shell:b", "fs__upper")}, wantName: "fs__upper", wantResource: "shell:b"},
+		{name: "resource, last wins across spellings reversed", opts: []Option{WithPrefix("fs"), WithResource("shell:b", "fs__upper"), WithResource("shell:a", "upper")}, wantName: "fs__upper", wantResource: "shell:a"},
 		{name: "sequential wins over resource", opts: []Option{WithSequential("upper"), WithResource("shell:session", "upper")}, wantName: "upper", sequential: true},
 	}
 	for _, tc := range cases {
@@ -203,6 +205,12 @@ func TestConfinedSetLocally(t *testing.T) {
 		{name: "per call, leaving", opts: []Option{WithConfinedFunc(escape, "upper")}, args: json.RawMessage(`{"text":"escape"}`)},
 		{name: "nil func", opts: []Option{WithConfinedFunc(nil, "upper")}, args: args},
 		{name: "last wins", opts: []Option{WithConfined("seatbelt", "upper"), WithConfinedFunc(nil, "upper")}, args: args},
+		// The order of the options decides, not the spelling of the name:
+		// a withdrawal under the prefixed name undoes a claim under the
+		// remote one, and the other way round (#55).
+		{name: "last wins across spellings, withdrawn", opts: []Option{WithPrefix("sb"), WithConfined("container:agent-sandbox", "upper"), WithConfinedFunc(nil, "sb__upper")}, args: args},
+		{name: "last wins across spellings, claimed", opts: []Option{WithPrefix("sb"), WithConfinedFunc(nil, "sb__upper"), WithConfined("container:agent-sandbox", "upper")}, args: args, want: true, wantBy: "container:agent-sandbox"},
+		{name: "last wins across spellings, remote withdraws", opts: []Option{WithPrefix("sb"), WithConfined("container:agent-sandbox", "sb__upper"), WithConfinedFunc(nil, "upper")}, args: args},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

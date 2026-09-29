@@ -71,10 +71,14 @@ const DefaultNotificationGrace = 50 * time.Millisecond
 type Option func(*options)
 
 type options struct {
-	prefix         string
-	sequential     map[string]bool
-	resources      map[string]string
-	confined       map[string]func(context.Context, json.RawMessage) (bool, string)
+	prefix     string
+	sequential map[string]bool
+	resources  map[string]claim[string]
+	confined   map[string]claim[func(context.Context, json.RawMessage) (bool, string)]
+	// seq numbers the claims in the order their options were given, so
+	// the later of a claim on a tool's remote name and one on its
+	// prefixed name wins, whichever spelling each used.
+	seq            int
 	grace          *time.Duration
 	client         sdk.Implementation
 	clientOpts     sdk.ClientOptions
@@ -107,6 +111,34 @@ type RemoteRecord struct {
 	NS     string
 	Data   json.RawMessage
 	Result *sdk.CallToolResult
+}
+
+// A claim is what an option said about a tool, numbered in the order
+// the options were given.
+type claim[T any] struct {
+	v   T
+	seq int
+}
+
+// claimOn records v for each name, after every claim made before it.
+func claimOn[T any](o *options, m *map[string]claim[T], v T, names []string) {
+	if *m == nil {
+		*m = make(map[string]claim[T], len(names))
+	}
+	o.seq++
+	for _, n := range names {
+		(*m)[n] = claim[T]{v: v, seq: o.seq}
+	}
+}
+
+// latest returns the later of the claims on a tool's remote name and
+// its local one, and false when neither is named.
+func latest[T any](m map[string]claim[T], remote, name string) (T, bool) {
+	c, ok := m[remote]
+	if n, nok := m[name]; nok && (!ok || n.seq > c.seq) {
+		c, ok = n, true
+	}
+	return c.v, ok
 }
 
 // RecordNS returns the namespace the served tool chose.
@@ -172,20 +204,14 @@ func WithSequential(names ...string) Option {
 // executor runs two calls of them one after the other and the rest of
 // the batch alongside; see [agenttool.Resource]. Names are matched
 // before and after prefixing, so either form works, and several tools
-// of one server named in one call share the state. It is what a remote
+// of one server named in one call share the state. When several options
+// name a tool, in either form, the last one given wins. It is what a remote
 // shell or container session needs, since a remote tool names no
 // resource of its own: MCP has no field for one.
 //
 //	mcpclient.WithResource("shell:session", "bash", "run_tests")
 func WithResource(resource string, names ...string) Option {
-	return func(o *options) {
-		if o.resources == nil {
-			o.resources = make(map[string]string, len(names))
-		}
-		for _, n := range names {
-			o.resources[n] = resource
-		}
-	}
+	return func(o *options) { claimOn(o, &o.resources, resource, names) }
 }
 
 // WithConfined says the named tools run inside a sandbox, and by says
@@ -212,16 +238,11 @@ func WithConfined(by string, names ...string) Option {
 // WithConfinedFunc has the named tools answer [agenttool.ConfinedBy]
 // per call through fn, which reads the call's arguments before they are
 // sent; see [WithConfined]. A nil fn claims nothing, and the last
-// option naming a tool wins.
+// option naming a tool wins, whichever form of its name each option
+// used: WithConfinedFunc(nil, "sb__bash") withdraws an earlier
+// WithConfined(by, "bash").
 func WithConfinedFunc(fn func(ctx context.Context, args json.RawMessage) (bool, string), names ...string) Option {
-	return func(o *options) {
-		if o.confined == nil {
-			o.confined = make(map[string]func(context.Context, json.RawMessage) (bool, string), len(names))
-		}
-		for _, n := range names {
-			o.confined[n] = fn
-		}
-	}
+	return func(o *options) { claimOn(o, &o.confined, fn, names) }
 }
 
 // WithNotificationGrace bounds how long a call waits, after its result
@@ -586,14 +607,10 @@ func (s *Remote) wrap(t *sdk.Tool) (agenttool.Tool, error) {
 	if s.opts.sequential[remote] || s.opts.sequential[name] {
 		opts = append(opts, agenttool.WithSequential())
 	}
-	if res, ok := s.opts.resources[remote]; ok {
-		opts = append(opts, agenttool.WithResource(res))
-	} else if res, ok := s.opts.resources[name]; ok {
+	if res, ok := latest(s.opts.resources, remote, name); ok {
 		opts = append(opts, agenttool.WithResource(res))
 	}
-	if fn, ok := s.opts.confined[remote]; ok {
-		opts = append(opts, agenttool.WithConfined(fn))
-	} else if fn, ok := s.opts.confined[name]; ok {
+	if fn, ok := latest(s.opts.confined, remote, name); ok {
 		opts = append(opts, agenttool.WithConfined(fn))
 	}
 	if a, ok := AnnotationsOf(t); ok {
