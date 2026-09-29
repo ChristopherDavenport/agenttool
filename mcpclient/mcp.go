@@ -74,6 +74,7 @@ type options struct {
 	prefix         string
 	sequential     map[string]bool
 	resources      map[string]string
+	confined       map[string]func(context.Context, json.RawMessage) (bool, string)
 	grace          *time.Duration
 	client         sdk.Implementation
 	clientOpts     sdk.ClientOptions
@@ -183,6 +184,42 @@ func WithResource(resource string, names ...string) Option {
 		}
 		for _, n := range names {
 			o.resources[n] = resource
+		}
+	}
+}
+
+// WithConfined says the named tools run inside a sandbox, and by says
+// what confines them, "container:agent-sandbox", for the prompt and the
+// record; see [agenttool.Confined]. Names are matched before and after
+// prefixing, as [WithResource]'s are. MCP has no field for confinement,
+// so a remote tool claims none of its own, and a policy that skips a
+// prompt for a confined call asks about every call of a shell it placed
+// in a container itself.
+//
+// The claim is the host's, not the server's: the host chose where the
+// server runs, and nothing the server says reaches it. A tool not named
+// reads as unconfined, as before.
+//
+//	mcpclient.WithConfined("container:agent-sandbox", "bash")
+//
+// A tool whose sandbox a call can leave, a shell with an escape
+// argument, takes [WithConfinedFunc] instead, since a claim made for
+// every call would cover the one that leaves.
+func WithConfined(by string, names ...string) Option {
+	return WithConfinedFunc(func(context.Context, json.RawMessage) (bool, string) { return true, by }, names...)
+}
+
+// WithConfinedFunc has the named tools answer [agenttool.ConfinedBy]
+// per call through fn, which reads the call's arguments before they are
+// sent; see [WithConfined]. A nil fn claims nothing, and the last
+// option naming a tool wins.
+func WithConfinedFunc(fn func(ctx context.Context, args json.RawMessage) (bool, string), names ...string) Option {
+	return func(o *options) {
+		if o.confined == nil {
+			o.confined = make(map[string]func(context.Context, json.RawMessage) (bool, string), len(names))
+		}
+		for _, n := range names {
+			o.confined[n] = fn
 		}
 	}
 }
@@ -553,6 +590,11 @@ func (s *Remote) wrap(t *sdk.Tool) (agenttool.Tool, error) {
 		opts = append(opts, agenttool.WithResource(res))
 	} else if res, ok := s.opts.resources[name]; ok {
 		opts = append(opts, agenttool.WithResource(res))
+	}
+	if fn, ok := s.opts.confined[remote]; ok {
+		opts = append(opts, agenttool.WithConfined(fn))
+	} else if fn, ok := s.opts.confined[name]; ok {
+		opts = append(opts, agenttool.WithConfined(fn))
 	}
 	if a, ok := AnnotationsOf(t); ok {
 		opts = append(opts, agenttool.WithAnnotations(a))

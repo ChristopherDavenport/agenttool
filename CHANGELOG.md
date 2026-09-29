@@ -5,6 +5,35 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- mcpserver: a served tool can ask the user a question (#51). When the
+  client offers elicitation, the handler puts an `agenttool.Elicitor`
+  on the call's context, so a tool asks through `ElicitorFrom` served
+  or in process alike. From protocol 2026-07-28, where a server may not
+  send `elicitation/create` while it serves a call, the question goes
+  back as the call's input request and the answer comes with the
+  client's next request; the tool runs on between them, detached from
+  the request that started it, and is stopped if the client cancels the
+  call or does not answer within 30 minutes. A client before 2026-07-28
+  is asked with `elicitation/create`. A form answer is checked against
+  the question's schema, and a question of a mode the client does not
+  take is answered `ActionCancel`. A client that offers no elicitation
+  sees no change, and the tool finds whatever elicitor the host put on
+  the context, or none. With mcpclient's `WithElicitation` the question
+  reaches the harness's elicitor under the call that asked, across the
+  boundary.
+- mcpclient: `WithConfined(by, names...)` says the named remote tools
+  run inside a sandbox, and `WithConfinedFunc(fn, names...)` answers
+  per call, for a tool with an escape argument (#52). MCP has no field
+  for confinement, so a shell a host put in a container behind
+  mcpserver read as unconfined, and a policy that asks about
+  unconfined calls asked about every one. Names match before and after
+  prefixing, as `WithResource`'s do, and the tool keeps its resource
+  and annotations. A tool not named reads as unconfined, as before.
+- RFC 0001 is draft 0.4: the MCP table carries elicitation both ways
+  and names the confinement setter.
+
 ## v0.0.9 - 2026-09-28
 
 - A tool can say whether a call that may already have run can run

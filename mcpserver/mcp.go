@@ -110,6 +110,26 @@ func NewServer(name, version string, tools ...agenttool.Tool) (*sdk.Server, erro
 // wraps its tools with [agenttool.Wrap] and installs the recorder on
 // the context there.
 //
+// A tool asks the user a question through the [agenttool.Elicitor] the
+// handler puts on the call's context when the client offers
+// elicitation, so a tool that asks in process asks the same way served.
+// From protocol 2026-07-28 a server may not send elicitation/create
+// while it serves a call: the question goes back as the call's input
+// request, under a request state that names the waiting call, and the
+// answer arrives with the client's next request, which resumes it. The
+// tool runs on its own goroutine meanwhile, on a context detached from
+// the first request and carrying its values, and is cancelled when the
+// client cancels the request it is waiting on or does not come back
+// within 30 minutes. The state is random and names a call only this
+// process holds, so a server behind a load balancer routes a client's
+// requests to one process. The Go SDK's client makes ten requests of a
+// call at most, so a tool asks in nine rounds at most; questions it asks
+// together go in one. A client before 2026-07-28 is asked with
+// elicitation/create while the call runs. A form's answer is checked
+// against its schema, a question of a mode the client does not offer is
+// answered [agenttool.ActionCancel], and a client that offers no
+// elicitation leaves the context as the host set it.
+//
 // When the request carries a progress token, Call.OnUpdate forwards each
 // update as a progress notification whose message is the update's text.
 // An update whose Details is an agenttool.ProgressInfo supplies the
@@ -200,7 +220,11 @@ func Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mcpserver: tool %q: schema: %w", tl.Name(), err)
 	}
+	var waiting parked
 	return func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		if req.Params.RequestState != "" {
+			return waiting.resume(ctx, tl.Name(), req)
+		}
 		// The call carries no idempotency key: MCP has none to carry, so
 		// a keyed tool served here deduplicates nothing.
 		call := agenttool.Call{
@@ -216,9 +240,24 @@ func Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
 		if err := validate(resolved, call.Args); err != nil {
 			return errorResult(err), nil
 		}
+		// A client that offered elicitation is asked through it. From
+		// 2026-07-28 the question ends the request and the answer starts
+		// the next, so the tool runs detached from this one, as a run.
+		var r *run
+		reqCtx := ctx
+		if caps, ok := elicitation(req.Session); ok {
+			if roundTrips(req.Session) {
+				r = &run{session: sessionID(req.Session), caps: caps, asks: make(chan *ask), done: make(chan struct{})}
+				ctx, r.cancel = context.WithCancel(context.WithoutCancel(ctx))
+				ctx = agenttool.ContextWithElicitor(ctx, r.elicit)
+			} else {
+				ctx = agenttool.ContextWithElicitor(ctx, askDirectly(req.Session, caps))
+			}
+		}
 		if token := req.Params.GetProgressToken(); token != nil && req.Session != nil {
 			var n atomic.Int64
 			session := req.Session
+			progressCtx := ctx
 			call.OnUpdate = func(r agenttool.Result) {
 				params := &sdk.ProgressNotificationParams{ProgressToken: token, Progress: float64(n.Add(1)), Message: r.Output.String()}
 				if p, ok := r.Details.(agenttool.ProgressInfo); ok {
@@ -230,19 +269,32 @@ func Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
 				// Progress is best effort: a notification the session
 				// could not deliver must not fail the call, and the
 				// result carries everything the update did.
-				_ = session.NotifyProgress(ctx, params)
+				_ = session.NotifyProgress(progressCtx, params)
 			}
 		}
 		ctx = agenttool.WithCall(ctx, call)
-		res, err := tl.Execute(ctx, call)
-		meta := recordMeta(res.Details)
-		if err != nil {
-			out := errorResult(err)
-			out.Meta = meta
-			return out, nil
+		if r == nil {
+			res, err := tl.Execute(ctx, call)
+			return resultOf(res, err), nil
 		}
-		return &sdk.CallToolResult{Content: ContentOf(res.Output), Meta: meta}, nil
+		go func() {
+			defer close(r.done)
+			defer r.cancel()
+			r.res, r.err = tl.Execute(ctx, call)
+		}()
+		return waiting.wait(reqCtx, r)
 	}, nil
+}
+
+// resultOf maps what a tool returned to the call's result.
+func resultOf(res agenttool.Result, err error) *sdk.CallToolResult {
+	meta := recordMeta(res.Details)
+	if err != nil {
+		out := errorResult(err)
+		out.Meta = meta
+		return out
+	}
+	return &sdk.CallToolResult{Content: ContentOf(res.Output), Meta: meta}
 }
 
 // recordMeta builds the _meta that carries a result's record: nil when
