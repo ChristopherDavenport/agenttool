@@ -162,7 +162,10 @@ A tool that needs the user's answer before it can go on, "delete the
 branch?", asks through the `Elicitor` the harness put on the call's
 context with `ContextWithElicitor`, so the question reaches the
 harness's policy and its record as part of the call. mcpclient's
-`WithElicitation()` routes an MCP server's elicitation there.
+`WithElicitation()` routes an MCP server's elicitation there, and a
+tool served by mcpserver asks through the same `Elicitor`, which
+mcpserver sends to the client, so a question survives the move out of
+process.
 
 ## Interrupting a call, closing a tool
 
@@ -210,6 +213,11 @@ var Bash = agenttool.New("bash", "Run a shell command", shell.run,
 	agenttool.WithConfined(shell.confined), // (ctx, args) → (bool, "container:agent")
 	agenttool.WithCloser(shell.close))
 ```
+
+The same shell served over MCP arrives unconfined, since MCP has no
+field for it; the host that put the server in a container says so with
+`mcpclient.WithConfined("container:agent", "bash")`, or
+`WithConfinedFunc` when some calls leave it.
 
 ## A batch
 

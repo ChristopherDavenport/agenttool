@@ -1,6 +1,6 @@
 # RFC 0001: Agent Tool Contract
 
-Status: draft 0.3
+Status: draft 0.4
 Author: Christopher Davenport
 Discussion: to be opened against this repository. The Go module at its
 root is the reference binding; agentturn is the reference harness.
@@ -612,7 +612,7 @@ the local side by the host and does not cross.
 | strict | no field; not carried | — |
 | sequential, resource | no field; `mcpclient.WithResource(resource, names…)` names a remote tool's state locally | consume |
 | annotations | `annotations`: `title`, `readOnlyHint`, `destructiveHint` (absent is true), `idempotentHint`, `openWorldHint` (absent is true); a tool with no block is unstated | both |
-| confined | no field; not carried | — |
+| confined | no field; `mcpclient.WithConfined(by, names…)` says a remote tool runs confined, and `WithConfinedFunc(fn, names…)` answers per call; the claim is the host's, which placed the server, and the server's does not cross | consume |
 | replay | no field; a consumed tool is *unknown* whatever its `idempotentHint`, since MCP defines no deduplication and a call whose stream broke may or may not have run; a served tool's claim does not cross | — |
 | idempotency key | no field; a consumed call's key is not sent, and a served call has none | — |
 | closer | not a closer: the remote session is closed through `mcpclient.Remote.Close` | consume |
@@ -625,7 +625,7 @@ the local side by the host and does not cross.
 | call on the context | the server installs it for every call, as the executor does | serve |
 | recorder on the context | the handler leaves one it finds; the go-sdk at v1.8.0 derives each call's context from the one the session was opened with, `Run` or `Connect` over stdio and in memory, the initialize request over streamable HTTP, which is observed behaviour a test pins and not a documented guarantee | serve |
 | client identity | the server puts the MCP session on the context: `mcpserver.SessionFrom` | serve |
-| elicitation | `elicitation/create` ↔ the elicitor on the call's context, opted into with `mcpclient.WithElicitation`, without which the client does not offer it; from 2026-07-28 the question returns with its call and is that call's, and before it a question the server sends on its own is put to the one call in flight, and to nobody when there is none or several; nobody to ask answers `cancel` | consume |
+| elicitation | `elicitation/create` ↔ the elicitor on the call's context. The client offers it only with `mcpclient.WithElicitation`; from 2026-07-28 the question returns with its call and is that call's, and before it a question the server sends on its own is put to the one call in flight, and to nobody when there is none or several; nobody to ask answers `cancel`. The server installs an elicitor on a served call's context when the client offers elicitation: from 2026-07-28 a question goes back as the call's input request, the tool running on while the client asks, and before it as `elicitation/create`; a question of a mode the client does not take answers `cancel` | both |
 
 ### Open Responses
 
@@ -908,6 +908,15 @@ module and is listed in the changelog as one.
   differ, `retryable` with a not-before time in a `_meta` block, a
   rate-limit error code, so it waits for one to settle. The MCP
   client handles its own transport failures meanwhile.
+
+## Changes since 0.3
+
+- The MCP binding carries elicitation both ways: a tool served by
+  mcpserver asks through the elicitor on its context, as it would in
+  process (#51).
+- The MCP binding sets confined on the consuming side, through
+  `mcpclient.WithConfined` and `WithConfinedFunc`, as resource is set
+  through `WithResource` (#52).
 
 ## Changes since 0.2
 

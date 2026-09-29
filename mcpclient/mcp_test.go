@@ -178,6 +178,61 @@ func TestResourceSharedByTwoTools(t *testing.T) {
 	}
 }
 
+// TestConfinedSetLocally: confinement does not cross MCP, so the host
+// that placed the server says it, by either name, per call when it
+// needs to, and a tool it does not name stays unconfined.
+func TestConfinedSetLocally(t *testing.T) {
+	args := json.RawMessage(`{"text":"ls"}`)
+	escape := func(_ context.Context, args json.RawMessage) (bool, string) {
+		if strings.Contains(string(args), "escape") {
+			return false, ""
+		}
+		return true, "container:agent-sandbox"
+	}
+	cases := []struct {
+		name   string
+		opts   []Option
+		args   json.RawMessage
+		want   bool
+		wantBy string
+	}{
+		{name: "unnamed", args: args},
+		{name: "by remote name", opts: []Option{WithPrefix("fs"), WithConfined("container:agent-sandbox", "upper")}, args: args, want: true, wantBy: "container:agent-sandbox"},
+		{name: "by local name", opts: []Option{WithPrefix("fs"), WithConfined("container:agent-sandbox", "fs__upper")}, args: args, want: true, wantBy: "container:agent-sandbox"},
+		{name: "per call, inside", opts: []Option{WithConfinedFunc(escape, "upper")}, args: args, want: true, wantBy: "container:agent-sandbox"},
+		{name: "per call, leaving", opts: []Option{WithConfinedFunc(escape, "upper")}, args: json.RawMessage(`{"text":"escape"}`)},
+		{name: "nil func", opts: []Option{WithConfinedFunc(nil, "upper")}, args: args},
+		{name: "last wins", opts: []Option{WithConfined("seatbelt", "upper"), WithConfinedFunc(nil, "upper")}, args: args},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := connect(t, newServer(t), tc.opts...)
+			ctx := context.Background()
+			got, by := agenttool.ConfinedBy(ctx, lookup(t, s, s.Name("upper")), tc.args)
+			if got != tc.want || by != tc.wantBy {
+				t.Errorf("ConfinedBy = (%v, %q), want (%v, %q)", got, by, tc.want, tc.wantBy)
+			}
+			if got, _ := agenttool.ConfinedBy(ctx, lookup(t, s, s.Name("image")), args); got {
+				t.Error("a tool the host did not name should read as unconfined")
+			}
+		})
+	}
+}
+
+// TestConfinedKeepsResource: the claim is added where the tool is
+// built, so a remote tool keeps the resource it was given, which
+// embedding it in a struct that adds Confined would drop.
+func TestConfinedKeepsResource(t *testing.T) {
+	s := connect(t, newServer(t), WithResource("shell:session", "upper"), WithConfined("container:agent-sandbox", "upper"))
+	tl := lookup(t, s, "upper")
+	if got := agenttool.ResourceOf(tl); got != "shell:session" {
+		t.Errorf("resource = %q", got)
+	}
+	if ok, by := agenttool.ConfinedBy(context.Background(), tl, json.RawMessage(`{}`)); !ok || by != "container:agent-sandbox" {
+		t.Errorf("ConfinedBy = (%v, %q)", ok, by)
+	}
+}
+
 func TestExecuteMapsResults(t *testing.T) {
 	s := connect(t, newServer(t))
 	ctx := context.Background()
