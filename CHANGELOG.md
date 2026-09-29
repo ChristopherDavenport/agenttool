@@ -5,7 +5,7 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
-## Unreleased
+## v0.0.10 - 2026-09-29
 
 - mcpserver: a served tool can ask the user a question (#51). When the
   client offers elicitation, the handler puts an `agenttool.Elicitor`
