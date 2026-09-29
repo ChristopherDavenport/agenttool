@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/ChristopherDavenport/agenttool"
 	"github.com/ChristopherDavenport/openresponses"
@@ -51,11 +52,35 @@ var emptySchema = json.RawMessage(`{"type":"object","properties":{},"required":[
 // octetStream is the media type for bytes of unknown type.
 const octetStream = "application/octet-stream"
 
+// Options tunes how tools are served. The zero value is the default,
+// and the package's functions of the same names use it.
+type Options struct {
+	// AbandonAfter is how long a call whose question is with the client
+	// waits for the answer before its tool is stopped, zero meaning
+	// [DefaultAbandonAfter]. A call whose session ends is stopped then,
+	// but over stateless HTTP, where each request is a session of its
+	// own, this is the only thing that stops a call whose client gave
+	// up without cancelling it.
+	AbandonAfter time.Duration
+
+	// MaxRequests is how many requests the client makes of one call at
+	// most, zero meaning [DefaultMaxRequests], and negative no limit. A
+	// question the tool asks on the last is answered with an error at
+	// once rather than sent to a client that would give up on the call
+	// instead of answering.
+	MaxRequests int
+}
+
 // NewServer builds an SDK server named name that serves tools. It fails
 // as [AddTools] does.
 func NewServer(name, version string, tools ...agenttool.Tool) (*sdk.Server, error) {
+	return Options{}.NewServer(name, version, tools...)
+}
+
+// NewServer is [NewServer] with o.
+func (o Options) NewServer(name, version string, tools ...agenttool.Tool) (*sdk.Server, error) {
 	s := sdk.NewServer(&sdk.Implementation{Name: name, Version: version}, nil)
-	if err := AddTools(s, tools...); err != nil {
+	if err := o.AddTools(s, tools...); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -119,12 +144,16 @@ func NewServer(name, version string, tools ...agenttool.Tool) (*sdk.Server, erro
 // answer arrives with the client's next request, which resumes it. The
 // tool runs on its own goroutine meanwhile, on a context detached from
 // the first request and carrying its values, and is cancelled when the
-// client cancels the request it is waiting on or does not come back
-// within 30 minutes. The state is random and names a call only this
-// process holds, so a server behind a load balancer routes a client's
-// requests to one process. The Go SDK's client makes ten requests of a
-// call at most, so a tool asks in nine rounds at most; questions it asks
-// together go in one. A client before 2026-07-28 is asked with
+// client cancels the request it is waiting on, when the session it
+// came on ends, or when the client does not come back within
+// [Options.AbandonAfter]; over stateless HTTP a session lasts one
+// request, so only the first and the last apply. The state is random
+// and names a call only this process holds, so a server behind a load
+// balancer routes a client's requests to one process. The Go SDK's
+// client makes ten requests of a call at most, [Options.MaxRequests],
+// so a tool asks in nine rounds at most, and a tenth question is
+// answered with an error at once; questions it asks together go in
+// one. A client before 2026-07-28 is asked with
 // elicitation/create while the call runs. A form's answer is checked
 // against its schema, a question of a mode the client does not offer is
 // answered [agenttool.ActionCancel], and a client that offers no
@@ -137,9 +166,14 @@ func NewServer(name, version string, tools ...agenttool.Tool) (*sdk.Server, erro
 // consumed and this package serves again keeps its numbers; otherwise
 // updates are numbered in order with no total.
 func AddTools(s *sdk.Server, tools ...agenttool.Tool) error {
+	return Options{}.AddTools(s, tools...)
+}
+
+// AddTools is [AddTools] with o.
+func (o Options) AddTools(s *sdk.Server, tools ...agenttool.Tool) error {
 	handlers := make([]sdk.ToolHandler, 0, len(tools))
 	for _, tl := range tools {
-		h, err := Handler(tl)
+		h, err := o.Handler(tl)
 		if err != nil {
 			return err
 		}
@@ -216,11 +250,22 @@ var callSeq atomic.Int64
 // Handler builds the SDK handler that runs tl. It fails when the tool's
 // schema cannot be resolved for validation.
 func Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
+	return Options{}.Handler(tl)
+}
+
+// Handler is [Handler] with o.
+func (o Options) Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
 	resolved, err := resolveSchema(tl.Parameters())
 	if err != nil {
 		return nil, fmt.Errorf("mcpserver: tool %q: schema: %w", tl.Name(), err)
 	}
-	var waiting parked
+	waiting := parked{abandonAfter: o.AbandonAfter, maxRequests: o.MaxRequests}
+	if waiting.abandonAfter <= 0 {
+		waiting.abandonAfter = DefaultAbandonAfter
+	}
+	if waiting.maxRequests == 0 {
+		waiting.maxRequests = DefaultMaxRequests
+	}
 	return func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
 		if req.Params.RequestState != "" {
 			return waiting.resume(ctx, tl.Name(), req)
@@ -247,7 +292,7 @@ func Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
 		reqCtx := ctx
 		if caps, ok := elicitation(req.Session); ok {
 			if roundTrips(req.Session) {
-				r = &run{session: sessionID(req.Session), caps: caps, asks: make(chan *ask), done: make(chan struct{})}
+				r = &run{session: sessionID(req.Session), caps: caps, asks: make(chan *ask), done: make(chan struct{}), over: make(chan struct{})}
 				ctx, r.cancel = context.WithCancel(context.WithoutCancel(ctx))
 				ctx = agenttool.ContextWithElicitor(ctx, r.elicit)
 			} else {
@@ -282,6 +327,7 @@ func Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
 			defer r.cancel()
 			r.res, r.err = tl.Execute(ctx, call)
 		}()
+		waiting.watch(r, req)
 		return waiting.wait(reqCtx, r)
 	}, nil
 }

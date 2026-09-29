@@ -5,6 +5,33 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- mcpserver: a served call parked on a question is stopped when the
+  session it came on ends (#54). Esc on the client ends the harness's
+  call without a request the server could cancel, and until now the
+  tool held whatever it took before asking, a lock or a container, for
+  the full 30 minutes, closed session or not. Over stateless HTTP a
+  session lasts one request, so there the timer is still what stops a
+  call its client gave up on.
+- mcpserver: a question that would need a request after the client's
+  last is answered with an error at once, and the tool carries on and
+  returns on that request (#54). The Go SDK's client makes ten requests
+  of a call and gives up on the tenth if it brings back a question, so
+  a tool that asked a tenth time failed the call on the client and
+  stayed parked on the server.
+- mcpserver: `Options{AbandonAfter, MaxRequests}` sets how long a
+  parked call waits for its answer and how many requests the client
+  makes of a call, through `Options.NewServer`, `Options.AddTools` and
+  `Options.Handler`. The package functions of the same names use the
+  zero value, which keeps the 30 minutes and the Go SDK's ten.
+- mcpclient: when several `WithResource` or `WithConfinedFunc` options
+  name one tool, the last given wins, whichever spelling of its name
+  each used (#55). The remote spelling used to beat the prefixed one
+  regardless of order, so `WithConfinedFunc(nil, "sb__bash")` after
+  `WithConfined(by, "bash")` left the tool reading as confined, and a
+  policy that skips the prompt for confined calls skipped it.
+
 ## v0.0.10 - 2026-09-29
 
 - mcpserver: a served tool can ask the user a question (#51). When the
