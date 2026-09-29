@@ -5,7 +5,7 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
-## Unreleased
+## v0.0.11 - 2026-09-29
 
 - mcpserver: a served call parked on a question is stopped when the
   session it came on ends (#54). Esc on the client ends the harness's
