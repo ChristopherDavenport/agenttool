@@ -5,6 +5,21 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- mcpclient: `Remote.Close` no longer loses the cancel that #57 sends
+  when the user presses Esc, or strands a question that is still open
+  (#64). With `WithElicitation`, `Close` waits up to five seconds for
+  the requests that answer open questions cancel. A harness that quits
+  straight after Esc used to race that request. Over stateless HTTP,
+  losing it left the served tool parked until `AbandonAfter`. `Close`
+  also ends every call in flight, and any question with the elicitor,
+  with the new `ErrClosed`: before, a call whose question was on screen
+  waited for Esc, and a headless front waiting on the elicitor's context
+  waited forever. `WithElicitation`'s doc now says that over stateless
+  HTTP a tool hears cancel but is not stopped when that request is
+  cancelled.
+
 ## v0.0.13 - 2026-10-01
 
 - mcpclient: `StoreTokens` keeps the grant an OAuth-protected server
