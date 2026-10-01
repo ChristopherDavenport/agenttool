@@ -388,6 +388,29 @@ h, err := auth.NewAuthorizationCodeHandler(&auth.AuthorizationCodeHandlerConfig{
 s, err := mcpclient.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: endpoint, OAuthHandler: h}, mcpclient.WithElicitation())
 ```
 
+The handler keeps its tokens in memory, so a restart means consenting
+again. `mcpclient.StoreTokens` keeps them in a `TokenStore` instead.
+Call it on the config before building the handler:
+
+```go
+cfg := &auth.AuthorizationCodeHandlerConfig{ /* as above */ }
+key := mcpclient.TokenKey{Endpoint: endpoint, Subject: userID} // Subject "" with one user
+err := mcpclient.StoreTokens(ctx, cfg, store, key, func(err error) {
+	log.Printf("saving the grant for %s: %v", endpoint, err) // the error, never the record
+})
+h, err := auth.NewAuthorizationCodeHandler(cfg)
+```
+
+A stored grant starts the connection authorized. Each refresh that
+changes the token is saved, including a refresh token the provider
+rotates, so the grant still refreshes after the next restart. The
+record holds the token endpoint and the client credentials as well as
+the token, because the SDK learns them only while it authorizes.
+`MemoryTokenStore` is for tests. Where a real store keeps its secrets,
+and how it encrypts them, is the host's choice. A store shared by
+several processes needs its own locking, because a provider that
+rotates refresh tokens accepts each one only once.
+
 What this route does not do, all of it tracked in #58:
 
 - **Nobody to ask at `Connect`.** The first 401 comes from initialize,
@@ -397,8 +420,12 @@ What this route does not do, all of it tracked in #58:
   terminal to print to, so it has to authorize some other way before
   it connects.
 - **Mid-session it can ask, as the same user only.** A 401 after the
-  token expires with no refresh token, or a 403 step-up, runs the
-  fetcher on the context of the call that met it. The elicitor is
+  provider refuses the refresh token, or a 403 step-up, runs the
+  fetcher on the context of the call that met it. A token that expires
+  with no refresh token never reaches the server: the SDK's token
+  source fails the request instead, so nothing asks. With
+  `StoreTokens` the expired token is sent, the server answers 401, and
+  the fetcher runs as it does for a refused refresh. The elicitor is
   there, and with `WithElicitation` so is the call, so the question
   lands in the record under that call. The server pins its session to
   the user of the token that opened it. A token for anyone else is
@@ -410,8 +437,6 @@ What this route does not do, all of it tracked in #58:
 - **Nothing receives the redirect.** `RedirectURL` is yours to serve:
   a loopback listener (RFC 8252) for a harness on the user's machine,
   or a route on the front that hosts it.
-- **Tokens live in memory.** A restart means consenting again unless
-  `InitialTokenSource` and `NewTokenSource` load and save them.
 - **A URL answer is only an action.** Accepting says the user went to
   the page. The code still arrives at the redirect, and it and the
   tokens never pass through `Answer` or the record.
