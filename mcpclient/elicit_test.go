@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -372,5 +374,91 @@ func TestElicitationCancelledWithoutQuestion(t *testing.T) {
 	case <-stopped:
 	case <-time.After(time.Second):
 		t.Fatal("the server's tool ran on after the call was cancelled")
+	}
+}
+
+// connectStateless connects to server over streamable HTTP with no
+// session, where nothing but the request answering a question can tell
+// the server's tool that nobody will.
+func connectStateless(t *testing.T, server *sdk.Server, opts ...Option) *Remote {
+	t.Helper()
+	h := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{Stateless: true})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	r, err := Connect(context.Background(), &sdk.StreamableClientTransport{Endpoint: srv.URL}, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	return r
+}
+
+var transports = map[string]func(*testing.T, *sdk.Server, ...Option) *Remote{
+	"in memory":      connect,
+	"stateless HTTP": connectStateless,
+}
+
+// A harness that quits closes the remote straight after Esc. Close
+// waits for the request answering the open question cancel, so the
+// server's tool still hears it rather than holding what it took until
+// the server gives up (#64).
+func TestElicitationEscThenCloseAnswersCancel(t *testing.T) {
+	for name, dial := range transports {
+		t.Run(name, func(t *testing.T) {
+			for range 5 {
+				heard := make(chan string, 2)
+				r := dial(t, resumed(heard, false), WithElicitation())
+				escape(t, r)
+				start := time.Now()
+				if err := r.Close(); err != nil {
+					t.Errorf("close: %v", err)
+				}
+				if d := time.Since(start); d > time.Second {
+					t.Errorf("close took %v; want it as soon as the cancel is answered", d)
+				}
+				select {
+				case got := <-heard:
+					if got != "cancel" {
+						t.Errorf("the server heard %q; want cancel", got)
+					}
+				default:
+					t.Fatal("the remote closed before the server heard cancel")
+				}
+			}
+		})
+	}
+}
+
+// A remote closed while a call's question is with the user ends the
+// call and the question, since a closed connection can carry no answer,
+// and says why, rather than leaving both waiting on an Esc (#64).
+func TestElicitationCloseEndsTheQuestion(t *testing.T) {
+	for name, dial := range transports {
+		t.Run(name, func(t *testing.T) {
+			heard := make(chan string, 2)
+			r := dial(t, resumed(heard, false), WithElicitation())
+			asked, cause := make(chan struct{}), make(chan error, 1)
+			ctx := agenttool.ContextWithElicitor(context.Background(), func(ctx context.Context, _ agenttool.Elicitation) (agenttool.Answer, error) {
+				close(asked)
+				<-ctx.Done()
+				cause <- context.Cause(ctx)
+				return agenttool.Answer{}, ctx.Err()
+			})
+			go func() {
+				<-asked
+				_ = r.Close()
+			}()
+			_, err := lookup(t, r, "rollout").Execute(ctx, agenttool.Call{ID: "c", Args: json.RawMessage(`{}`)})
+			if !errors.Is(err, ErrClosed) {
+				t.Errorf("err = %v; want ErrClosed", err)
+			}
+			if got := <-cause; !errors.Is(got, ErrClosed) {
+				t.Errorf("the elicitor's context ended with %v; want ErrClosed", got)
+			}
+			hear(t, heard, "cancel")
+			if _, err := lookup(t, r, "rollout").Execute(ctx, agenttool.Call{ID: "d", Args: json.RawMessage(`{}`)}); !errors.Is(err, ErrClosed) {
+				t.Errorf("a call after Close: err = %v; want ErrClosed", err)
+			}
+		})
 	}
 }
