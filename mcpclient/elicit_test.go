@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ChristopherDavenport/agenttool"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -251,5 +252,125 @@ func TestElicitationWithMultiRoundTripOff(t *testing.T) {
 	_, err := lookup(t, s, "ask").Execute(context.Background(), agenttool.Call{ID: "c", Args: json.RawMessage(`{}`)})
 	if err == nil || !strings.Contains(err.Error(), "needs input") {
 		t.Errorf("err = %v; want the call to fail as needing input", err)
+	}
+}
+
+// escaped is a host elicitor that holds every question until its call
+// ends, as a front does whose user presses Esc, and closes asked when
+// the first one arrives.
+func escaped(asked chan struct{}) agenttool.Elicitor {
+	var once sync.Once
+	return func(ctx context.Context, _ agenttool.Elicitation) (agenttool.Answer, error) {
+		once.Do(func() { close(asked) })
+		<-ctx.Done()
+		return agenttool.Answer{}, ctx.Err()
+	}
+}
+
+// resumed is a server whose "rollout" tool asks once and sends what the
+// client's next request brought on heard. When block is set it then
+// waits for that request to be cancelled instead of returning.
+func resumed(heard chan string, block bool) *sdk.Server {
+	s := sdk.NewServer(&sdk.Implementation{Name: "roller", Version: "1"}, nil)
+	s.AddTool(&sdk.Tool{Name: "rollout", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			answer, ok := req.Params.InputResponses["confirm"].(*sdk.ElicitResult)
+			if !ok {
+				return &sdk.CallToolResult{InputRequests: sdk.InputRequestMap{"confirm": &sdk.ElicitParams{
+					Message:         "roll out?",
+					RequestedSchema: json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`),
+				}}}, nil
+			}
+			heard <- answer.Action
+			if block {
+				<-ctx.Done()
+				heard <- "request cancelled"
+				return nil, ctx.Err()
+			}
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "rollout: " + answer.Action}}}, nil
+		})
+	return s
+}
+
+// escape calls rollout under an elicitor that holds its question, ends
+// the call once the question is with it, and checks the call returns at
+// once with the call's error.
+func escape(t *testing.T, r *Remote) {
+	t.Helper()
+	asked := make(chan struct{})
+	ctx, cancel := context.WithCancel(agenttool.ContextWithElicitor(context.Background(), escaped(asked)))
+	go func() {
+		<-asked
+		cancel()
+	}()
+	start := time.Now()
+	_, err := lookup(t, r, "rollout").Execute(ctx, agenttool.Call{ID: "c", Args: json.RawMessage(`{}`)})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v; want the call's cancellation", err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("the call took %v to return after Esc; want it at once", d)
+	}
+}
+
+func hear(t *testing.T, heard chan string, want string) {
+	t.Helper()
+	select {
+	case got := <-heard:
+		if got != want {
+			t.Errorf("the server heard %q; want %q", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("the server never heard %q", want)
+	}
+}
+
+// A call that ends while its question is with the user still tells the
+// server, with one more request answering the question cancel, so the
+// server's tool is not left waiting for an answer that will not come
+// (#57).
+func TestElicitationEscAnswersCancel(t *testing.T) {
+	heard := make(chan string, 2)
+	r := connect(t, resumed(heard, false), WithElicitation())
+	escape(t, r)
+	hear(t, heard, "cancel")
+}
+
+// A server that does not return when told nobody chose is stopped by
+// the request being cancelled after the grace.
+func TestElicitationEscCancelsTheLastRequest(t *testing.T) {
+	heard := make(chan string, 2)
+	r := connect(t, resumed(heard, true), WithElicitation())
+	r.cancelGrace = 50 * time.Millisecond
+	escape(t, r)
+	hear(t, heard, "cancel")
+	hear(t, heard, "request cancelled")
+}
+
+// A call that ends with no question open is cancelled at once, as it
+// always was, and nothing more is sent.
+func TestElicitationCancelledWithoutQuestion(t *testing.T) {
+	started, stopped := make(chan struct{}), make(chan error, 1)
+	s := sdk.NewServer(&sdk.Implementation{Name: "slow", Version: "1"}, nil)
+	s.AddTool(&sdk.Tool{Name: "slow", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(ctx context.Context, _ *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			close(started)
+			<-ctx.Done()
+			stopped <- ctx.Err()
+			return nil, ctx.Err()
+		})
+	r := connect(t, s, WithElicitation())
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-started
+		cancel()
+	}()
+	if _, err := lookup(t, r, "slow").Execute(ctx, agenttool.Call{ID: "c", Args: json.RawMessage(`{}`)}); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v; want the call's cancellation", err)
+	}
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("the server's tool ran on after the call was cancelled")
 	}
 }

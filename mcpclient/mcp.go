@@ -60,6 +60,11 @@ import (
 // the call returns.
 const progressGrace = time.Second
 
+// cancelGrace is how long the request that answers a call's questions
+// cancel, after the call ended while they were open, may run before it
+// is cancelled itself; see [WithElicitation].
+const cancelGrace = 5 * time.Second
+
 // DefaultNotificationGrace is how long a call waits for a
 // tool-list-changed notification the server has not sent yet; see
 // [WithNotificationGrace]. The reference Go SDK arms the notification on
@@ -309,6 +314,16 @@ func WithRefreshError(fn func(error)) Option {
 // [agenttool.ActionCancel], which says nobody chose, rather than
 // [agenttool.ActionDecline], which says somebody did.
 //
+// A call that ends while its server's question is with the elicitor,
+// because the user pressed Esc or the harness gave up, returns at once,
+// and from 2026-07-28 the server is still told: every open question is
+// answered [agenttool.ActionCancel] in one more request, which runs on
+// for a few seconds before it is cancelled too. The server's tool hears
+// that nobody chose, or is stopped with the request, rather than
+// waiting for an answer until the server gives up on it, which over
+// stateless HTTP nothing else would bring sooner. A question the server
+// asks after that is answered cancel without being put to anyone.
+//
 // The elicitor may be called for two questions of one call at once:
 // a server can ask several in one round, and the SDK answers them
 // concurrently. Before 2026-07-28 the one call in flight is all the
@@ -342,6 +357,9 @@ type Remote struct {
 	// set before the remote is returned and read-only after.
 	grace       time.Duration
 	listChanged bool
+
+	// cancelGrace is [cancelGrace], but for tests.
+	cancelGrace time.Duration
 
 	// notified is closed and replaced when a tool-list-changed
 	// notification arrives, so a call can wait for one that has not come
@@ -378,7 +396,7 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 	for _, opt := range opts {
 		opt(&o)
 	}
-	s := &Remote{opts: o, progress: make(map[string]func(agenttool.Result)), settledCh: make(chan struct{}), notified: make(chan struct{}), grace: DefaultNotificationGrace}
+	s := &Remote{opts: o, progress: make(map[string]func(agenttool.Result)), settledCh: make(chan struct{}), notified: make(chan struct{}), grace: DefaultNotificationGrace, cancelGrace: cancelGrace}
 	if o.grace != nil {
 		s.grace = *o.grace
 	}
@@ -680,11 +698,11 @@ func (s *Remote) call(ctx context.Context, remote string, readOnly bool, call ag
 			s.mu.Unlock()
 		})
 	}
+	send, cancel := ctx, context.CancelFunc(nil)
 	if s.running != nil {
 		if _, ok := agenttool.CallFrom(ctx); !ok {
 			ctx = agenttool.WithCall(ctx, call)
 		}
-		ctx = context.WithValue(ctx, ownCallKey{}, s)
 		id := s.callSeq.Add(1)
 		s.mu.Lock()
 		s.running[id] = ctx
@@ -694,9 +712,21 @@ func (s *Remote) call(ctx context.Context, remote string, readOnly bool, call ag
 			delete(s.running, id)
 			s.mu.Unlock()
 		}()
+		// The requests of the call outlive it by the one that answers
+		// its open questions cancel, so they run detached, and are
+		// cancelled with the call when there are none.
+		c := &ownCall{remote: s, ctx: ctx}
+		send, cancel = context.WithCancel(context.WithValue(context.WithoutCancel(ctx), ownCallKey{}, c))
+		defer context.AfterFunc(ctx, func() {
+			if c.answeringCancel() {
+				time.AfterFunc(s.cancelGrace, cancel)
+			} else {
+				cancel()
+			}
+		})()
 	}
 	before := s.seen.Load()
-	res, err := s.session.CallTool(ctx, params)
+	res, err := s.callTool(ctx, send, cancel, params)
 	if err != nil {
 		return agenttool.Result{}, fmt.Errorf("mcp: call %q: %w", remote, err)
 	}
@@ -723,11 +753,83 @@ func (s *Remote) call(ctx context.Context, remote string, readOnly bool, call ag
 	return ResultOf(res)
 }
 
-// ownCallKey marks the context of a call this remote made, with the
-// remote as its value, so the elicitation handler can tell a question
+// callTool makes the call on send and returns its outcome, or the end
+// of ctx, the call's own context, if that comes first. With cancel set,
+// send is detached from ctx and cancel releases it once the requests
+// are over, so the call returns without waiting for the ones still
+// answering its questions.
+func (s *Remote) callTool(ctx, send context.Context, cancel context.CancelFunc, params *sdk.CallToolParams) (*sdk.CallToolResult, error) {
+	if cancel == nil {
+		return s.session.CallTool(ctx, params)
+	}
+	type outcome struct {
+		res *sdk.CallToolResult
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		defer cancel()
+		res, err := s.session.CallTool(send, params)
+		done <- outcome{res, err}
+	}()
+	select {
+	case o := <-done:
+		return o.res, o.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// ownCallKey marks the requests of a call this remote made, with its
+// [ownCall] as the value, so the elicitation handler can tell a question
 // the SDK is answering on the call's behalf from one a server sent on
 // its own.
 type ownCallKey struct{}
+
+// ownCall is a call this remote made while elicitation is on. Its
+// requests run on a context detached from ctx, so that when ctx ends
+// with a question open the SDK can still send the request that answers
+// it cancel.
+type ownCall struct {
+	remote *Remote
+	ctx    context.Context
+
+	mu        sync.Mutex
+	asking    int  // questions with the elicitor
+	cancelled bool // a question answered cancel because ctx ended
+}
+
+// ask reports whether a question of the call is to be put to its
+// elicitor, and counts it until done is called. It is not once the call
+// has ended: the question is answered cancel, unasked.
+func (c *ownCall) ask() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ctx.Err() != nil {
+		c.cancelled = true
+		return false
+	}
+	c.asking++
+	return true
+}
+
+// done ends a question that ask counted. ended says the question
+// stopped because the call ended, and is answered cancel.
+func (c *ownCall) done(ended bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.asking--
+	c.cancelled = c.cancelled || ended
+}
+
+// answeringCancel reports, once the call has ended, whether its
+// requests are to answer a question cancel: one was with the elicitor
+// when it ended, or has been answered cancel since.
+func (c *ownCall) answeringCancel() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.asking > 0 || c.cancelled
+}
 
 // elicit answers a server's elicitation through the elicitor of the
 // call that asked; see [WithElicitation].
@@ -736,10 +838,14 @@ func (s *Remote) elicit(ctx context.Context, req *sdk.ElicitRequest) (*sdk.Elici
 	if req == nil || req.Params == nil {
 		return nobody, nil
 	}
-	callCtx := ctx
-	if ctx.Value(ownCallKey{}) != s {
+	var callCtx context.Context
+	own, _ := ctx.Value(ownCallKey{}).(*ownCall)
+	if own != nil && own.remote == s {
+		callCtx = own.ctx
+	} else {
 		// Sent by the server on its own, before 2026-07-28: no call is
 		// named, so only an unambiguous one is asked.
+		own = nil
 		var ok bool
 		if callCtx, ok = s.soleCall(); !ok {
 			return nobody, nil
@@ -760,7 +866,19 @@ func (s *Remote) elicit(ctx context.Context, req *sdk.ElicitRequest) (*sdk.Elici
 	askCtx, stop := context.WithCancel(callCtx)
 	defer stop()
 	defer context.AfterFunc(ctx, stop)()
+	if own != nil && !own.ask() {
+		return nobody, nil
+	}
 	ans, err := ask(askCtx, q)
+	if own != nil {
+		// Ended by the call rather than by the server's question: nobody
+		// chose, and the server is told so on the call's next request.
+		ended := callCtx.Err() != nil && ctx.Err() == nil
+		own.done(ended)
+		if ended {
+			return nobody, nil
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("mcp: elicitation: %w", err)
 	}

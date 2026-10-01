@@ -461,3 +461,63 @@ func text(res *sdk.CallToolResult) string {
 	}
 	return strings.Join(parts, "\n")
 }
+
+// TestElicitationEsc: a user who presses Esc on a served question ends
+// the harness's call, and mcpclient answers the question cancel in one
+// more request, so the tool hears that nobody chose at once rather than
+// holding what it took until the abandon timer: with the session left
+// open, and over stateless HTTP, where there is no session to end
+// (#57).
+func TestElicitationEsc(t *testing.T) {
+	for name, connect := range map[string]func(*testing.T, *sdk.Server) *mcpclient.Remote{
+		"session open": func(t *testing.T, server *sdk.Server) *mcpclient.Remote {
+			return roundTrip(t, server, mcpclient.WithElicitation())
+		},
+		"stateless HTTP": func(t *testing.T, server *sdk.Server) *mcpclient.Remote {
+			handler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{Stateless: true})
+			hs := httptest.NewServer(handler)
+			t.Cleanup(hs.Close)
+			s, err := mcpclient.Connect(context.Background(), &sdk.StreamableClientTransport{Endpoint: hs.URL}, mcpclient.WithElicitation())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = s.Close() })
+			return s
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			heard := make(chan agenttool.Action, 1)
+			tool := agenttool.NewFunc("deploy", "asks before it deploys", nil, func(ctx context.Context, _ agenttool.Call) (agenttool.Result, error) {
+				ask, _ := agenttool.ElicitorFrom(ctx)
+				ans, err := ask(ctx, confirm)
+				if err != nil {
+					return agenttool.Result{}, err
+				}
+				heard <- ans.Action
+				return agenttool.Text(string(ans.Action)), nil
+			})
+			s := connect(t, newServer(t, "deployer", tool))
+			asked := make(chan struct{})
+			ctx, cancel := context.WithCancel(agenttool.ContextWithElicitor(context.Background(), func(ctx context.Context, _ agenttool.Elicitation) (agenttool.Answer, error) {
+				close(asked)
+				<-ctx.Done()
+				return agenttool.Answer{}, ctx.Err()
+			}))
+			go func() {
+				<-asked
+				cancel()
+			}()
+			if _, err := callVia(t, s, ctx); !errors.Is(err, context.Canceled) {
+				t.Errorf("err = %v; want the call's cancellation", err)
+			}
+			select {
+			case a := <-heard:
+				if a != agenttool.ActionCancel {
+					t.Errorf("the tool heard %q; want cancel", a)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("the tool was still waiting after Esc; DefaultAbandonAfter is %v", DefaultAbandonAfter)
+			}
+		})
+	}
+}
