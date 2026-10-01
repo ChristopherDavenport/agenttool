@@ -5,6 +5,19 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- mcpclient: `StoreTokens` keeps the grant an OAuth-protected server
+  issued in a `TokenStore`, keyed by endpoint and a subject the host
+  names, so a restart no longer means consenting again (#62). It wires
+  the Go SDK's `InitialTokenSource` and `NewTokenSource` hooks, and it
+  saves every refresh that changes the token. Saving only the token
+  from the code exchange would lose each refresh token the provider
+  rotates. The record carries the token endpoint and client
+  credentials, so a restored grant can still refresh. A save that
+  fails goes to a callback and is retried; it never fails the request.
+  `MemoryTokenStore` is an in-memory store for tests.
+
 ## v0.0.12 - 2026-09-30
 
 - mcpclient: a call that ends while its server's question is with the
