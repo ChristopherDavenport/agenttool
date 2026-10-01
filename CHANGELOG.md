@@ -5,7 +5,7 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
-## Unreleased
+## v0.0.12 - 2026-09-30
 
 - mcpclient: a call that ends while its server's question is with the
   user, because they pressed Esc, now tells the server (#57). With

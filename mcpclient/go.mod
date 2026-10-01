@@ -8,7 +8,7 @@ go 1.25.0
 // replace and get the require; make extracted builds the module with
 // it dropped, the way a consumer does.
 require (
-	github.com/ChristopherDavenport/agenttool v0.0.11
+	github.com/ChristopherDavenport/agenttool v0.0.12
 	github.com/ChristopherDavenport/openresponses v0.0.12
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 )
