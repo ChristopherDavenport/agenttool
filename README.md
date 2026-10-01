@@ -353,6 +353,69 @@ of it installs the recorder in a `Wrap` around its tools. `make
 interop` checks both against the upstream reference server and the
 MCP Inspector over stdio.
 
+### A server behind OAuth
+
+`mcpclient` has no OAuth of its own yet (#58). A hosted server that
+requires it answers the initialize request 401, and the Go SDK can do
+the rest on a streamable-HTTP transport: metadata discovery, client
+registration, PKCE, refresh and step-up on 403. It is the SDK's
+`auth.AuthorizationCodeHandler`, and since `Connect` takes any
+transport, a harness can hand it one today. The SDK leaves one part to
+the caller, the fetcher, which shows the user the authorization URL and
+returns the code the authorization server redirects back with:
+
+```go
+h, err := auth.NewAuthorizationCodeHandler(&auth.AuthorizationCodeHandlerConfig{
+	PreregisteredClient: &oauthex.ClientCredentials{ClientID: "my-harness"},
+	RedirectURL:         "http://127.0.0.1:8765/callback",
+	AuthorizationCodeFetcher: func(ctx context.Context, args *auth.AuthorizationArgs) (*auth.AuthorizationResult, error) {
+		if ask, ok := agenttool.ElicitorFrom(ctx); ok {
+			// Mid-session: the user of the call that met the 401.
+			ans, err := ask(ctx, agenttool.Elicitation{Message: "Sign in to the deploy server", URL: args.URL})
+			if err != nil {
+				return nil, err
+			}
+			if ans.Action != agenttool.ActionAccept {
+				return nil, fmt.Errorf("authorization: %s", ans.Action)
+			}
+		} else {
+			// At Connect: there is no call, so nobody to ask through the harness.
+			fmt.Fprintln(os.Stderr, "sign in at", args.URL)
+		}
+		return callback.Wait(ctx) // yours: the code and state that reach RedirectURL
+	},
+})
+s, err := mcpclient.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: endpoint, OAuthHandler: h}, mcpclient.WithElicitation())
+```
+
+What this route does not do, all of it tracked in #58:
+
+- **Nobody to ask at `Connect`.** The first 401 comes from initialize,
+  before any call, so no elicitor is on the fetcher's context. A
+  fetcher that waits for an answer holds `Connect` until its context
+  ends. A daemon or a hosted front has no browser to open and no
+  terminal to print to, so it has to authorize some other way before
+  it connects.
+- **Mid-session it can ask, as the same user only.** A 401 after the
+  token expires with no refresh token, or a 403 step-up, runs the
+  fetcher on the context of the call that met it. The elicitor is
+  there, and with `WithElicitation` so is the call, so the question
+  lands in the record under that call. The server pins its session to
+  the user of the token that opened it. A token for anyone else is
+  refused with 403 "session user mismatch", and the call fails.
+- **One connection, one user.** The handler reads its token source on
+  the connection's context, never the call's, so it cannot pick a
+  token per caller. A host serving several users opens a connection for
+  each.
+- **Nothing receives the redirect.** `RedirectURL` is yours to serve:
+  a loopback listener (RFC 8252) for a harness on the user's machine,
+  or a route on the front that hosts it.
+- **Tokens live in memory.** A restart means consenting again unless
+  `InitialTokenSource` and `NewTokenSource` load and save them.
+- **A URL answer is only an action.** Accepting says the user went to
+  the page. The code still arrives at the redirect, and it and the
+  tokens never pass through `Answer` or the record.
+
 ## Development
 
 ```sh
