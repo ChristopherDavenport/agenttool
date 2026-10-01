@@ -5,6 +5,18 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- mcpclient: a call that ends while its server's question is with the
+  user, because they pressed Esc, now tells the server (#57). With
+  `WithElicitation`, every open question is answered cancel in one more
+  request, which runs on for up to five seconds before it is cancelled
+  too, and the call returns at once without waiting for it. A served
+  tool used to stay parked, holding whatever it took before asking,
+  until `AbandonAfter` (30 minutes by default) while the connection
+  stayed open, and over stateless HTTP whatever the client did. A call
+  that ends with no question open is cancelled at once, as before.
+
 ## v0.0.11 - 2026-09-29
 
 - mcpserver: a served call parked on a question is stopped when the

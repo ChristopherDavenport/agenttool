@@ -58,9 +58,10 @@ type Options struct {
 	// AbandonAfter is how long a call whose question is with the client
 	// waits for the answer before its tool is stopped, zero meaning
 	// [DefaultAbandonAfter]. A call whose session ends is stopped then,
-	// but over stateless HTTP, where each request is a session of its
-	// own, this is the only thing that stops a call whose client gave
-	// up without cancelling it.
+	// and one whose client answers its questions cancel when it gives
+	// up, as mcpclient does, hears that at once. Over stateless HTTP,
+	// where each request is a session of its own, this is the only
+	// thing that stops a call whose client gave up without doing so.
 	AbandonAfter time.Duration
 
 	// MaxRequests is how many requests the client makes of one call at
@@ -147,7 +148,9 @@ func (o Options) NewServer(name, version string, tools ...agenttool.Tool) (*sdk.
 // client cancels the request it is waiting on, when the session it
 // came on ends, or when the client does not come back within
 // [Options.AbandonAfter]; over stateless HTTP a session lasts one
-// request, so only the first and the last apply. The state is random
+// request, so only the first and the last apply. A client that gives
+// up and answers the open questions cancel, as mcpclient does, ends the
+// wait at once, and the tool hears that nobody chose. The state is random
 // and names a call only this process holds, so a server behind a load
 // balancer routes a client's requests to one process. The Go SDK's
 // client makes ten requests of a call at most, [Options.MaxRequests],
