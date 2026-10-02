@@ -328,7 +328,7 @@ func WithRefreshError(fn func(error)) Option {
 // that nobody chose, or is stopped with the request, rather than
 // waiting for an answer until the server gives up on it, which over
 // stateless HTTP nothing else would bring sooner. Over stateless HTTP
-// the tool hears cancel but is not, with go-sdk v1.8.0, stopped when
+// the tool hears cancel but is not, by default with go-sdk v1.8.0, stopped when
 // that request is cancelled, so a tool that works on after hearing it
 // runs to its end. A question the server asks after that is answered
 // cancel without being put to anyone. [Remote.Close] waits for these
@@ -622,11 +622,15 @@ func (s *Remote) Await(ctx context.Context) error {
 //
 // Ending a call cancels its request, so a server that keeps a session
 // stops the tool, and over stateless HTTP, where the Go SDK's server
-// does not stop a tool with its request, the tool runs to its end
-// against a connection nobody reads. The SDK's session close waits for
-// the requests in flight, so without this a Close under a long call
-// waited for the call to finish, and the call then succeeded against a
-// server the harness had closed (#67).
+// does not by default stop a tool with its request, the tool runs to
+// its end against a connection nobody reads, unless the server set
+// PropagateRequestCancellation. The SDK's session close waits for the
+// requests in flight, so without this a Close under a long call waited
+// for the call to finish, and the call then succeeded against a server
+// the harness had closed (#67). The call returns as soon as it is
+// ended, while its request is cancelled behind it, as a call its caller
+// cancels does too: an [agenttool.Executor] that waits for its tools to
+// return is not thereby waiting for the server to hear the cancel.
 //
 // With [WithElicitation] on, ending a call also stops any question of
 // its that is with an elicitor, since a closed connection can carry no
@@ -863,10 +867,10 @@ func (s *Remote) callTool(ctx, send context.Context, cancel context.CancelFunc, 
 // its own.
 type ownCallKey struct{}
 
-// ownCall is a call this remote made while elicitation is on. Its
-// requests run on a context detached from ctx, so that when ctx ends
-// with a question open the SDK can still send the request that answers
-// it cancel.
+// ownCall is a call this remote made. Its requests run on a context
+// detached from ctx, so that when ctx ends with a question open, which
+// takes elicitation, the SDK can still send the request that answers it
+// cancel; without one open the requests are cancelled with the call.
 type ownCall struct {
 	remote *Remote
 	ctx    context.Context
