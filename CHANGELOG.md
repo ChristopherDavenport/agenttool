@@ -5,7 +5,7 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
-## Unreleased
+## v0.0.15 - 2026-10-02
 
 - mcpclient: `Remote.Close` ends every call in flight with `ErrClosed`
   and cancels its request whatever the options, not only with
