@@ -840,6 +840,14 @@ func (s *Remote) callTool(ctx, send context.Context, cancel context.CancelFunc, 
 	}()
 	select {
 	case o := <-done:
+		// A request cancelled because Close ended the call may report
+		// its cancellation before ctx's end is selected; the call still
+		// ended because the remote closed, and says so.
+		if o.err != nil {
+			if cause := context.Cause(ctx); errors.Is(cause, ErrClosed) {
+				return nil, cause
+			}
+		}
 		return o.res, o.err
 	case <-ctx.Done():
 		if err := context.Cause(ctx); errors.Is(err, ErrClosed) {
