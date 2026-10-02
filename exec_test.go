@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -391,6 +392,112 @@ func TestExecuteResourceGrouping(t *testing.T) {
 	}
 	if res := ResourceOf(shell); res != "shell:session" {
 		t.Errorf("ResourceOf = %q", res)
+	}
+}
+
+// TestChains pins the chains an executor reports for a batch, under
+// each setting that makes a batch serial, since a harness reads them to
+// know which job a given one follows (#66).
+func TestChains(t *testing.T) {
+	plain := New("plain", "", func(context.Context, NoArgs) (string, error) { return "", nil })
+	shell := New("shell", "", func(context.Context, NoArgs) (string, error) { return "", nil }, WithResource("shell:session"))
+	other := New("other", "", func(context.Context, NoArgs) (string, error) { return "", nil }, WithResource("container:47"))
+	serial := New("serial", "", func(context.Context, NoArgs) (string, error) { return "", nil }, WithSequential())
+	mixed := []Tool{shell, plain, shell, other, nil, shell, other}
+
+	cases := []struct {
+		name  string
+		exec  Executor
+		tools []Tool
+		want  [][]int
+	}{
+		{"parallel by default", Executor{}, mixed, [][]int{{0, 2, 5}, {1}, {3, 6}, {4}}},
+		{"a bound above one keeps the chains", Executor{MaxParallel: 2}, mixed, [][]int{{0, 2, 5}, {1}, {3, 6}, {4}}},
+		{"Sequential is one chain", Executor{Sequential: true}, mixed, [][]int{{0, 1, 2, 3, 4, 5, 6}}},
+		{"a bound of one is one chain", Executor{MaxParallel: 1}, mixed, [][]int{{0, 1, 2, 3, 4, 5, 6}}},
+		{"a sequential tool is one chain", Executor{}, []Tool{shell, serial, plain}, [][]int{{0, 1, 2}}},
+		{"no resources", Executor{}, []Tool{plain, plain}, [][]int{{0}, {1}}},
+		{"no jobs", Executor{}, nil, nil},
+		{"no jobs, serial", Executor{Sequential: true}, nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			jobs := make([]Job, len(tc.tools))
+			for i, tl := range tc.tools {
+				jobs[i] = Job{Tool: tl}
+			}
+			got := tc.exec.Chains(jobs)
+			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Errorf("Chains = %v, want %v", got, tc.want)
+			}
+			seen := make([]bool, len(jobs))
+			for _, chain := range got {
+				for _, i := range chain {
+					if seen[i] {
+						t.Errorf("job %d is in two chains: %v", i, got)
+					}
+					seen[i] = true
+				}
+			}
+			for i, ok := range seen {
+				if !ok {
+					t.Errorf("job %d is in no chain: %v", i, got)
+				}
+			}
+		})
+	}
+}
+
+// TestExecuteRunsTheChainsItReports checks Execute against Chains: in
+// every chain each job is handed to its tool after the job before it has
+// returned, under each setting, so a harness that waits on the
+// predecessor Chains names waits on the job the executor ran first. The
+// executor hands the next job over once the consumer has taken the
+// previous one's final event, not once the consumer has acted on it, so
+// the tool's return is the mark and not the yield.
+func TestExecuteRunsTheChainsItReports(t *testing.T) {
+	for _, exec := range []Executor{{}, {MaxParallel: 2}, {MaxParallel: 1}, {Sequential: true}} {
+		t.Run(fmt.Sprintf("%+v", exec), func(t *testing.T) {
+			var clock atomic.Int64
+			started := make([]int64, 7)
+			finished := make([]int64, 7)
+			tool := func(name string, opts ...Option) Tool {
+				return NewFunc(name, "", nil, func(ctx context.Context, call Call) (Result, error) {
+					time.Sleep(2 * time.Millisecond)
+					i, _ := strconv.Atoi(call.ID)
+					atomic.StoreInt64(&finished[i-1], clock.Add(1))
+					return Text(name), nil
+				}, opts...)
+			}
+			jobs := []Job{
+				{Tool: tool("cd", WithResource("shell:session")), Call: Call{ID: "1"}},
+				{Tool: tool("read"), Call: Call{ID: "2"}},
+				{Tool: tool("ls", WithResource("shell:session")), Call: Call{ID: "3"}},
+				{Tool: tool("exec", WithResource("container:47")), Call: Call{ID: "4"}},
+				{Tool: tool("read"), Call: Call{ID: "5"}},
+				{Tool: tool("make", WithResource("shell:session")), Call: Call{ID: "6"}},
+				{Tool: tool("stop", WithResource("container:47")), Call: Call{ID: "7"}},
+			}
+			exec.OnStart = func(ctx context.Context, job Job) error {
+				i, _ := strconv.Atoi(job.Call.ID)
+				atomic.StoreInt64(&started[i-1], clock.Add(1))
+				return nil
+			}
+			_, errs := exec.Results(context.Background(), jobs)
+			for i, err := range errs {
+				if err != nil {
+					t.Errorf("job %d: %v", i, err)
+				}
+			}
+			for _, chain := range exec.Chains(jobs) {
+				for k := 1; k < len(chain); k++ {
+					prev, i := chain[k-1], chain[k]
+					if started[i] < finished[prev] {
+						t.Errorf("job %d started at %d, before job %d, its predecessor in %v, returned at %d", i, started[i], prev, chain, finished[prev])
+					}
+				}
+			}
+		})
 	}
 }
 
