@@ -16,7 +16,10 @@ import (
 // addBusy gives s a "build" tool that runs for d unless its context ends
 // first, closes started when a call reaches it, and reports on out
 // whether it was cancelled or ran to the end. It stands for a served
-// test suite the harness closes the server under.
+// test suite the harness closes the server under. Over stateless HTTP
+// the cancelled request does not stop it, and the test server's close
+// waits for it, so d is kept short while staying past the bound the
+// tests put on Close.
 func addBusy(s *sdk.Server, d time.Duration, started chan<- struct{}, out chan<- string) {
 	var once sync.Once
 	s.AddTool(&sdk.Tool{Name: "build", InputSchema: json.RawMessage(`{"type":"object"}`)},
@@ -54,7 +57,7 @@ func TestCloseEndsACallInFlight(t *testing.T) {
 			t.Run(tname+"/"+oname, func(t *testing.T) {
 				started, out := make(chan struct{}), make(chan string, 1)
 				s := sdk.NewServer(&sdk.Implementation{Name: "busy", Version: "1"}, nil)
-				addBusy(s, 3*time.Second, started, out)
+				addBusy(s, 1500*time.Millisecond, started, out)
 				r := dial(t, s, opts...)
 				build := lookup(t, r, "build")
 				done := make(chan error, 1)
@@ -98,9 +101,11 @@ func TestCloseEndsACallInFlight(t *testing.T) {
 
 // Close with several calls in flight and one call's question with the
 // user ends every one of them with ErrClosed, stops the question with
-// the same cause, and still tells the server nobody chose. It runs
-// under -race with the calls starting, asking and being closed at once.
-func TestCloseEndsEveryCallAndTheQuestion(t *testing.T) {
+// the same cause, and still tells the server nobody chose. It is the
+// race exerciser for Close, run under -race with the calls starting,
+// asking and being closed at once, and passes before #67 as well;
+// TestCloseEndsACallInFlight is the reproduction of that filing.
+func TestCloseRacesCallsAndAQuestion(t *testing.T) {
 	const busy = 4
 	for name, dial := range transports {
 		t.Run(name, func(t *testing.T) {
@@ -118,7 +123,7 @@ func TestCloseEndsEveryCallAndTheQuestion(t *testing.T) {
 					case <-ctx.Done():
 						out <- "cancelled"
 						return nil, ctx.Err()
-					case <-time.After(3 * time.Second):
+					case <-time.After(1500 * time.Millisecond):
 						out <- "ran to the end"
 						return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "built"}}}, nil
 					}

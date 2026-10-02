@@ -15,8 +15,11 @@ versions may break the API.
   harness had closed: a served test suite held `Close`, and agentkit's
   `RemoveMCP` with it, for as long as it ran. A call after `Close` fails
   with `ErrClosed` whatever the options too. Over stateless HTTP the
-  served tool still runs to its end once its request is cancelled, as
-  `WithElicitation`'s doc says.
+  served tool still runs to its end once its request is cancelled,
+  unless the server set the Go SDK's `PropagateRequestCancellation`.
+  Every call now returns as soon as its context ends, with its request
+  cancelled behind it, where a call without `WithElicitation` used to
+  return once the SDK had sent the cancel.
 - `Executor.Chains` returns the chains `Execute` runs a batch in, so a
   harness that waits for a call's predecessor to settle before
   dispatching it reads the executor's grouping rather than restating
