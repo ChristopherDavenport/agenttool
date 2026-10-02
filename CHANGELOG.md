@@ -5,6 +5,23 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- mcpclient: `Remote.Close` ends every call in flight with `ErrClosed`
+  and cancels its request whatever the options, not only with
+  `WithElicitation` (#67). Without it `Close` used to wait for every
+  call to finish, since the Go SDK's session close waits for the
+  requests in flight, and the call then succeeded against a server the
+  harness had closed: a served test suite held `Close`, and agentkit's
+  `RemoveMCP` with it, for as long as it ran. A call after `Close` fails
+  with `ErrClosed` whatever the options too. Over stateless HTTP the
+  served tool still runs to its end once its request is cancelled, as
+  `WithElicitation`'s doc says.
+- `Executor.Chains` returns the chains `Execute` runs a batch in, so a
+  harness that waits for a call's predecessor to settle before
+  dispatching it reads the executor's grouping rather than restating
+  its rules (#66).
+
 ## v0.0.14 - 2026-10-01
 
 - mcpclient: `Remote.Close` no longer loses the cancel that #57 sends
