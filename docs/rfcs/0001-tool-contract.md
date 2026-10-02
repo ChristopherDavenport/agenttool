@@ -587,6 +587,7 @@ and everything else is optional.
 | arguments validation | `New` validates a reflected schema with `Schema.ValidateJSON`; `ValidationError{Path, Msg}` |
 | executor | `Executor{MaxParallel, Sequential, Recorder, OnStart}`; `Execute` yields `Event{Index, Final, Result, Err}`; `Results` collects in job order |
 | a call starts | `Executor.OnStart(ctx, job) error`, on the job's goroutine, after the slot and the turn, with the call on `ctx`, before `Execute`; an error completes the job without running the tool |
+| the chains of a batch | `Executor.Chains(jobs) [][]int` returns the chains `Execute` runs the batch in, each in the model's order, one chain for a serial batch; a harness that waits for a call's predecessor to settle reads it rather than restating the rules |
 | schema generation | `New`, `SchemaFor`, `SchemaOf`, `Reflect`; `Schemer` supplies a schema; see the [schema section](#schema-generation) |
 
 One place where the binding does not yet do what this document says:
@@ -911,6 +912,10 @@ module and is listed in the changelog as one.
 
 ## Changes since 0.3
 
+- The Go binding exposes the chains a batch runs in through
+  `Executor.Chains`, so a harness that orders a call's dispatch after
+  its predecessor's settlement reads the executor's grouping rather
+  than copying its rules (#66). The grouping itself is unchanged.
 - The MCP binding carries elicitation both ways: a tool served by
   mcpserver asks through the elicitor on its context, as it would in
   process (#51).

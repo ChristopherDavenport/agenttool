@@ -95,13 +95,7 @@ func (e Executor) Execute(ctx context.Context, jobs []Job) iter.Seq[Event] {
 		if len(jobs) == 0 {
 			return
 		}
-		limit := e.MaxParallel
-		if limit <= 0 {
-			limit = DefaultMaxParallel
-		}
-		if e.Sequential || anySequential(jobs) {
-			limit = 1
-		}
+		limit := e.limit(jobs)
 
 		if e.Recorder != nil {
 			ctx = ContextWithRecorder(ctx, e.Recorder)
@@ -132,7 +126,7 @@ func (e Executor) Execute(ctx context.Context, jobs []Job) iter.Seq[Event] {
 		// final send, so the next job of a chain starts once the
 		// consumer has taken the last one's result.
 		sem := make(chan struct{}, limit)
-		for _, chain := range chainsOf(jobs, limit) {
+		for _, chain := range e.Chains(jobs) {
 			go func(chain []int) {
 				for _, i := range chain {
 					select {
@@ -179,6 +173,43 @@ func (e Executor) Execute(ctx context.Context, jobs []Job) iter.Seq[Event] {
 			}
 		}
 	}
+}
+
+// Chains returns the chains [Executor.Execute] runs jobs in, each a
+// list of indices into jobs in the model's order, together covering
+// every job once. The jobs of one chain run one after the other, each
+// handed to its tool once the one before it has completed and the
+// consumer has taken its final event; chains run alongside each other,
+// within MaxParallel. A serial batch, from [Executor.Sequential], a
+// [Sequential] tool or a MaxParallel of one, is one chain of every job
+// in order. Otherwise the jobs whose tools name one [Resource] form a
+// chain, placed where its first job is, and every other job, one with a
+// nil tool included, is a chain of its own. A batch of no jobs has no
+// chains.
+//
+// It is the grouping Execute uses, exposed so that a harness which
+// must know the job before a given one in its chain, to wait for that
+// job to be settled before dispatching the next, reads it here rather
+// than restating the rules and drifting from them (#66). It reads the
+// tools' properties and runs nothing.
+func (e Executor) Chains(jobs []Job) [][]int {
+	if len(jobs) == 0 {
+		return nil
+	}
+	return chainsOf(jobs, e.limit(jobs))
+}
+
+// limit is the bound Execute runs jobs under: one for a serial batch,
+// and otherwise MaxParallel, or [DefaultMaxParallel] when it is unset.
+func (e Executor) limit(jobs []Job) int {
+	limit := e.MaxParallel
+	if limit <= 0 {
+		limit = DefaultMaxParallel
+	}
+	if e.Sequential || anySequential(jobs) {
+		limit = 1
+	}
+	return limit
 }
 
 // PanicError is the error a job completes with when its tool panicked.

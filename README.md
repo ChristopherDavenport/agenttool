@@ -266,6 +266,10 @@ and the tool that restarts that shell stay apart, and
 `mcpclient.WithResource("shell:session", "bash")` names it for a remote
 tool, since MCP has no field for one. Whether the second call waits or
 is refused stays the tool's choice.
+`Executor.Chains` returns the chains a batch runs in, each in the
+model's order, for a harness that must know which call a given one
+follows, as agentturn does to settle a call before dispatching the next
+of its chain.
 
 The scope of both is one batch. The executor sees one batch at a time,
 so a `bash` in a sub-agent's batch, which runs under the parent call
