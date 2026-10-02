@@ -66,8 +66,9 @@ const progressGrace = time.Second
 const cancelGrace = 5 * time.Second
 
 // ErrClosed is the cause a call in flight ends with when its remote is
-// closed, with [WithElicitation] on. It is what the call returns, and
-// what [context.Cause] reports on the context its elicitor was given.
+// closed. It is what the call returns, what a call made after Close
+// returns, and what [context.Cause] reports on the context its elicitor
+// was given, with [WithElicitation] on.
 var ErrClosed = errors.New("mcp: connection closed")
 
 // DefaultNotificationGrace is how long a call waits for a
@@ -390,9 +391,9 @@ type Remote struct {
 
 	token atomic.Int64
 
-	// running holds each call in flight, by a sequence number, while
-	// elicitation is on, so a question an older server sends on its own
-	// can be put to the call that asked it, and so Close can end them.
+	// running holds each call in flight, by a sequence number, so Close
+	// can end them, and so that with elicitation on a question an older
+	// server sends on its own can be put to the call that asked it.
 	// sending counts the calls' detached requests, which outlive the call
 	// while they answer its questions cancel, so Close can wait for them.
 	// closed refuses new calls once Close has begun. running and closed
@@ -419,7 +420,7 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 	for _, opt := range opts {
 		opt(&o)
 	}
-	s := &Remote{opts: o, progress: make(map[string]func(agenttool.Result)), settledCh: make(chan struct{}), notified: make(chan struct{}), grace: DefaultNotificationGrace, cancelGrace: cancelGrace}
+	s := &Remote{opts: o, progress: make(map[string]func(agenttool.Result)), running: make(map[int64]runningCall), settledCh: make(chan struct{}), notified: make(chan struct{}), grace: DefaultNotificationGrace, cancelGrace: cancelGrace}
 	if o.grace != nil {
 		s.grace = *o.grace
 	}
@@ -444,7 +445,6 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 		}()
 	}
 	if o.elicitation && clientOpts.ElicitationHandler == nil {
-		s.running = make(map[int64]runningCall)
 		clientOpts.ElicitationHandler = s.elicit
 		// The SDK offers form elicitation alone for a handler, and a
 		// server then refuses to ask by URL, which is how a tool asks for
@@ -616,15 +616,26 @@ func (s *Remote) Await(ctx context.Context) error {
 	}
 }
 
-// Close closes the session.
+// Close ends every call in flight with [ErrClosed], refuses every call
+// after it with the same, and closes the session. It returns within a
+// few seconds whatever the calls were doing.
 //
-// With [WithElicitation] on, it first ends every call in flight with
-// [ErrClosed], which also stops any question of theirs that is with an
-// elicitor, since a closed connection can carry no answer. It then waits
-// for the requests answering those calls' questions cancel, and for any
-// sent by a call that ended just before, as when the user presses Esc
-// and quits, so the server still hears that nobody chose. The wait is
-// bounded by the same few seconds those requests are given to run.
+// Ending a call cancels its request, so a server that keeps a session
+// stops the tool, and over stateless HTTP, where the Go SDK's server
+// does not stop a tool with its request, the tool runs to its end
+// against a connection nobody reads. The SDK's session close waits for
+// the requests in flight, so without this a Close under a long call
+// waited for the call to finish, and the call then succeeded against a
+// server the harness had closed (#67).
+//
+// With [WithElicitation] on, ending a call also stops any question of
+// its that is with an elicitor, since a closed connection can carry no
+// answer, and Close then waits for the requests answering those calls'
+// questions cancel, and for any sent by a call that ended just before,
+// as when the user presses Esc and quits, so the server still hears
+// that nobody chose. The wait is bounded by the same few seconds those
+// requests are given to run, and a call with no question open holds it
+// for no longer than its cancel takes to land.
 func (s *Remote) Close() error {
 	s.mu.Lock()
 	s.closed = true
@@ -746,43 +757,40 @@ func (s *Remote) call(ctx context.Context, remote string, readOnly bool, call ag
 			s.mu.Unlock()
 		})
 	}
-	send, cancel := ctx, context.CancelFunc(nil)
-	if s.running != nil {
-		if _, ok := agenttool.CallFrom(ctx); !ok {
-			ctx = agenttool.WithCall(ctx, call)
-		}
-		// Close ends the call through stop, which is released when the
-		// call returns.
-		var stop context.CancelCauseFunc
-		ctx, stop = context.WithCancelCause(ctx)
-		defer stop(nil)
-		id := s.callSeq.Add(1)
-		s.mu.Lock()
-		if s.closed {
-			s.mu.Unlock()
-			return agenttool.Result{}, fmt.Errorf("mcp: call %q: %w", remote, ErrClosed)
-		}
-		s.running[id] = runningCall{ctx: ctx, stop: stop}
-		s.sending.Add(1)
-		s.mu.Unlock()
-		defer func() {
-			s.mu.Lock()
-			delete(s.running, id)
-			s.mu.Unlock()
-		}()
-		// The requests of the call outlive it by the one that answers
-		// its open questions cancel, so they run detached, and are
-		// cancelled with the call when there are none.
-		c := &ownCall{remote: s, ctx: ctx}
-		send, cancel = context.WithCancel(context.WithValue(context.WithoutCancel(ctx), ownCallKey{}, c))
-		defer context.AfterFunc(ctx, func() {
-			if c.answeringCancel() {
-				time.AfterFunc(s.cancelGrace, cancel)
-			} else {
-				cancel()
-			}
-		})()
+	if _, ok := agenttool.CallFrom(ctx); !ok {
+		ctx = agenttool.WithCall(ctx, call)
 	}
+	// Every call is tracked, whatever the options, so Close can end it
+	// through stop, which is released when the call returns.
+	ctx, stop := context.WithCancelCause(ctx)
+	defer stop(nil)
+	id := s.callSeq.Add(1)
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return agenttool.Result{}, fmt.Errorf("mcp: call %q: %w", remote, ErrClosed)
+	}
+	s.running[id] = runningCall{ctx: ctx, stop: stop}
+	s.sending.Add(1)
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.running, id)
+		s.mu.Unlock()
+	}()
+	// The requests of the call outlive it by the one that answers
+	// its open questions cancel, so they run detached, and are
+	// cancelled with the call when there are none, which without
+	// elicitation is always.
+	c := &ownCall{remote: s, ctx: ctx}
+	send, cancel := context.WithCancel(context.WithValue(context.WithoutCancel(ctx), ownCallKey{}, c))
+	defer context.AfterFunc(ctx, func() {
+		if c.answeringCancel() {
+			time.AfterFunc(s.cancelGrace, cancel)
+		} else {
+			cancel()
+		}
+	})()
 	before := s.seen.Load()
 	res, err := s.callTool(ctx, send, cancel, params)
 	if err != nil {
@@ -812,15 +820,13 @@ func (s *Remote) call(ctx context.Context, remote string, readOnly bool, call ag
 }
 
 // callTool makes the call on send and returns its outcome, or the end
-// of ctx, the call's own context, if that comes first. With cancel set,
-// send is detached from ctx and cancel releases it once the requests
-// are over, so the call returns without waiting for the ones still
-// answering its questions. Those requests are counted in s.sending,
-// which the caller added to.
+// of ctx, the call's own context, if that comes first. send is detached
+// from ctx and cancel releases it once the requests are over, so the
+// call returns without waiting for the ones still answering its
+// questions, and a call Close ended returns with ErrClosed while its
+// request is cancelled behind it. Those requests are counted in
+// s.sending, which the caller added to.
 func (s *Remote) callTool(ctx, send context.Context, cancel context.CancelFunc, params *sdk.CallToolParams) (*sdk.CallToolResult, error) {
-	if cancel == nil {
-		return s.session.CallTool(ctx, params)
-	}
 	type outcome struct {
 		res *sdk.CallToolResult
 		err error
