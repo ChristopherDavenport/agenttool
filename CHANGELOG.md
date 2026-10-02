@@ -24,6 +24,7 @@ versions may break the API.
   harness that waits for a call's predecessor to settle before
   dispatching it reads the executor's grouping rather than restating
   its rules (#66).
+- Requires `openresponses` v0.0.13, up from v0.0.12.
 
 ## v0.0.14 - 2026-10-01
 

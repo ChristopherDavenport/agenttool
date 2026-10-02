@@ -9,7 +9,7 @@ go 1.25.0
 // it dropped, the way a consumer does.
 require (
 	github.com/ChristopherDavenport/agenttool v0.0.14
-	github.com/ChristopherDavenport/openresponses v0.0.12
+	github.com/ChristopherDavenport/openresponses v0.0.13
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	golang.org/x/oauth2 v0.35.0
 )
