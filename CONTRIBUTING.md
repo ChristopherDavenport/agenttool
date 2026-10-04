@@ -46,7 +46,7 @@ same shape OpenTelemetry-Go publishes.
 
 A side effect worth knowing: the nested modules now carry no first-party
 `go.sum` entries at all, because tidy never resolves one from the proxy.
-Two of those entries used to be wrong — see `CLAUDE.md` — and the class
+Two of those entries used to be wrong — see `AGENTS.md` — and the class
 of bug is gone rather than fixed.
 
 The upshot: a consumer who takes only `agenttool/mcpserver` at vX.Y.Z
@@ -58,7 +58,7 @@ longer happens.
 
 ## Releases
 
-`CLAUDE.md` holds the full procedure and the reasoning, including what to
+`AGENTS.md` holds the full procedure and the reasoning, including what to
 do when a tag goes out wrong. The essentials:
 
 Every published module is released at one version, from one commit, and

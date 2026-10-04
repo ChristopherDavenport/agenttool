@@ -9,7 +9,7 @@ MODULE := $(shell GOWORK=off $(GO) list -m)
 # Nested modules that are tested alongside the library but keep their own
 # dependencies out of it. Each requires the root, and any sibling it uses,
 # at exactly the version the whole repository is released at, and carries
-# a replace pointing at the tree — see replaces below, and CLAUDE.md for
+# a replace pointing at the tree — see replaces below, and AGENTS.md for
 # why the two go together. mcpserver requires mcpclient, so the list is
 # in dependency order.
 SUBMODULES = mcpclient mcpserver
