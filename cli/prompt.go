@@ -20,7 +20,9 @@ import (
 // yes or no. An end of input is [agenttool.ActionCancel], since nobody
 // answered.
 //
-// Questions are asked one at a time, in the order they arrive.
+// Questions are asked one at a time, in the order they arrive. A
+// question whose context ends while it waits for a line, as it does on
+// an interrupt, returns the context's error without waiting.
 func Prompt(in io.Reader, out io.Writer) agenttool.Elicitor {
 	p := &prompt{in: bufio.NewReader(in), out: out}
 	return p.ask
@@ -30,6 +32,15 @@ type prompt struct {
 	mu  sync.Mutex
 	in  *bufio.Reader
 	out io.Writer
+	// reading is the line being read, when an earlier question stopped
+	// waiting for it; the next question takes it rather than starting a
+	// second read of in.
+	reading chan read
+}
+
+type read struct {
+	line string
+	err  error
 }
 
 func (p *prompt) ask(ctx context.Context, q agenttool.Elicitation) (agenttool.Answer, error) {
@@ -41,23 +52,19 @@ func (p *prompt) ask(ctx context.Context, q agenttool.Elicitation) (agenttool.An
 	switch {
 	case q.URL != "":
 		fmt.Fprintf(p.out, "Open %s\nPress Enter when done, or type n to decline: ", q.URL)
-		return p.yes(true)
+		return p.yes(ctx, true)
 	case len(q.Schema) == 0:
 		fmt.Fprint(p.out, "Continue? [y/N] ")
-		return p.yes(false)
-	}
-	params, err := paramsOf(q.Schema)
-	if err != nil {
-		return agenttool.Answer{}, fmt.Errorf("cli: the question's form: %w", err)
+		return p.yes(ctx, false)
 	}
 	form := map[string]json.RawMessage{}
-	for _, f := range params {
+	for _, f := range paramsOf(q.Schema) {
 		for {
-			if ctx.Err() != nil {
-				return agenttool.Answer{}, ctx.Err()
-			}
 			fmt.Fprint(p.out, fieldPrompt(f))
-			line, ok := p.line()
+			line, ok, err := p.line(ctx)
+			if err != nil {
+				return agenttool.Answer{}, err
+			}
 			if !ok {
 				return agenttool.Answer{Action: agenttool.ActionCancel}, nil
 			}
@@ -85,8 +92,11 @@ func (p *prompt) ask(ctx context.Context, q agenttool.Elicitation) (agenttool.An
 }
 
 // yes reads a yes or no. An empty line is dflt.
-func (p *prompt) yes(dflt bool) (agenttool.Answer, error) {
-	line, ok := p.line()
+func (p *prompt) yes(ctx context.Context, dflt bool) (agenttool.Answer, error) {
+	line, ok, err := p.line(ctx)
+	if err != nil {
+		return agenttool.Answer{}, err
+	}
 	if !ok {
 		return agenttool.Answer{Action: agenttool.ActionCancel}, nil
 	}
@@ -104,13 +114,27 @@ func (p *prompt) yes(dflt bool) (agenttool.Answer, error) {
 }
 
 // line reads one line, trimmed; false at the end of input with nothing
-// read.
-func (p *prompt) line() (string, bool) {
-	s, err := p.in.ReadString('\n')
-	if err != nil && (!errors.Is(err, io.EOF) || s == "") {
-		return "", false
+// read. The read runs apart from the caller, so that the end of ctx is
+// an error at once rather than after the next Enter.
+func (p *prompt) line(ctx context.Context) (string, bool, error) {
+	if p.reading == nil {
+		ch := make(chan read, 1)
+		p.reading = ch
+		go func() {
+			s, err := p.in.ReadString('\n')
+			ch <- read{s, err}
+		}()
 	}
-	return strings.TrimSpace(s), true
+	select {
+	case r := <-p.reading:
+		p.reading = nil
+		if r.err != nil && (!errors.Is(r.err, io.EOF) || r.line == "") {
+			return "", false, nil
+		}
+		return strings.TrimSpace(r.line), true, nil
+	case <-ctx.Done():
+		return "", false, ctx.Err()
+	}
 }
 
 // fieldValue converts one answer by the field's type. A field of no

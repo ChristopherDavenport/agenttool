@@ -272,9 +272,9 @@ func (v *value) Set(s string) error {
 }
 
 // IsBoolFlag lets a boolean flag stand alone, --verbose for
-// --verbose=true, as the flag package allows.
+// --verbose=true, as the flag package allows; a repeated one too.
 func (v *value) IsBoolFlag() bool {
-	return v.param.Type == "boolean"
+	return v.param.value() == "boolean"
 }
 
 // answerList is the --answer option: each one an [agenttool.Answer],
@@ -336,10 +336,9 @@ func (r Runner) call(ctx context.Context, tool agenttool.Tool, args json.RawMess
 		if rec, rerr := agenttool.RecordOf(res.Details); rerr != nil {
 			fmt.Fprintf(r.Stderr, "%s: --record: %v\n", r.Name, rerr)
 		} else if rec != nil {
-			ctx := agenttool.WithCall(ctx, job.Call)
-			if werr := exec.Recorder(ctx, rec); werr != nil {
-				fmt.Fprintf(r.Stderr, "%s: --record: %v\n", r.Name, werr)
-			}
+			// A failed write is kept by the recorder and reported once,
+			// on the way out.
+			_ = exec.Recorder(agenttool.WithCall(ctx, job.Call), rec)
 		}
 	}
 
@@ -359,7 +358,10 @@ func (r Runner) call(ctx context.Context, tool agenttool.Tool, args json.RawMess
 	}
 	o := &output{w: r.Stdout, dir: outDir, program: r.Name}
 	if err := o.write(res.Output); err != nil {
-		fmt.Fprintf(r.Stderr, "%s: writing the output: %v\n", r.Name, err)
+		// The call has happened, so this must not read as the tool
+		// refusing it: a model told to correct and retry would run a
+		// side effect twice.
+		fmt.Fprintf(r.Stderr, "%s: the call succeeded, but writing its output failed: %v\n", r.Name, err)
 		return ExitFailed
 	}
 	return ExitOK

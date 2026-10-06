@@ -3,8 +3,10 @@ package cli
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime"
 	"os"
 	"path/filepath"
@@ -103,7 +105,7 @@ func (o *output) file(p *openresponses.InputFile) error {
 // with an extension for its media type.
 func (o *output) save(name, typ string, data []byte) error {
 	if o.dir == "" {
-		dir, err := os.MkdirTemp("", o.program+"-")
+		dir, err := os.MkdirTemp("", tempPrefix(o.program))
 		if err != nil {
 			return err
 		}
@@ -115,11 +117,8 @@ func (o *output) save(name, typ string, data []byte) error {
 	base := filepath.Base(name)
 	if name == "" || base == "." || base == ".." || base == string(filepath.Separator) {
 		base = fmt.Sprintf("output-%d%s", o.files, extension(typ))
-	} else if o.files > 1 {
-		base = fmt.Sprintf("%d-%s", o.files, base)
 	}
-	path := filepath.Join(o.dir, base)
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	f, path, err := create(o.dir, base)
 	if err != nil {
 		return err
 	}
@@ -131,6 +130,38 @@ func (o *output) save(name, typ string, data []byte) error {
 		return err
 	}
 	return o.text(path)
+}
+
+// create makes a new file named base in dir, or, when that name is
+// taken, by an earlier part or an earlier run into the same --out, the
+// first free name with a number before its extension. It never opens a
+// file that exists, so nothing the directory held is overwritten.
+func create(dir, base string) (*os.File, string, error) {
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	for i := 1; ; i++ {
+		name := base
+		if i > 1 {
+			name = fmt.Sprintf("%s-%d%s", stem, i, ext)
+		}
+		path := filepath.Join(dir, name)
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if errors.Is(err, fs.ErrExist) && i < 10000 {
+			continue
+		}
+		return f, path, err
+	}
+}
+
+// tempPrefix is the prefix of the directory files go to when no --out
+// names one: the program's base name, which may have come from
+// os.Args[0] with a path in front of it.
+func tempPrefix(program string) string {
+	base := filepath.Base(program)
+	if base == "." || base == ".." || base == string(filepath.Separator) || base == "" {
+		base = "output"
+	}
+	return base + "-"
 }
 
 // extension is the file extension for a media type: the common image

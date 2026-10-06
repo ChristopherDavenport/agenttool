@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ChristopherDavenport/agenttool"
 	"github.com/ChristopherDavenport/agenttool/cli"
@@ -109,6 +111,18 @@ func tools() agenttool.Set {
 			func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
 				return agenttool.Text(string(call.Args)), nil
 			}),
+		// Legal JSON Schema the reader does not expect: a property that
+		// is a boolean schema and an array of tuple items. Neither may
+		// cost another property its flag, or another command its run.
+		agenttool.NewFunc("odd", "Odd schemas.",
+			json.RawMessage(`{"properties":{"x":true,"t":{"type":"array","items":[{"type":"string"}]},"n":{"type":"integer"},"bs":{"type":"array","items":{"type":"boolean"}}}}`),
+			func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
+				return agenttool.Text(string(call.Args)), nil
+			}),
+		agenttool.NewFunc("nullschema", "Parameters of null.", json.RawMessage("null"),
+			func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
+				return agenttool.Text("ok"), nil
+			}),
 	}
 }
 
@@ -156,6 +170,10 @@ func TestRun(t *testing.T) {
 		{name: "a union of two types has none", args: []string{"raw", "--mixed", "x"}, code: cli.ExitUsage, stderrHas: "flag provided but not defined: -mixed"},
 		{name: "names a flag cannot carry arrive as JSON", args: []string{"raw", `{"a=b":"1","-x":"2"}`}, stdoutJSON: `{"a=b":"1","-x":"2"}`},
 		{name: "boolean false", args: []string{"tag", "--tags", "a", "--verbose=false"}, stdoutJSON: `{"tags":["a"]}`},
+		{name: "odd schemas keep their other flags", args: []string{"odd", "--n", "+5", `{"x":1,"t":["a"]}`}, stdoutJSON: `{"n":5,"x":1,"t":["a"]}`},
+		{name: "integer written as JSON", args: []string{"odd", "--n", "007"}, stdout: `{"n":7}` + "\n"},
+		{name: "repeated boolean stands alone", args: []string{"odd", "--bs", "--bs=false"}, stdout: `{"bs":[true,false]}` + "\n"},
+		{name: "a null schema is no arguments", args: []string{"schema", "nullschema"}, stdout: "{\n  \"type\": \"object\",\n  \"properties\": {},\n  \"required\": []\n}\n"},
 		{name: "a property in both", args: []string{"read_file", "--path", "/a", `{"path":"/b"}`}, code: cli.ExitUsage, stderrHas: `both give "path"`},
 		{name: "bad integer", args: []string{"read_file", "--path", "/a", "--max_bytes", "ten"}, code: cli.ExitUsage, stderrHas: `"ten" is not an integer`},
 		{name: "scalar given twice", args: []string{"read_file", "--path", "/a", "--path", "/b"}, code: cli.ExitUsage, stderrHas: "given more than once"},
@@ -384,18 +402,97 @@ func TestCommandsRefuses(t *testing.T) {
 	ping := func(name string) agenttool.Tool {
 		return agenttool.New(name, "", func(ctx context.Context, _ agenttool.NoArgs) (string, error) { return "", nil })
 	}
-	bad := agenttool.NewFunc("bad", "", json.RawMessage(`{"properties":[]}`), func(context.Context, agenttool.Call) (agenttool.Result, error) { return agenttool.Result{}, nil })
 	for name, set := range map[string]agenttool.Set{
-		"duplicate":      {ping("a"), ping("a")},
-		"reserved":       {ping("help")},
-		"bad schema":     {bad},
-		"empty name":     {ping("")},
-		"schema named":   {ping("schema")},
-		"property twice": {agenttool.NewFunc("twice", "", json.RawMessage(`{"properties":{"a":{"type":"string"},"a":{"type":"string"}}}`), func(context.Context, agenttool.Call) (agenttool.Result, error) { return agenttool.Result{}, nil })},
+		"duplicate":    {ping("a"), ping("a")},
+		"reserved":     {ping("help")},
+		"empty name":   {ping("")},
+		"schema named": {ping("schema")},
 	} {
 		if _, err := cli.Commands(set); err == nil {
 			t.Errorf("%s: no error", name)
 		}
+	}
+}
+
+func TestDescribeLenient(t *testing.T) {
+	nop := func(context.Context, agenttool.Call) (agenttool.Result, error) { return agenttool.Result{}, nil }
+	for name, tt := range map[string]struct {
+		schema string
+		want   []string // parameter names, in order
+	}{
+		"not JSON":            {schema: `{`, want: nil},
+		"properties an array": {schema: `{"properties":[]}`, want: nil},
+		"a name twice":        {schema: `{"properties":{"a":{"type":"string"},"b":{},"a":{"type":"integer"}}}`, want: []string{"a", "b"}},
+		"a boolean schema":    {schema: `{"properties":{"a":false}}`, want: []string{"a"}},
+	} {
+		c := cli.Describe(agenttool.NewFunc("t", "", json.RawMessage(tt.schema), nop))
+		var got []string
+		for _, p := range c.Params {
+			got = append(got, p.Name)
+		}
+		if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+			t.Errorf("%s: params %q, want %q", name, got, tt.want)
+		}
+		if name == "a name twice" && c.Params[0].Type != "string" {
+			t.Errorf("%s: the second a was described", name)
+		}
+	}
+}
+
+// Writing into an --out that already holds a run's files takes new
+// names, so a second run neither fails after its tool has run nor
+// overwrites the first run's files.
+func TestRunOutReused(t *testing.T) {
+	dir := t.TempDir()
+	for _, want := range []string{"output-1.png", "output-1-2.png"} {
+		code, stdout, stderr := run(t, "", "--out", dir, "shot")
+		if code != cli.ExitOK {
+			t.Fatalf("exit %d: %s", code, stderr)
+		}
+		if !strings.Contains(stdout, filepath.Join(dir, want)) {
+			t.Errorf("stdout lacks %s:\n%s", want, stdout)
+		}
+	}
+}
+
+// A program named by a path, as os.Args[0] is, still makes the
+// temporary directory its files go to.
+func TestRunNameWithPath(t *testing.T) {
+	var stdout, stderr strings.Builder
+	r := cli.Runner{Name: "./bin/kit", Tools: tools(), Stdout: &stdout, Stderr: &stderr}
+	if code := r.Run(context.Background(), []string{"shot"}); code != cli.ExitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	lines := strings.Split(stdout.String(), "\n")
+	if len(lines) < 2 || !strings.HasSuffix(lines[1], "output-1.png") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	t.Cleanup(func() { os.RemoveAll(filepath.Dir(lines[1])) })
+	if !strings.HasPrefix(filepath.Base(filepath.Dir(lines[1])), "kit-") {
+		t.Errorf("directory %s", filepath.Dir(lines[1]))
+	}
+}
+
+// An interrupt while the prompt waits for a line ends the question at
+// once, with the context's error.
+func TestPromptCancelled(t *testing.T) {
+	in, w := io.Pipe()
+	defer w.Close()
+	ask := cli.Prompt(in, io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := ask(ctx, agenttool.Elicitation{Message: "Go?"})
+		done <- err
+	}()
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the prompt waited for a line after its context ended")
 	}
 }
 

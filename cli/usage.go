@@ -97,7 +97,7 @@ func synopsis(program string, c Command) string {
 			continue
 		}
 		f := fmt.Sprintf("--%s <%s>", p.Name, p.value())
-		if p.Type == "boolean" {
+		if p.value() == "boolean" {
 			f = "--" + p.Name
 		}
 		if p.Repeated() {

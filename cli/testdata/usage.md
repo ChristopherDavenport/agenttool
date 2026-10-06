@@ -112,3 +112,24 @@ kit raw [--count <integer>] [<json> | -]
 - `mixed` (any JSON value, JSON only)
 - `a=b` (string, JSON only)
 - `-x` (string, JSON only)
+
+### `odd`
+
+Odd schemas.
+
+```sh
+kit odd [--n <integer>] [--bs ...] [<json> | -]
+```
+
+- `x` (any JSON value, JSON only)
+- `t` (array, JSON only)
+- `--n` (integer)
+- `--bs` (array of boolean, repeatable)
+
+### `nullschema`
+
+Parameters of null.
+
+```sh
+kit nullschema
+```

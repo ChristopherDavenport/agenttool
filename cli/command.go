@@ -26,7 +26,6 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -104,8 +103,9 @@ func scalar(typ string) bool {
 
 // Commands describes every tool of set, in order. A set the program
 // could not run is an error: two tools of one name, a tool with none,
-// one named as a command of the program's own, help or schema, or a
-// schema that is not a JSON object.
+// or one named as a command of the program's own, help or schema. A
+// schema is never an error, so one odd tool cannot take the program's
+// other commands down with it; see [Describe].
 func Commands(set agenttool.Set) ([]Command, error) {
 	if err := set.Validate(); err != nil {
 		return nil, fmt.Errorf("cli: %w", err)
@@ -115,11 +115,7 @@ func Commands(set agenttool.Set) ([]Command, error) {
 		if reserved(t.Name()) {
 			return nil, fmt.Errorf("cli: tool %q is named as one of the program's own commands", t.Name())
 		}
-		c, err := Describe(t)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, c)
+		out = append(out, Describe(t))
 	}
 	return out, nil
 }
@@ -131,106 +127,80 @@ func reserved(name string) bool {
 // Describe describes one tool as a command. Its parameters are read
 // from the schema the tool serves, so a tool from [agenttool.NewFunc]
 // or mcpclient is described as one from [agenttool.New] is. Only the
-// keywords the parser needs are read, and the schema is otherwise
-// passed through: a keyword this does not know does not make a property
-// lose its flag, and the tool remains what validates its arguments.
-func Describe(t agenttool.Tool) (Command, error) {
+// keywords the parser needs are read, and leniently: a property whose
+// schema is not an object, or whose keywords are not the shape
+// expected, has no flag and arrives in the JSON argument; a schema with
+// no properties object gives no flags at all; of a name written twice
+// the first is described. The tool remains what validates its
+// arguments, and the schema is served as the tool gave it.
+func Describe(t agenttool.Tool) Command {
 	schema := t.Parameters()
-	if len(schema) == 0 {
+	if len(bytes.TrimSpace(schema)) == 0 || string(bytes.TrimSpace(schema)) == "null" {
 		schema = agenttool.NoArgsSchema
-	}
-	params, err := paramsOf(schema)
-	if err != nil {
-		return Command{}, fmt.Errorf("cli: tool %q: %w", t.Name(), err)
 	}
 	return Command{
 		Name:        t.Name(),
 		Description: t.Description(),
 		Annotations: agenttool.AnnotationsOf(t),
-		Params:      params,
+		Params:      paramsOf(schema),
 		Schema:      schema,
-	}, nil
+	}
 }
 
-// node is the part of a property's schema a command needs.
-type node struct {
-	Type        json.RawMessage `json:"type"`
-	Description string          `json:"description"`
-	Enum        []any           `json:"enum"`
-	Items       *node           `json:"items"`
-}
-
-func paramsOf(schema json.RawMessage) ([]Param, error) {
-	var root struct {
-		Properties json.RawMessage `json:"properties"`
-		Required   []string        `json:"required"`
+func paramsOf(schema json.RawMessage) []Param {
+	var root map[string]json.RawMessage
+	if json.Unmarshal(schema, &root) != nil {
+		return nil
 	}
-	if err := json.Unmarshal(schema, &root); err != nil {
-		return nil, fmt.Errorf("parameters schema: %w", err)
-	}
-	if len(root.Properties) == 0 || string(root.Properties) == "null" {
-		return nil, nil
-	}
-	required := make(map[string]bool, len(root.Required))
-	for _, name := range root.Required {
-		required[name] = true
+	var required []string
+	_ = json.Unmarshal(root["required"], &required)
+	isRequired := make(map[string]bool, len(required))
+	for _, name := range required {
+		isRequired[name] = true
 	}
 	var params []Param
 	seen := map[string]bool{}
-	err := members(root.Properties, func(name string, raw json.RawMessage) error {
+	members(root["properties"], func(name string, raw json.RawMessage) {
 		if seen[name] {
-			return fmt.Errorf("property %q appears twice", name)
+			return
 		}
 		seen[name] = true
-		var n node
-		if err := json.Unmarshal(raw, &n); err != nil {
-			return fmt.Errorf("property %q: %w", name, err)
-		}
-		p := Param{
-			Name:        name,
-			Description: n.Description,
-			Type:        typeOf(n.Type),
-			Required:    required[name],
-			Enum:        n.Enum,
-		}
-		if p.Type == "array" && n.Items != nil {
-			p.Items = typeOf(n.Items.Type)
+		p := Param{Name: name, Required: isRequired[name]}
+		var n map[string]json.RawMessage
+		if json.Unmarshal(raw, &n) == nil {
+			_ = json.Unmarshal(n["description"], &p.Description)
+			_ = json.Unmarshal(n["enum"], &p.Enum)
+			p.Type = typeOf(n["type"])
+			var items map[string]json.RawMessage
+			if p.Type == "array" && json.Unmarshal(n["items"], &items) == nil {
+				p.Items = typeOf(items["type"])
+			}
 		}
 		params = append(params, p)
-		return nil
 	})
-	if err != nil {
-		return nil, fmt.Errorf("parameters schema: %w", err)
-	}
-	return params, nil
+	return params
 }
 
 // members calls fn for each member of the JSON object raw, in the
-// order written, which a map would lose.
-func members(raw json.RawMessage, fn func(name string, value json.RawMessage) error) error {
+// order written, which a map would lose. Anything but an object has no
+// members, and a member that does not decode ends the walk.
+func members(raw json.RawMessage, fn func(name string, value json.RawMessage)) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
-	tok, err := dec.Token()
-	if err != nil {
-		return err
-	}
-	if tok != json.Delim('{') {
-		return errors.New("properties is not an object")
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return
 	}
 	for dec.More() {
 		tok, err := dec.Token()
 		if err != nil {
-			return err
+			return
 		}
 		name, _ := tok.(string)
 		var value json.RawMessage
 		if err := dec.Decode(&value); err != nil {
-			return err
+			return
 		}
-		if err := fn(name, value); err != nil {
-			return err
-		}
+		fn(name, value)
 	}
-	return nil
 }
 
 // typeOf reads a schema's type keyword: a name, or a union of one name
@@ -266,11 +236,12 @@ func convert(typ, s string) (json.RawMessage, error) {
 	case "string":
 		return json.Marshal(s)
 	case "integer":
-		if _, err := strconv.ParseInt(s, 10, 64); err == nil {
-			return json.RawMessage(s), nil
+		// Written back from the parsed value, so +5 and 007 become JSON.
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return json.RawMessage(strconv.FormatInt(n, 10)), nil
 		}
-		if _, err := strconv.ParseUint(s, 10, 64); err == nil {
-			return json.RawMessage(s), nil
+		if n, err := strconv.ParseUint(s, 10, 64); err == nil {
+			return json.RawMessage(strconv.FormatUint(n, 10)), nil
 		}
 		return nil, fmt.Errorf("%q is not an integer", s)
 	case "number":
