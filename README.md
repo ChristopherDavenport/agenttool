@@ -447,6 +447,59 @@ What this route does not do, all of it tracked in #58:
   the page. The code still arrives at the redirect, and it and the
   tokens never pass through `Answer` or the record.
 
+## A command-line program
+
+Some hosts allow no MCP server but still give the model a shell. `cli`
+turns a `Set` into one program whose commands are its tools, with the
+usage a model needs to call it:
+
+```go
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	tools := agenttool.Set{ReadFile, Search, WriteFile}
+	code := cli.Runner{Name: "file-tools", Tools: tools}.Run(ctx, os.Args[1:])
+	stop()
+	tools.Close()
+	os.Exit(code)
+}
+```
+
+```sh
+file-tools read_file --path go.mod
+file-tools read_file - <<'EOF'
+{"path": "go.mod"}
+EOF
+file-tools help read_file
+```
+
+A parameter of a scalar type is a flag of its own name, and an array of
+scalars a flag that repeats. Anything else arrives in a JSON argument,
+which can also carry the whole object, inline or on stdin. The tool
+validates its arguments as it does in process, so the model reads the
+same error either way. A tool from `New` checks them against its
+schema. One from `NewFunc` checks what its function checks, where
+`mcpserver` would have validated them for it.
+
+The exit status carries the error convention. A question nobody is
+there to answer is answered cancel, as the contract says a harness with
+nobody to ask answers. The tool does what it does with that, and the
+call ends with status 3. Stdout then holds the question as JSON,
+together with the tool's output or error. The model asks the user and
+runs the command again with `--answer`. The second run is a second
+call, so this suits a tool that asks before it acts. A program that
+knows a person is at the terminal sets `Ask: cli.Prompt(os.Stdin,
+os.Stderr)` instead. `--record` appends the call's records to a file
+as JSON lines.
+
+`cli.Markdown` renders how to call each command, from the same
+description the parser reads. A skill that teaches a model the program
+is that text under a frontmatter.
+
+What one call per process cannot keep is lost. `Resource` and
+`Sequential` order nothing between two processes, and a tool that holds
+a shell or a container across calls loses it at exit, so such a tool
+is better served in process or over MCP.
+
 ## Development
 
 ```sh
