@@ -5,6 +5,22 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- `cli` runs the tools of a `Set` as the commands of one program, for a
+  host that reaches tools through a shell, not in process or over MCP
+  (#71). A tool is a command of its own name. Its arguments are flags
+  read from its schema, a JSON object, inline or on stdin, or both.
+  Exit statuses carry the error convention: 0 is success, 1 the tool's
+  error, 2 a command line the program did not understand, and 3 a
+  question the call needs answered. The answer comes back on a second
+  run as `--answer`, or from `Prompt` at a terminal. `--record` appends
+  the call's records to a file, and a file the output carries is
+  written to disk and its path printed. `Markdown` renders the usage a
+  model reads, the body of a skill, from the same `Commands` the parser
+  uses. The package uses the standard library alone, and nothing in the
+  contract changes.
+
 ## v0.0.15 - 2026-10-02
 
 - mcpclient: `Remote.Close` ends every call in flight with `ErrClosed`
