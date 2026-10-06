@@ -39,10 +39,10 @@ func writeCalling(b *strings.Builder, program string) {
 	fmt.Fprintf(b, "```\n\n")
 	fmt.Fprintf(b, "Use the last form for any value with quotes, newlines or nesting: a quoted heredoc reaches the command untouched by the shell. Flags go before the JSON argument, and a property is given once, as a flag or in the JSON. A boolean flag stands alone for true, or takes `=false`.\n\n")
 	fmt.Fprintf(b, "The exit status says what happened:\n\n")
-	fmt.Fprintf(b, "- 0: the command succeeded, and its output is on stdout.\n")
+	fmt.Fprintf(b, "- 0: the command succeeded, and its output is on stdout. If stderr says the output could not be written, the command still ran: do not run it again for that.\n")
 	fmt.Fprintf(b, "- 1: the tool failed or refused the arguments, and says why on stderr. Correct the call and run it again.\n")
-	fmt.Fprintf(b, "- 2: the command line was not understood, and stderr says why.\n")
-	fmt.Fprintf(b, "- 3: the tool needs the user's answer before it can go on, and stdout holds the question as JSON. Ask the user, then run the same command again with `--answer` before the command name: `--answer accept`, `--answer decline`, or `--answer '{...}'` with the fields a form asks for. A command that asks again needs every earlier answer again, in the order given.\n\n")
+	fmt.Fprintf(b, "- 2: the command did not run, because the command line was not understood or the program could not start it, and stderr says why.\n")
+	fmt.Fprintf(b, "- 3: the tool asked the user a question that nobody answered, and was told it was cancelled. Stdout holds the question as JSON, with what the tool returned. Ask the user, then run the same command again with `--answer` before the command name: `--answer accept`, `--answer decline`, or `--answer '{...}'` with the fields a form asks for. A command that asks again needs every earlier answer again, in the order given.\n\n")
 	fmt.Fprintf(b, "A file a command produces, such as an image, is written to disk and its path printed. `%s help <command>` prints one command's usage and `%s schema <command>` its JSON Schema.\n", program, program)
 }
 
@@ -90,10 +90,11 @@ func writeIndex(b *strings.Builder, cmds []Command) {
 // JSON argument when a parameter has no flag.
 func synopsis(program string, c Command) string {
 	parts := []string{program, c.Name}
-	jsonOnly := false
+	jsonOnly, jsonRequired := false, false
 	for _, p := range c.Params {
 		if !p.Flag() {
 			jsonOnly = true
+			jsonRequired = jsonRequired || p.Required
 			continue
 		}
 		f := fmt.Sprintf("--%s <%s>", p.Name, p.value())
@@ -108,7 +109,10 @@ func synopsis(program string, c Command) string {
 		}
 		parts = append(parts, f)
 	}
-	if jsonOnly {
+	switch {
+	case jsonRequired:
+		parts = append(parts, "(<json> | -)")
+	case jsonOnly:
 		parts = append(parts, "[<json> | -]")
 	}
 	return strings.Join(parts, " ")
@@ -160,28 +164,28 @@ func paramLine(p Param) string {
 	return b.String()
 }
 
-// hintsOf states a tool's annotations, or nothing when it carries
-// none. Destructive and idempotent are meaningful only for a tool that
-// is not read-only, as in MCP. They are the tool's own word, and the
-// usage says so.
+// hintsOf states the annotations a tool set, or nothing when it set
+// none of them. A hint left unset says nothing, as in MCP, where an
+// unset destructive hint even defaults to true, so the usage never
+// claims more than the tool did. Destructive and idempotent are
+// meaningful only for a tool that is not read-only. The title is a
+// display name and not a hint.
 func hintsOf(a agenttool.Annotations) string {
-	if a == (agenttool.Annotations{}) {
-		return ""
-	}
 	var hints []string
 	switch {
 	case a.ReadOnly:
 		hints = append(hints, "read-only")
 	case a.Destructive:
 		hints = append(hints, "may be destructive")
-	default:
-		hints = append(hints, "makes only additive changes")
 	}
 	if !a.ReadOnly && a.Idempotent {
 		hints = append(hints, "idempotent")
 	}
 	if a.OpenWorld {
 		hints = append(hints, "reaches outside systems")
+	}
+	if len(hints) == 0 {
+		return ""
 	}
 	return "Hints from the tool: " + strings.Join(hints, "; ") + "."
 }

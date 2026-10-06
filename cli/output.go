@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"mime"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,7 +87,7 @@ func (o *output) file(p *openresponses.InputFile) error {
 		if typ, data, ok := parseDataURL(p.FileData); ok {
 			return o.save(p.Filename, typ, data)
 		}
-		if data, err := base64.StdEncoding.DecodeString(p.FileData); err == nil {
+		if data, ok := decodeBase64(p.FileData); ok {
 			return o.save(p.Filename, "", data)
 		}
 		return o.text(p.FileData)
@@ -179,6 +180,8 @@ func extension(typ string) string {
 		return ".webp"
 	case "application/pdf":
 		return ".pdf"
+	case "text/plain":
+		return ".txt"
 	case "", "application/octet-stream":
 		return ".bin"
 	}
@@ -188,9 +191,11 @@ func extension(typ string) string {
 	return ".bin"
 }
 
-// parseDataURL splits a base64 data URL into its media type and bytes.
-func parseDataURL(url string) (string, []byte, bool) {
-	rest, ok := strings.CutPrefix(url, "data:")
+// parseDataURL splits a data URL into its media type and bytes: a
+// base64 payload in any of the four encodings a producer writes, padded
+// or not, standard or URL-safe, and otherwise a percent-encoded one.
+func parseDataURL(s string) (string, []byte, bool) {
+	rest, ok := strings.CutPrefix(s, "data:")
 	if !ok {
 		return "", nil, false
 	}
@@ -200,11 +205,23 @@ func parseDataURL(url string) (string, []byte, bool) {
 	}
 	typ, b64 := strings.CutSuffix(meta, ";base64")
 	if !b64 {
-		return "", nil, false
+		data, err := url.PathUnescape(payload)
+		if err != nil {
+			return "", nil, false
+		}
+		typ, _, _ = strings.Cut(typ, ";")
+		return typ, []byte(data), true
 	}
-	data, err := base64.StdEncoding.DecodeString(payload)
-	if err != nil {
-		return "", nil, false
+	data, ok := decodeBase64(payload)
+	return typ, data, ok
+}
+
+// decodeBase64 decodes s in whichever base64 encoding it is written.
+func decodeBase64(s string) ([]byte, bool) {
+	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		if data, err := enc.DecodeString(s); err == nil {
+			return data, true
+		}
 	}
-	return typ, data, true
+	return nil, false
 }

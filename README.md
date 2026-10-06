@@ -476,13 +476,20 @@ A parameter of a scalar type is a flag of its own name, and an array of
 scalars a flag that repeats. Anything else arrives in a JSON argument,
 which can also carry the whole object, inline or on stdin. The tool
 validates its arguments as it does in process, so the model reads the
-same error either way.
+same error either way. A tool from `New` checks them against its
+schema. One from `NewFunc` checks what its function checks, where
+`mcpserver` would have validated them for it.
 
-The exit status carries the error convention. A question the tool asks
-stops the call with status 3 and the question on stdout. The model asks
-the user and runs the command again with `--answer`, unless the program
-set `Prompt` to ask a person at the terminal. `--record` appends the
-call's records to a file as JSON lines.
+The exit status carries the error convention. A question nobody is
+there to answer is answered cancel, as the contract says a harness with
+nobody to ask answers. The tool does what it does with that, and the
+call ends with status 3. Stdout then holds the question as JSON,
+together with the tool's output or error. The model asks the user and
+runs the command again with `--answer`. The second run is a second
+call, so this suits a tool that asks before it acts. A program that
+knows a person is at the terminal sets `Ask: cli.Prompt(os.Stdin,
+os.Stderr)` instead. `--record` appends the call's records to a file
+as JSON lines.
 
 `cli.Markdown` renders how to call each command, from the same
 description the parser reads. A skill that teaches a model the program

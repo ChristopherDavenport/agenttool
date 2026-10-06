@@ -88,6 +88,9 @@ func tools() agenttool.Set {
 				if err != nil {
 					return "", err
 				}
+				if b.Action != agenttool.ActionAccept {
+					return "", errors.New("not deleted: no reason given")
+				}
 				return "deleted: " + string(b.Content), nil
 			}),
 		agenttool.New("shot", "Take a screenshot.",
@@ -118,6 +121,26 @@ func tools() agenttool.Set {
 			json.RawMessage(`{"properties":{"x":true,"t":{"type":"array","items":[{"type":"string"}]},"n":{"type":"integer"},"bs":{"type":"array","items":{"type":"boolean"}}}}`),
 			func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
 				return agenttool.Text(string(call.Args)), nil
+			}),
+		agenttool.New("steps", "Report progress two other ways.",
+			func(ctx context.Context, _ agenttool.NoArgs) (string, error) {
+				agenttool.Progress(ctx, agenttool.Result{Details: agenttool.ProgressInfo{Progress: 3, Message: "counting"}})
+				agenttool.Progress(ctx, agenttool.Text("halfway"))
+				return "done", nil
+			}),
+		agenttool.New("helpful", "A parameter named help.",
+			func(ctx context.Context, a struct {
+				Help string `json:"help"`
+			}) (string, error) {
+				return "help=" + a.Help, nil
+			}),
+		agenttool.New("files", "Return files.",
+			func(ctx context.Context, _ agenttool.NoArgs) (openresponses.Contents, error) {
+				return openresponses.Contents{
+					&openresponses.InputFile{FileURL: "https://example.com/f.pdf"},
+					&openresponses.InputFile{FileID: "f_1"},
+					&openresponses.InputFile{FileData: "not base64!"},
+				}, nil
 			}),
 		agenttool.NewFunc("nullschema", "Parameters of null.", json.RawMessage("null"),
 			func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
@@ -170,6 +193,14 @@ func TestRun(t *testing.T) {
 		{name: "a union of two types has none", args: []string{"raw", "--mixed", "x"}, code: cli.ExitUsage, stderrHas: "flag provided but not defined: -mixed"},
 		{name: "names a flag cannot carry arrive as JSON", args: []string{"raw", `{"a=b":"1","-x":"2"}`}, stdoutJSON: `{"a=b":"1","-x":"2"}`},
 		{name: "boolean false", args: []string{"tag", "--tags", "a", "--verbose=false"}, stdoutJSON: `{"tags":["a"]}`},
+		{name: "JSON passed through as written", args: []string{"raw", `{"mixed": "<b>&", "count": 1}`}, stdout: `{"mixed": "<b>&", "count": 1}` + "\n"},
+		{name: "a key twice in the JSON", args: []string{"raw", `{"mixed":"a","mixed":"b"}`}, code: cli.ExitUsage, stderrHas: `gives "mixed" twice`},
+		{name: "JSON not UTF-8", args: []string{"raw", "{\"mixed\":\"\xff\"}"}, code: cli.ExitUsage, stderrHas: "not valid UTF-8"},
+		{name: "string flag not UTF-8", args: []string{"read_file", "--path", "\xff"}, code: cli.ExitUsage, stderrHas: "not valid UTF-8"},
+		{name: "a number keeps its digits", args: []string{"tag", "--tags", "a", "--ratio", "12345678901234567890"}, stdoutHas: "12345678901234567000"},
+		{name: "an integer in exponent form", args: []string{"odd", "--n", "1e3"}, stdout: `{"n":1e3}` + "\n"},
+		{name: "an integer past 64 bits", args: []string{"odd", "--n", "123456789012345678901234567890"}, stdout: `{"n":123456789012345678901234567890}` + "\n"},
+		{name: "a fraction is not an integer", args: []string{"odd", "--n", "1.5"}, code: cli.ExitUsage, stderrHas: "not an integer"},
 		{name: "odd schemas keep their other flags", args: []string{"odd", "--n", "+5", `{"x":1,"t":["a"]}`}, stdoutJSON: `{"n":5,"x":1,"t":["a"]}`},
 		{name: "integer written as JSON", args: []string{"odd", "--n", "007"}, stdout: `{"n":7}` + "\n"},
 		{name: "repeated boolean stands alone", args: []string{"odd", "--bs", "--bs=false"}, stdout: `{"bs":[true,false]}` + "\n"},
@@ -196,19 +227,25 @@ func TestRun(t *testing.T) {
 			name:       "unanswered question",
 			args:       []string{"delete"},
 			code:       cli.ExitNeedsAnswer,
-			stdoutJSON: `{"message":"Delete the branch?","answers_given":0}`,
+			stdoutJSON: `{"message":"Delete the branch?","answers_given":0,"output":"kept"}`,
 			stderrHas:  "--answer",
 		},
 		{
 			name:       "second question unanswered",
 			args:       []string{"--answer", "accept", "delete"},
 			code:       cli.ExitNeedsAnswer,
-			stdoutJSON: `{"message":"Why?","schema":{"type":"object","properties":{"reason":{"type":"string"},"days":{"type":"integer"}},"required":["reason"]},"answers_given":1}`,
+			stdoutJSON: `{"message":"Why?","schema":{"type":"object","properties":{"reason":{"type":"string"},"days":{"type":"integer"}},"required":["reason"]},"answers_given":1,"error":"not deleted: no reason given"}`,
 		},
 		{name: "answered", args: []string{"--answer", "accept", "--answer", `{"reason":"merged"}`, "delete"}, stdout: "deleted: {\"reason\":\"merged\"}\n"},
 		{name: "declined", args: []string{"--answer", "decline", "delete"}, stdout: "kept\n"},
+		{name: "cancelled", args: []string{"--answer", "cancel", "delete"}, stdout: "kept\n"},
+		{name: "unused answers are reported", args: []string{"--answer", "decline", "--answer", "accept", "delete"}, stdout: "kept\n", stderrHas: "1 --answer not used"},
 		{name: "bad answer", args: []string{"--answer", "maybe", "delete"}, code: cli.ExitUsage, stderrHas: "an answer is accept"},
 		{name: "progress on stderr", args: []string{"work"}, stdout: "done\n", stderrHas: "[1/2] half\n"},
+		{name: "progress without a total, and as text", args: []string{"steps"}, stdout: "done\n", stderrHas: "[3] counting\nhalfway\n"},
+		{name: "a parameter named help is a flag", args: []string{"helpful", "--help", "yes"}, stdout: "help=yes\n"},
+		{name: "file parts", args: []string{"files"}, stdout: "https://example.com/f.pdf\nfile_id: f_1\nnot base64!\n"},
+		{name: "record file that cannot open", args: []string{"--record", "/", "ping"}, code: cli.ExitUsage, stderrHas: "--record"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -310,6 +347,7 @@ func TestPrompt(t *testing.T) {
 		{name: "end of input", in: "", q: agenttool.Elicitation{Message: "Go?"}, action: agenttool.ActionCancel},
 		{name: "url default yes", in: "\n", q: agenttool.Elicitation{URL: "https://x"}, action: agenttool.ActionAccept},
 		{name: "url declined", in: "n\n", q: agenttool.Elicitation{URL: "https://x"}, action: agenttool.ActionDecline},
+		{name: "a form with no fields confirms", in: "n\n", q: agenttool.Elicitation{Message: "Go?", Schema: json.RawMessage(`{"type":"object","properties":{}}`)}, action: agenttool.ActionDecline},
 		{name: "form retries a bad value", in: "x\n4\n", q: agenttool.Elicitation{Schema: form}, action: agenttool.ActionAccept, body: `{"n":4}`},
 		{name: "form cut off", in: "x\n", q: agenttool.Elicitation{Schema: form}, action: agenttool.ActionCancel},
 	}
@@ -398,12 +436,105 @@ func TestRunRecord(t *testing.T) {
 	}
 }
 
+// The data a file part carries is saved under the name the tool gave,
+// in whichever base64 it is written, and a data URL that is not base64
+// is percent-decoded.
+func TestRunFileData(t *testing.T) {
+	set := agenttool.Set{agenttool.New("f", "", func(ctx context.Context, _ agenttool.NoArgs) (openresponses.Contents, error) {
+		return openresponses.Contents{
+			&openresponses.InputFile{Filename: "../report.txt", FileData: base64.RawURLEncoding.EncodeToString([]byte("raw url"))},
+			&openresponses.InputFile{Filename: "report.txt", FileData: "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte("data url"))},
+			&openresponses.InputImage{ImageURL: "data:text/plain;charset=utf-8,hello%20world"},
+			&openresponses.InputImage{ImageURL: "data:image/png;base64," + base64.RawStdEncoding.EncodeToString(png[:7])},
+		}, nil
+	})}
+	dir := t.TempDir()
+	var stdout, stderr strings.Builder
+	r := cli.Runner{Name: "kit", Tools: set, Stdout: &stdout, Stderr: &stderr}
+	if code := r.Run(context.Background(), []string{"--out", dir, "f"}); code != cli.ExitOK {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	want := map[string]string{"report.txt": "raw url", "report-2.txt": "data url", "output-3.txt": "hello world", "output-4.png": string(png[:7])}
+	for name, body := range want {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || string(data) != body {
+			t.Errorf("%s = %q, %v; want %q\nstdout: %s", name, data, err, body, stdout.String())
+		}
+	}
+}
+
+type badWriter struct{}
+
+func (badWriter) Write([]byte) (int, error) { return 0, errors.New("closed") }
+
+// An output that cannot be written does not make a call that ran read
+// as one that failed, since a model would correct it and run it again.
+func TestRunOutputUnwritable(t *testing.T) {
+	var stderr strings.Builder
+	r := cli.Runner{Name: "kit", Tools: tools(), Stdout: badWriter{}, Stderr: &stderr}
+	if code := r.Run(context.Background(), []string{"ping"}); code != cli.ExitOK {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(stderr.String(), "the call succeeded") {
+		t.Errorf("stderr: %s", stderr.String())
+	}
+}
+
+func TestRunInvalidSet(t *testing.T) {
+	ping := agenttool.New("a", "", func(ctx context.Context, _ agenttool.NoArgs) (string, error) { return "", nil })
+	var stderr strings.Builder
+	r := cli.Runner{Name: "kit", Tools: agenttool.Set{ping, ping}, Stdout: io.Discard, Stderr: &stderr}
+	if code := r.Run(context.Background(), []string{"help"}); code != cli.ExitUsage {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(stderr.String(), "duplicate") {
+		t.Errorf("stderr: %s", stderr.String())
+	}
+}
+
+type unnamed struct{}
+
+func (unnamed) RecordNS() string { return "" }
+
+// A result record that cannot be made is reported and does not change
+// the status, since the call has happened.
+func TestRunRecordOfFails(t *testing.T) {
+	set := agenttool.Set{agenttool.New("u", "", func(ctx context.Context, _ agenttool.NoArgs) (agenttool.Result, error) {
+		return agenttool.Result{Output: agenttool.Text("ok").Output, Details: unnamed{}}, nil
+	})}
+	var stdout, stderr strings.Builder
+	r := cli.Runner{Name: "kit", Tools: set, Stdout: &stdout, Stderr: &stderr}
+	path := filepath.Join(t.TempDir(), "r.jsonl")
+	if code := r.Run(context.Background(), []string{"--record", path, "u"}); code != cli.ExitOK {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(stderr.String(), "empty namespace") || stdout.String() != "ok\n" {
+		t.Errorf("stdout %q, stderr %q", stdout.String(), stderr.String())
+	}
+}
+
+// A record the file refuses reaches the tool, which here fails the call
+// on it, and the program reports it once, after the call.
+func TestRunRecordWriteFails(t *testing.T) {
+	if _, err := os.Stat("/dev/full"); err != nil {
+		t.Skip("no /dev/full")
+	}
+	code, _, stderr := run(t, "", "--record", "/dev/full", "work")
+	if code != cli.ExitFailed {
+		t.Fatalf("exit %d", code)
+	}
+	if n := strings.Count(stderr, "kit: --record"); n != 1 {
+		t.Errorf("reported %d times:\n%s", n, stderr)
+	}
+}
+
 func TestCommandsRefuses(t *testing.T) {
 	ping := func(name string) agenttool.Tool {
 		return agenttool.New(name, "", func(ctx context.Context, _ agenttool.NoArgs) (string, error) { return "", nil })
 	}
 	for name, set := range map[string]agenttool.Set{
 		"duplicate":    {ping("a"), ping("a")},
+		"dash":         {ping("-x")},
 		"reserved":     {ping("help")},
 		"empty name":   {ping("")},
 		"schema named": {ping("schema")},
@@ -514,5 +645,24 @@ func TestMarkdown(t *testing.T) {
 	}
 	if got != string(want) {
 		t.Errorf("Markdown differs from %s; run go test ./cli -update and review the diff\n%s", path, got)
+	}
+}
+
+// What the usage tells a model about one command: no hint the tool did
+// not give, an enum number as the tool will accept it, and the JSON
+// argument shown as required when a JSON-only parameter is.
+func TestMarkdownDetails(t *testing.T) {
+	nop := func(context.Context, agenttool.Call) (agenttool.Result, error) { return agenttool.Result{}, nil }
+	tool := agenttool.NewFunc("c", "",
+		json.RawMessage(`{"properties":{"id":{"type":"integer","enum":[12345678901234567891]},"cfg":{"type":"object"}},"required":["cfg"]}`),
+		nop, agenttool.WithAnnotations(agenttool.Annotations{Title: "Configure"}))
+	got := cli.Markdown("kit", []cli.Command{cli.Describe(tool)})
+	for _, want := range []string{"kit c [--id <integer>] (<json> | -)", "One of `12345678901234567891`"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("usage lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "Hints") {
+		t.Errorf("usage claims a hint the tool did not give:\n%s", got)
 	}
 }

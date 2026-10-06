@@ -14,10 +14,10 @@ Use the last form for any value with quotes, newlines or nesting: a quoted hered
 
 The exit status says what happened:
 
-- 0: the command succeeded, and its output is on stdout.
+- 0: the command succeeded, and its output is on stdout. If stderr says the output could not be written, the command still ran: do not run it again for that.
 - 1: the tool failed or refused the arguments, and says why on stderr. Correct the call and run it again.
-- 2: the command line was not understood, and stderr says why.
-- 3: the tool needs the user's answer before it can go on, and stdout holds the question as JSON. Ask the user, then run the same command again with `--answer` before the command name: `--answer accept`, `--answer decline`, or `--answer '{...}'` with the fields a form asks for. A command that asks again needs every earlier answer again, in the order given.
+- 2: the command did not run, because the command line was not understood or the program could not start it, and stderr says why.
+- 3: the tool asked the user a question that nobody answered, and was told it was cancelled. Stdout holds the question as JSON, with what the tool returned. Ask the user, then run the same command again with `--answer` before the command name: `--answer accept`, `--answer decline`, or `--answer '{...}'` with the fields a form asks for. A command that asks again needs every earlier answer again, in the order given.
 
 A file a command produces, such as an image, is written to disk and its path printed. `kit help <command>` prints one command's usage and `kit schema <command>` its JSON Schema.
 
@@ -125,6 +125,32 @@ kit odd [--n <integer>] [--bs ...] [<json> | -]
 - `t` (array, JSON only)
 - `--n` (integer)
 - `--bs` (array of boolean, repeatable)
+
+### `steps`
+
+Report progress two other ways.
+
+```sh
+kit steps
+```
+
+### `helpful`
+
+A parameter named help.
+
+```sh
+kit helpful --help <string>
+```
+
+- `--help` (string, required)
+
+### `files`
+
+Return files.
+
+```sh
+kit files
+```
 
 ### `nullschema`
 

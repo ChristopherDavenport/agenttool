@@ -16,8 +16,9 @@ import (
 // Prompt returns an elicitor that asks a person at a terminal, reading
 // from in and writing to out, for [Runner.Ask]. A question with a URL
 // shows it and waits for Enter; a form asks for each field in turn,
-// converting each answer by the field's type; any other question is
-// yes or no. An end of input is [agenttool.ActionCancel], since nobody
+// converting each answer by the field's type; any other question,
+// including a form with no fields, which is how an MCP server asks
+// for a confirmation, is yes or no. An end of input is [agenttool.ActionCancel], since nobody
 // answered.
 //
 // Questions are asked one at a time, in the order they arrive. A
@@ -49,16 +50,17 @@ func (p *prompt) ask(ctx context.Context, q agenttool.Elicitation) (agenttool.An
 	if msg := strings.TrimSpace(q.Message); msg != "" {
 		fmt.Fprintln(p.out, msg)
 	}
+	fields := paramsOf(q.Schema)
 	switch {
 	case q.URL != "":
 		fmt.Fprintf(p.out, "Open %s\nPress Enter when done, or type n to decline: ", q.URL)
 		return p.yes(ctx, true)
-	case len(q.Schema) == 0:
+	case len(fields) == 0:
 		fmt.Fprint(p.out, "Continue? [y/N] ")
 		return p.yes(ctx, false)
 	}
 	form := map[string]json.RawMessage{}
-	for _, f := range paramsOf(q.Schema) {
+	for _, f := range fields {
 		for {
 			fmt.Fprint(p.out, fieldPrompt(f))
 			line, ok, err := p.line(ctx)

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ChristopherDavenport/agenttool"
 )
@@ -24,15 +26,25 @@ const (
 	ExitOK = 0
 	// ExitFailed is the tool's error, written to stderr as the model
 	// would see it in process, "Error: <message>". Invalid arguments
-	// are the tool's to report, so they end here too.
+	// are the tool's to report, so they end here too: a tool from
+	// [agenttool.New] validates them against its schema, and one from
+	// [agenttool.NewFunc] checks only what its own function checks, as
+	// in process, where mcpserver would validate them for it.
 	ExitFailed = 1
-	// ExitUsage is a command line the program did not understand: an
-	// unknown command or option, a flag value of the wrong type, or a
-	// JSON argument that is not an object.
+	// ExitUsage is a call that did not run: a command line the program
+	// did not understand, such as an unknown command or option, a flag
+	// value of the wrong type or a JSON argument that is not an object,
+	// or a call the program could not start, such as a --record file it
+	// cannot open or a set [Commands] refuses.
 	ExitUsage = 2
-	// ExitNeedsAnswer is a call that stopped on a question no
-	// --answer answered and nobody was there to ask; stdout holds the
-	// question as JSON.
+	// ExitNeedsAnswer is a call that asked a question no --answer
+	// answered and nobody was there to ask. The tool was answered
+	// [agenttool.ActionCancel], as the contract says a harness with
+	// nobody to ask answers, and did what it does with that; stdout
+	// holds the question as JSON, with the tool's output or error. A
+	// caller that has the answer runs the call again, which is safe for
+	// a tool that asks before it acts and repeats what was done for one
+	// that does not.
 	ExitNeedsAnswer = 3
 )
 
@@ -60,9 +72,12 @@ type Runner struct {
 	Name  string
 	Tools agenttool.Set
 	// Ask answers a question no --answer answered: [Prompt] for a
-	// person at a terminal. Nil, the call stops with [ExitNeedsAnswer]
-	// and the question on stdout, for the caller to run again with
-	// the answer, which is what a model calling through a shell can do.
+	// person at a terminal. Nil, the question is answered
+	// [agenttool.ActionCancel] and the call ends with [ExitNeedsAnswer]
+	// and the question on stdout, for the caller to run again with the
+	// answer, which is what a model calling through a shell can do. A
+	// run again is a second call, so the protocol suits a tool that asks
+	// before it acts.
 	// A program run by people and models alike sets it only when it
 	// knows a person is there, since a terminal does not say who is
 	// at it.
@@ -207,6 +222,7 @@ func (r Runner) parse(c Command, args []string) (json.RawMessage, bool, error) {
 	}
 
 	obj := map[string]json.RawMessage{}
+	var text []byte // the JSON argument as given
 	switch rest := fs.Args(); len(rest) {
 	case 0:
 	case 1:
@@ -217,17 +233,23 @@ func (r Runner) parse(c Command, args []string) (json.RawMessage, bool, error) {
 				return nil, false, fmt.Errorf("reading the JSON argument from stdin: %w", err)
 			}
 		}
-		if err := json.Unmarshal(data, &obj); err != nil || obj == nil {
+		text = bytes.TrimSpace(data)
+		if err := checkObject(text); err != nil {
+			return nil, false, err
+		}
+		if err := json.Unmarshal(text, &obj); err != nil {
 			return nil, false, errors.New("the JSON argument is not a JSON object")
 		}
 	default:
 		return nil, false, fmt.Errorf("one JSON argument at most, after the flags; got %q", rest)
 	}
 
+	flagged := false
 	for _, v := range given {
 		if len(v.raw) == 0 {
 			continue
 		}
+		flagged = true
 		name := v.param.Name
 		if _, ok := obj[name]; ok {
 			return nil, false, fmt.Errorf("--%s and the JSON argument both give %q", name, name)
@@ -242,11 +264,40 @@ func (r Runner) parse(c Command, args []string) (json.RawMessage, bool, error) {
 			obj[name] = v.raw[0]
 		}
 	}
+	if !flagged && text != nil {
+		// The arguments as the caller wrote them, which is what
+		// Call.Args is, rather than re-encoded through a map.
+		return json.RawMessage(text), false, nil
+	}
 	data, err := json.Marshal(obj)
 	if err != nil {
 		return nil, false, err
 	}
 	return data, false, nil
+}
+
+// checkObject refuses a JSON argument that is not an object, is not
+// UTF-8, or names a property twice, which a decoder would settle
+// silently by keeping the last.
+func checkObject(text []byte) error {
+	if !utf8.Valid(text) {
+		return errors.New("the JSON argument is not valid UTF-8")
+	}
+	if len(text) == 0 || text[0] != '{' || !json.Valid(text) {
+		return errors.New("the JSON argument is not a JSON object")
+	}
+	seen := map[string]bool{}
+	dup := ""
+	members(text, func(name string, _ json.RawMessage) {
+		if seen[name] && dup == "" {
+			dup = name
+		}
+		seen[name] = true
+	})
+	if dup != "" {
+		return fmt.Errorf("the JSON argument gives %q twice", dup)
+	}
+	return nil
 }
 
 // value is one parameter's flag. Each value given is converted by the
@@ -306,7 +357,8 @@ func (r Runner) call(ctx context.Context, tool agenttool.Tool, args json.RawMess
 	if recordTo != "" {
 		f, err := os.OpenFile(recordTo, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 		if err != nil {
-			return r.usage(err.Error())
+			fmt.Fprintf(r.Stderr, "%s: --record: %v\n", r.Name, err)
+			return ExitUsage
 		}
 		defer f.Close()
 		rec := &recorder{f: f, tool: tool.Name()}
@@ -343,14 +395,23 @@ func (r Runner) call(ctx context.Context, tool agenttool.Tool, args json.RawMess
 	}
 
 	if q, given, ok := ask.unanswered(); ok {
-		data, merr := json.Marshal(question{Message: q.Message, Schema: q.Schema, URL: q.URL, AnswersGiven: given})
+		out := question{Message: q.Message, Schema: q.Schema, URL: q.URL, AnswersGiven: given}
+		if err != nil {
+			out.Error = err.Error()
+		} else {
+			out.Output = res.Output.String()
+		}
+		data, merr := json.Marshal(out)
 		if merr != nil {
 			fmt.Fprintf(r.Stderr, "%s: %v\n", r.Name, merr)
 			return ExitFailed
 		}
 		fmt.Fprintf(r.Stdout, "%s\n", data)
-		fmt.Fprintf(r.Stderr, "%s: the call needs an answer; run it again with --answer before the command\n", r.Name)
+		fmt.Fprintf(r.Stderr, "%s: the tool asked a question nobody answered, and was told it was cancelled; to answer it, run the call again with --answer before the command\n", r.Name)
 		return ExitNeedsAnswer
+	}
+	if unused := ask.unused(); unused > 0 {
+		fmt.Fprintf(r.Stderr, "%s: %d --answer not used: the call asked fewer questions\n", r.Name, unused)
 	}
 	if err != nil {
 		fmt.Fprintf(r.Stderr, "Error: %s\n", err)
@@ -358,11 +419,10 @@ func (r Runner) call(ctx context.Context, tool agenttool.Tool, args json.RawMess
 	}
 	o := &output{w: r.Stdout, dir: outDir, program: r.Name}
 	if err := o.write(res.Output); err != nil {
-		// The call has happened, so this must not read as the tool
-		// refusing it: a model told to correct and retry would run a
-		// side effect twice.
-		fmt.Fprintf(r.Stderr, "%s: the call succeeded, but writing its output failed: %v\n", r.Name, err)
-		return ExitFailed
+		// The call has happened, so the status says it succeeded: a
+		// failure here read as the tool's would have a model correct
+		// the call and run a side effect twice.
+		fmt.Fprintf(r.Stderr, "%s: the call succeeded, but writing its output failed, so do not run it again for that: %v\n", r.Name, err)
 	}
 	return ExitOK
 }
@@ -392,15 +452,18 @@ type question struct {
 	// AnswersGiven is how many --answer the call used before it
 	// asked this; they are needed again, in order, when it runs again.
 	AnswersGiven int `json:"answers_given"`
+	// Output and Error are how the call ended once told the question
+	// was cancelled, so that nothing it returned is lost.
+	Output string `json:"output,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
-// errUnanswered is what a tool's question gets when no answer was given
-// for it and nobody can be asked. The call stops with
-// [ExitNeedsAnswer] whatever the tool does with it.
-var errUnanswered = errors.New("the question needs an answer, given with --answer")
-
-// elicitor answers a call's questions from --answer in order, then from
-// Ask, and otherwise keeps the first question nobody answered.
+// elicitor answers a call's questions from --answer in the order the
+// tool asks them, then from Ask, and otherwise answers
+// [agenttool.ActionCancel], as a harness with nobody to ask does, and
+// keeps the first question it answered so. Two questions a tool asks
+// at once take the answers in whichever order they arrive, so such a
+// tool is better answered by Ask.
 type elicitor struct {
 	mu      sync.Mutex
 	answers answerList
@@ -425,9 +488,16 @@ func (e *elicitor) elicit(ctx context.Context, q agenttool.Elicitation) (agentto
 	}
 	e.mu.Unlock()
 	if ask == nil {
-		return agenttool.Answer{}, errUnanswered
+		return agenttool.Answer{Action: agenttool.ActionCancel}, nil
 	}
 	return ask(ctx, q)
+}
+
+// unused is how many --answer the call never asked for.
+func (e *elicitor) unused() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.answers) - e.next
 }
 
 func (e *elicitor) unanswered() (agenttool.Elicitation, int, bool) {

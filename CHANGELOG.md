@@ -12,9 +12,10 @@ versions may break the API.
   (#71). A tool is a command of its own name. Its arguments are flags
   read from its schema, a JSON object, inline or on stdin, or both.
   Exit statuses carry the error convention: 0 is success, 1 the tool's
-  error, 2 a command line the program did not understand, and 3 a
-  question the call needs answered. The answer comes back on a second
-  run as `--answer`, or from `Prompt` at a terminal. `--record` appends
+  error, 2 a call that did not run, and 3 a question nobody answered.
+  Such a question is answered cancel, as the contract says, and stdout
+  holds it with what the tool returned. The answer comes back on a
+  second run as `--answer`, or from `Prompt` at a terminal. `--record` appends
   the call's records to a file, and a file the output carries is
   written to disk and its path printed. `Markdown` renders the usage a
   model reads, the body of a skill, from the same `Commands` the parser

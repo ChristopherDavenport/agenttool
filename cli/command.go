@@ -28,8 +28,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/big"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ChristopherDavenport/agenttool"
 )
@@ -103,7 +105,9 @@ func scalar(typ string) bool {
 
 // Commands describes every tool of set, in order. A set the program
 // could not run is an error: two tools of one name, a tool with none,
-// or one named as a command of the program's own, help or schema. A
+// one named as a command of the program's own, help or schema, or one
+// whose name begins with a dash, which the command line would read as
+// an option. A
 // schema is never an error, so one odd tool cannot take the program's
 // other commands down with it; see [Describe].
 func Commands(set agenttool.Set) ([]Command, error) {
@@ -114,6 +118,9 @@ func Commands(set agenttool.Set) ([]Command, error) {
 	for _, t := range set {
 		if reserved(t.Name()) {
 			return nil, fmt.Errorf("cli: tool %q is named as one of the program's own commands", t.Name())
+		}
+		if strings.HasPrefix(t.Name(), "-") {
+			return nil, fmt.Errorf("cli: tool %q begins with a dash, which a command line reads as an option", t.Name())
 		}
 		out = append(out, Describe(t))
 	}
@@ -169,7 +176,7 @@ func paramsOf(schema json.RawMessage) []Param {
 		var n map[string]json.RawMessage
 		if json.Unmarshal(raw, &n) == nil {
 			_ = json.Unmarshal(n["description"], &p.Description)
-			_ = json.Unmarshal(n["enum"], &p.Enum)
+			p.Enum = enumOf(n["enum"])
 			p.Type = typeOf(n["type"])
 			var items map[string]json.RawMessage
 			if p.Type == "array" && json.Unmarshal(n["items"], &items) == nil {
@@ -234,6 +241,9 @@ func typeOf(raw json.RawMessage) string {
 func convert(typ, s string) (json.RawMessage, error) {
 	switch typ {
 	case "string":
+		if !utf8.ValidString(s) {
+			return nil, fmt.Errorf("%q is not valid UTF-8", s)
+		}
 		return json.Marshal(s)
 	case "integer":
 		// Written back from the parsed value, so +5 and 007 become JSON.
@@ -243,8 +253,20 @@ func convert(typ, s string) (json.RawMessage, error) {
 		if n, err := strconv.ParseUint(s, 10, 64); err == nil {
 			return json.RawMessage(strconv.FormatUint(n, 10)), nil
 		}
+		// A JSON number with no fraction is an integer to JSON Schema
+		// however it is written, 1e3 or past 64 bits included.
+		if number(s) {
+			if f, ok := new(big.Float).SetString(s); ok && f.IsInt() {
+				return json.RawMessage(s), nil
+			}
+		}
 		return nil, fmt.Errorf("%q is not an integer", s)
 	case "number":
+		// Passed through as written when it is already JSON, so that a
+		// value float64 cannot hold reaches the tool unrounded.
+		if number(s) {
+			return json.RawMessage(s), nil
+		}
 		f, err := strconv.ParseFloat(s, 64)
 		if err != nil || math.IsInf(f, 0) || math.IsNaN(f) {
 			return nil, fmt.Errorf("%q is not a number", s)
@@ -258,4 +280,28 @@ func convert(typ, s string) (json.RawMessage, error) {
 		return json.Marshal(b)
 	}
 	return nil, fmt.Errorf("a %s has no flag", typ)
+}
+
+// number reports whether s is a JSON number as written, which json.Valid
+// alone does not say: it accepts any JSON value.
+func number(s string) bool {
+	if s == "" || (s[0] != '-' && (s[0] < '0' || s[0] > '9')) {
+		return false
+	}
+	return json.Valid([]byte(s))
+}
+
+// enumOf reads an enum keyword with numbers kept as written, so a value
+// float64 would round is shown to the model as the tool will accept it.
+func enumOf(raw json.RawMessage) []any {
+	if len(raw) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var enum []any
+	if dec.Decode(&enum) != nil {
+		return nil
+	}
+	return enum
 }
