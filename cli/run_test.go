@@ -142,6 +142,19 @@ func tools() agenttool.Set {
 					&openresponses.InputFile{FileData: "not base64!"},
 				}, nil
 			}),
+		// Objects whose fields have flags, maps, and a field whose name
+		// holds the separator.
+		agenttool.NewFunc("deploy", "Deploy somewhere.",
+			json.RawMessage(`{"type":"object","properties":{`+
+				`"target":{"type":"object","description":"Where to deploy","properties":{"host":{"type":"string","description":"Host name"},"port":{"type":"integer"},"tls":{"type":"object","properties":{"on":{"type":"boolean"}}},"a.b":{"type":"string"},"hops":{"type":"array","items":{"type":"object"}}},"required":["host"]},`+
+				`"backup":{"type":["object","null"],"properties":{"host":{"type":"string"}},"required":["host"]},`+
+				`"limits":{"type":"object","additionalProperties":{"type":"integer"}},`+
+				`"switches":{"type":"object","additionalProperties":{"type":"boolean"}},`+
+				`"extra":{"type":"object","additionalProperties":{"type":"object"}}},`+
+				`"required":["target"]}`),
+			func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
+				return agenttool.Text(string(call.Args)), nil
+			}),
 		agenttool.NewFunc("nullschema", "Parameters of null.", json.RawMessage("null"),
 			func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
 				return agenttool.Text("ok"), nil
@@ -247,6 +260,22 @@ func TestRun(t *testing.T) {
 		{name: "a parameter named help is a flag", args: []string{"helpful", "--help", "yes"}, stdout: "help=yes\n"},
 		{name: "file parts", args: []string{"files"}, stdout: "https://example.com/f.pdf\nfile_id: f_1\nnot base64!\n"},
 		{name: "record file that cannot open", args: []string{"--record", "/", "ping"}, code: cli.ExitUsage, stderrHas: "--record"},
+		{name: "fields as flags", args: []string{"deploy", "--target.host", "O'Brien", "--target.port", "80", "--target.tls.on"}, stdoutJSON: `{"target":{"host":"O'Brien","port":80,"tls":{"on":true}}}`},
+		{name: "a nullable object's fields", args: []string{"deploy", "--target.host", "a", "--backup.host", "b"}, stdoutJSON: `{"target":{"host":"a"},"backup":{"host":"b"}}`},
+		{name: "map entries", args: []string{"deploy", "--target.host", "a", "--limits", "cpu=2", "--limits", "mem=4", "--switches", "dry=true"}, stdoutJSON: `{"target":{"host":"a"},"limits":{"cpu":2,"mem":4},"switches":{"dry":true}}`},
+		{name: "a map value with an equals sign", args: []string{"deploy", "--switches", "a=b=true"}, code: cli.ExitUsage, stderrHas: `"b=true" is not true or false`},
+		{name: "a map entry of the wrong type", args: []string{"deploy", "--limits", "cpu=lots"}, code: cli.ExitUsage, stderrHas: `"lots" is not an integer`},
+		{name: "a map entry without a key", args: []string{"deploy", "--limits", "=2"}, code: cli.ExitUsage, stderrHas: "is not key=value"},
+		{name: "a map entry without a value", args: []string{"deploy", "--limits", "cpu"}, code: cli.ExitUsage, stderrHas: "is not key=value"},
+		{name: "a map key twice", args: []string{"deploy", "--limits", "cpu=1", "--limits", "cpu=2"}, code: cli.ExitUsage, stderrHas: `gives the key "cpu" twice`},
+		{name: "a field given twice", args: []string{"deploy", "--target.host", "a", "--target.host", "b"}, code: cli.ExitUsage, stderrHas: "given more than once"},
+		{name: "flags add to the JSON", args: []string{"deploy", "--target.port", "80", "--limits", "cpu=2", `{"target":{"host":"h","a.b":"x"},"limits":{"mem":4}}`}, stdoutJSON: `{"target":{"host":"h","a.b":"x","port":80},"limits":{"cpu":2,"mem":4}}`},
+		{name: "a field in both", args: []string{"deploy", "--target.host", "a", `{"target":{"host":"h"}}`}, code: cli.ExitUsage, stderrHas: `--target.host and the JSON argument both give "target.host"`},
+		{name: "a map key in both", args: []string{"deploy", "--limits", "cpu=2", `{"target":{"host":"h"},"limits":{"cpu":1}}`}, code: cli.ExitUsage, stderrHas: `--limits and the JSON argument both give "limits.cpu"`},
+		{name: "a field under a value that is not an object", args: []string{"deploy", "--target.host", "a", `{"target":"h"}`}, code: cli.ExitUsage, stderrHas: `the JSON argument gives "target", which is not an object`},
+		{name: "a field under null", args: []string{"deploy", "--backup.host", "a", `{"target":{"host":"h"},"backup":null}`}, code: cli.ExitUsage, stderrHas: `"backup", which is not an object`},
+		{name: "a field whose name holds a dot has no flag", args: []string{"deploy", "--target.a.b", "x"}, code: cli.ExitUsage, stderrHas: "flag provided but not defined"},
+		{name: "a map of objects has no flag", args: []string{"deploy", "--extra", "a=b"}, code: cli.ExitUsage, stderrHas: "flag provided but not defined"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
