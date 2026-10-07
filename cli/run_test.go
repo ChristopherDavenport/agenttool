@@ -210,6 +210,7 @@ func TestRun(t *testing.T) {
 		{name: "scalar given twice", args: []string{"read_file", "--path", "/a", "--path", "/b"}, code: cli.ExitUsage, stderrHas: "given more than once"},
 		{name: "JSON not an object", args: []string{"read_file", `["x"]`}, code: cli.ExitUsage, stderrHas: "not a JSON object"},
 		{name: "two positionals", args: []string{"read_file", "{}", "{}"}, code: cli.ExitUsage, stderrHas: "one JSON argument at most"},
+		{name: "JSON split by a quote", args: []string{"read_file", `{"path": "Its`, `here"}`}, code: cli.ExitUsage, stderrHas: `as 2 words: a single quote inside the single quotes ended them`},
 		{name: "unknown command", args: []string{"nope"}, code: cli.ExitUsage, stderrHas: `unknown command "nope"`},
 		{name: "no command", args: nil, code: cli.ExitUsage, stderrHas: "## Commands"},
 		{name: "unknown option", args: []string{"--bogus", "ping"}, code: cli.ExitUsage, stderrHas: "-bogus"},

@@ -241,6 +241,12 @@ func (r Runner) parse(c Command, args []string) (json.RawMessage, bool, error) {
 			return nil, false, errors.New("the JSON argument is not a JSON object")
 		}
 	default:
+		// A single quote inside a single-quoted object ends the quoting,
+		// and the shell splits the object into words. Saying so is what
+		// lets the caller fix the call rather than mangle the value.
+		if strings.HasPrefix(rest[0], "{") && !json.Valid([]byte(rest[0])) {
+			return nil, false, fmt.Errorf("the JSON argument reached the program as %d words: a single quote inside the single quotes ended them, and the shell split the rest. Give JSON that holds a single quote on stdin in a quoted heredoc instead: %s %s - <<'EOF'", len(rest), r.Name, c.Name)
+		}
 		return nil, false, fmt.Errorf("one JSON argument at most, after the flags; got %q", rest)
 	}
 
