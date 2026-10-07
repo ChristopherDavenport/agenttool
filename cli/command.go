@@ -52,7 +52,8 @@ type Command struct {
 	Schema json.RawMessage
 }
 
-// Param is one top-level property of a tool's arguments.
+// Param is one property of a tool's arguments: a top-level one, or a
+// field of an object that is one.
 type Param struct {
 	Name        string
 	Description string
@@ -62,22 +63,35 @@ type Param struct {
 	Type string
 	// Items is the type of an array's elements, read as Type is; empty
 	// for anything but an array.
-	Items    string
+	Items string
+	// Fields are the properties of an object that declares them, read
+	// as the top-level ones are, in schema order; nil for anything else.
+	// Each field with a flag has one of its own, named by its path from
+	// the top: --name.field.
+	Fields []Param
+	// Values is the type of a map's values, read as Type is: an object
+	// that declares additionalProperties and no properties. Empty for
+	// anything else.
+	Values string
+	// Required is whether the object that holds the property requires
+	// it.
 	Required bool
 	Enum     []any
 }
 
-// Flag reports whether the parameter has a flag: a string, integer,
-// number or boolean has one, and an array of them has one that repeats.
-// Anything else, an object, a map, an array of objects or a value of
-// any type, arrives only in the JSON argument, as does a property whose
-// name a flag cannot carry: empty, starting with a dash, or holding an
-// equals sign.
+// Flag reports whether the parameter has a flag of its own: a string,
+// integer, number or boolean has one, an array of them has one that
+// repeats, and a map of them has one given once per entry, as
+// key=value. An object with fields has none of its own, and its fields
+// may have theirs; see [Param.Fields]. Anything else, an array of
+// objects or a value of any type, arrives only in the JSON argument, as
+// does a property whose name a flag cannot carry: empty, starting with
+// a dash, or holding an equals sign.
 func (p Param) Flag() bool {
-	if p.Name == "" || strings.HasPrefix(p.Name, "-") || strings.Contains(p.Name, "=") {
+	if !flagName(p.Name) {
 		return false
 	}
-	return scalar(p.Type) || p.Repeated()
+	return scalar(p.Type) || p.Repeated() || p.Map()
 }
 
 // Repeated reports whether the parameter's flag is given once per
@@ -86,13 +100,99 @@ func (p Param) Repeated() bool {
 	return p.Type == "array" && scalar(p.Items)
 }
 
+// Map reports whether the parameter is a map whose flag is given once
+// per entry, as key=value.
+func (p Param) Map() bool {
+	return p.Type == "object" && len(p.Fields) == 0 && scalar(p.Values)
+}
+
 // value is the type of one flag value: the parameter's, or its
-// elements' when it repeats.
+// elements' when it repeats, or its values' when it is a map.
 func (p Param) value() string {
-	if p.Repeated() {
+	switch {
+	case p.Repeated():
 		return p.Items
+	case p.Map():
+		return p.Values
 	}
 	return p.Type
+}
+
+func flagName(name string) bool {
+	return name != "" && !strings.HasPrefix(name, "-") && !strings.Contains(name, "=")
+}
+
+// nests reports whether the parameter's fields have flags named by
+// their path through it, which a name holding the separator would make
+// ambiguous.
+func (p Param) nests() bool {
+	return len(p.Fields) > 0 && flagName(p.Name) && !strings.Contains(p.Name, ".")
+}
+
+// flagSpec is one flag of a command: a parameter or a field, and the
+// path of names from the top that is the flag's name.
+type flagSpec struct {
+	path  []string
+	param Param
+	// required is whether the arguments must give the flag's value:
+	// the parameter and every object holding it are required.
+	required bool
+}
+
+// flagsOf lists the flags of params in schema order, each object's
+// fields where the object stands. A name already listed is skipped, so
+// a top-level property spelled as a field's path keeps its flag.
+func flagsOf(params []Param) []flagSpec {
+	var out []flagSpec
+	seen := map[string]bool{}
+	var walk func(prefix []string, p Param, required bool)
+	walk = func(prefix []string, p Param, required bool) {
+		path := append(append([]string(nil), prefix...), p.Name)
+		required = required && p.Required
+		switch {
+		case p.flagAt(prefix):
+			if name := strings.Join(path, "."); !seen[name] {
+				seen[name] = true
+				out = append(out, flagSpec{path: path, param: p, required: required})
+			}
+		case p.nests():
+			for _, f := range p.Fields {
+				walk(path, f, required)
+			}
+		}
+	}
+	for _, p := range params {
+		walk(nil, p, true)
+	}
+	return out
+}
+
+// flagAt reports whether the parameter, under the path prefix, has a
+// flag of its own: a field's name may not hold the separator.
+func (p Param) flagAt(prefix []string) bool {
+	return p.Flag() && (len(prefix) == 0 || !strings.Contains(p.Name, "."))
+}
+
+// needsJSON reports whether some value of the parameter, under prefix,
+// can be given only in the JSON argument; requiredOnly asks the same of
+// a value the arguments must give.
+func (p Param) needsJSON(prefix []string, requiredOnly bool) bool {
+	if requiredOnly && !p.Required {
+		return false
+	}
+	switch {
+	case p.flagAt(prefix):
+		return false
+	case p.nests():
+		path := append(append([]string(nil), prefix...), p.Name)
+		for _, f := range p.Fields {
+			if f.needsJSON(path, requiredOnly) {
+				return true
+			}
+		}
+		return false
+	}
+	return true
 }
 
 func scalar(typ string) bool {
@@ -159,6 +259,12 @@ func paramsOf(schema json.RawMessage) []Param {
 	if json.Unmarshal(schema, &root) != nil {
 		return nil
 	}
+	return propertiesOf(root)
+}
+
+// propertiesOf reads the properties of an object schema, and of each
+// object among them, in the order written.
+func propertiesOf(root map[string]json.RawMessage) []Param {
 	var required []string
 	_ = json.Unmarshal(root["required"], &required)
 	isRequired := make(map[string]bool, len(required))
@@ -181,6 +287,13 @@ func paramsOf(schema json.RawMessage) []Param {
 			var items map[string]json.RawMessage
 			if p.Type == "array" && json.Unmarshal(n["items"], &items) == nil {
 				p.Items = typeOf(items["type"])
+			}
+			if p.Type == "object" {
+				p.Fields = propertiesOf(n)
+				var values map[string]json.RawMessage
+				if len(p.Fields) == 0 && json.Unmarshal(n["additionalProperties"], &values) == nil {
+					p.Values = typeOf(values["type"])
+				}
 			}
 		}
 		params = append(params, p)

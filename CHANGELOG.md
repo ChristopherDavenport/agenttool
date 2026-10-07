@@ -14,6 +14,15 @@ versions may break the API.
   holds a brace followed by a quote, as every JSON object's does, even
   for a command a skill's `allowed-tools` pre-approves. The parser
   is unchanged.
+- Added: `cli` gives a field of an object a flag named by its path,
+  `--target.host`, and a map of scalars a flag given once per entry,
+  `--limits cpu=2`, so that most calls need no JSON argument. The usage
+  leads with flags, double-quoted when a value holds a space, a single
+  quote or a line break, and keeps the JSON argument for what no flag
+  can give. Flags now add to the JSON argument, down to one
+  field or map key, and a value both give is an error. `Param` gains
+  `Fields`, `Values` and `Map`. A field whose name holds a dot, and a
+  map of anything but scalars, stays JSON only.
 - Changed: a JSON argument the shell split into words, as a single
   quote inside single quotes does, is reported as that, with the
   heredoc to use instead, rather than as more than one JSON argument.

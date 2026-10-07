@@ -1,16 +1,26 @@
 ## Calling `kit`
 
-Run one command per call. A command takes its arguments as flags, as one JSON object, or both:
+Run one command per call. A command takes its arguments as flags, as one JSON object, or both. Use flags wherever the command has them:
 
 ```sh
-kit <command> --name value
-kit <command> '{"name": "value"}'
-kit <command> - <<'EOF'
-{"name": "it's"}
-EOF
+kit <command> --name "it's two words" --object.field value --map "key=O'Brien"
 ```
 
-Give a JSON argument in single quotes on one line, as the second form does: the shell passes single-quoted text to the command unchanged. A single quote inside would end the quoting, so JSON that holds one goes on stdin in a quoted heredoc instead, as the last form does. Write a newline inside a JSON string as `\n`. Flags go before the JSON argument, and a property is given once, as a flag or in the JSON. A boolean flag stands alone for true, or takes `=false`.
+A field of an object is a flag named by its path, `--object.field`, and an entry of a map is `--map key=value`, given once per entry. Put a value in double quotes whenever it holds a space, a single quote or a line break, a map entry's included, and escape `\"`, `\$`, `` \` `` and `\\` inside them. Type a line break as a line break inside the quotes: `\n` there is a backslash and an n. A boolean flag stands alone for true, or takes `=false`.
+
+A value no flag can give, such as an array of objects, goes in a JSON argument after the flags, which adds to them: each value is given once, as a flag or in the JSON. Give it in single quotes on one line, writing a newline inside a string as `\n`:
+
+```sh
+kit <command> --name value '{"items": [{"name": "value"}]}'
+```
+
+Only when the JSON holds a single quote, which would end the quoting, give it on stdin in a quoted heredoc instead:
+
+```sh
+kit <command> - <<'EOF'
+{"items": [{"name": "it's"}]}
+EOF
+```
 
 The exit status says what happened:
 
@@ -44,14 +54,14 @@ Second line.
 Hints from the tool: may be destructive; reaches outside systems.
 
 ```sh
-kit tag --tags <string> ... [--level <string>] [--verbose] [--ratio <number>] [<json> | -]
+kit tag --tags <string> ... [--level <string>] [--verbose] [--ratio <number>] [--labels <key>=<string> ...] [<json> | -]
 ```
 
 - `--tags` (array of string, repeatable, required): Tags to set
 - `--level` (string). One of `"low"`, `"high"`
 - `--verbose` (boolean)
 - `--ratio` (number)
-- `labels` (object, JSON only): Labels by key
+- `--labels` (map of string, repeatable): Labels by key
 - `items` (array of object, JSON only)
 
 ### `ping`
@@ -151,6 +161,27 @@ Return files.
 ```sh
 kit files
 ```
+
+### `deploy`
+
+Deploy somewhere.
+
+```sh
+kit deploy --target.host <string> [--target.port <integer>] [--target.tls.on] [--backup.host <string>] [--limits <key>=<integer> ...] [--switches <key>=<boolean> ...] [<json> | -]
+```
+
+- `target` (object, required): Where to deploy
+  - `--target.host` (string, required): Host name
+  - `--target.port` (integer)
+  - `target.tls` (object)
+    - `--target.tls.on` (boolean)
+  - `target.a.b` (string, JSON only)
+  - `target.hops` (array of object, JSON only)
+- `backup` (object)
+  - `--backup.host` (string, required)
+- `--limits` (map of integer, repeatable)
+- `--switches` (map of boolean, repeatable)
+- `extra` (map of object, JSON only)
 
 ### `nullschema`
 

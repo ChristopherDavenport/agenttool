@@ -38,15 +38,21 @@ func Markdown(program string, cmds []Command) string {
 // intact, which one the model mangles to get past a refusal does not.
 func writeCalling(b *strings.Builder, program string) {
 	fmt.Fprintf(b, "## Calling `%s`\n\n", program)
-	fmt.Fprintf(b, "Run one command per call. A command takes its arguments as flags, as one JSON object, or both:\n\n")
+	fmt.Fprintf(b, "Run one command per call. A command takes its arguments as flags, as one JSON object, or both. Use flags wherever the command has them:\n\n")
 	fmt.Fprintf(b, "```sh\n")
-	fmt.Fprintf(b, "%s <command> --name value\n", program)
-	fmt.Fprintf(b, "%s <command> '{\"name\": \"value\"}'\n", program)
+	fmt.Fprintf(b, "%s <command> --name \"it's two words\" --object.field value --map \"key=O'Brien\"\n", program)
+	fmt.Fprintf(b, "```\n\n")
+	fmt.Fprintf(b, "A field of an object is a flag named by its path, `--object.field`, and an entry of a map is `--map key=value`, given once per entry. Put a value in double quotes whenever it holds a space, a single quote or a line break, a map entry's included, and escape `\\\"`, `\\$`, `` \\` `` and `\\\\` inside them. Type a line break as a line break inside the quotes: `\\n` there is a backslash and an n. A boolean flag stands alone for true, or takes `=false`.\n\n")
+	fmt.Fprintf(b, "A value no flag can give, such as an array of objects, goes in a JSON argument after the flags, which adds to them: each value is given once, as a flag or in the JSON. Give it in single quotes on one line, writing a newline inside a string as `\\n`:\n\n")
+	fmt.Fprintf(b, "```sh\n")
+	fmt.Fprintf(b, "%s <command> --name value '{\"items\": [{\"name\": \"value\"}]}'\n", program)
+	fmt.Fprintf(b, "```\n\n")
+	fmt.Fprintf(b, "Only when the JSON holds a single quote, which would end the quoting, give it on stdin in a quoted heredoc instead:\n\n")
+	fmt.Fprintf(b, "```sh\n")
 	fmt.Fprintf(b, "%s <command> - <<'EOF'\n", program)
-	fmt.Fprintf(b, "{\"name\": \"it's\"}\n")
+	fmt.Fprintf(b, "{\"items\": [{\"name\": \"it's\"}]}\n")
 	fmt.Fprintf(b, "EOF\n")
 	fmt.Fprintf(b, "```\n\n")
-	fmt.Fprintf(b, "Give a JSON argument in single quotes on one line, as the second form does: the shell passes single-quoted text to the command unchanged. A single quote inside would end the quoting, so JSON that holds one goes on stdin in a quoted heredoc instead, as the last form does. Write a newline inside a JSON string as `\\n`. Flags go before the JSON argument, and a property is given once, as a flag or in the JSON. A boolean flag stands alone for true, or takes `=false`.\n\n")
 	fmt.Fprintf(b, "The exit status says what happened:\n\n")
 	fmt.Fprintf(b, "- 0: the command succeeded, and its output is on stdout. If stderr says the output could not be written, the command still ran: do not run it again for that.\n")
 	fmt.Fprintf(b, "- 1: the tool failed or refused the arguments, and says why on stderr. Correct the call and run it again.\n")
@@ -76,7 +82,7 @@ func writeCommand(b *strings.Builder, program string, c Command) {
 	}
 	b.WriteString("\n")
 	for _, p := range c.Params {
-		fmt.Fprintf(b, "- %s\n", paramLine(p))
+		writeParam(b, p, nil, "")
 	}
 }
 
@@ -96,27 +102,32 @@ func writeIndex(b *strings.Builder, cmds []Command) {
 
 // synopsis is the command line with every flag: required ones bare,
 // optional ones in brackets, repeated ones with an ellipsis, and the
-// JSON argument when a parameter has no flag.
+// JSON argument when a value has no flag.
 func synopsis(program string, c Command) string {
 	parts := []string{program, c.Name}
-	jsonOnly, jsonRequired := false, false
-	for _, p := range c.Params {
-		if !p.Flag() {
-			jsonOnly = true
-			jsonRequired = jsonRequired || p.Required
-			continue
-		}
-		f := fmt.Sprintf("--%s <%s>", p.Name, p.value())
-		if p.value() == "boolean" {
-			f = "--" + p.Name
+	for _, f := range flagsOf(c.Params) {
+		name, p := strings.Join(f.path, "."), f.param
+		var u string
+		switch {
+		case p.Map():
+			u = fmt.Sprintf("--%s <key>=<%s> ...", name, p.Values)
+		case p.value() == "boolean":
+			u = "--" + name
+		default:
+			u = fmt.Sprintf("--%s <%s>", name, p.value())
 		}
 		if p.Repeated() {
-			f += " ..."
+			u += " ..."
 		}
-		if !p.Required {
-			f = "[" + f + "]"
+		if !f.required {
+			u = "[" + u + "]"
 		}
-		parts = append(parts, f)
+		parts = append(parts, u)
+	}
+	jsonOnly, jsonRequired := false, false
+	for _, p := range c.Params {
+		jsonOnly = jsonOnly || p.needsJSON(nil, false)
+		jsonRequired = jsonRequired || p.needsJSON(nil, true)
 	}
 	switch {
 	case jsonRequired:
@@ -127,14 +138,28 @@ func synopsis(program string, c Command) string {
 	return strings.Join(parts, " ")
 }
 
-// paramLine is one parameter: its flag or JSON name, its type, whether
+// writeParam writes one parameter's line, under the path prefix, and
+// below it a line for each field of an object whose fields have flags.
+func writeParam(b *strings.Builder, p Param, prefix []string, indent string) {
+	fmt.Fprintf(b, "%s- %s\n", indent, paramLine(p, prefix))
+	if p.nests() {
+		path := append(append([]string(nil), prefix...), p.Name)
+		for _, f := range p.Fields {
+			writeParam(b, f, path, indent+"  ")
+		}
+	}
+}
+
+// paramLine is one parameter: its flag or JSON path, its type, whether
 // it is required, its description and its enum.
-func paramLine(p Param) string {
+func paramLine(p Param, prefix []string) string {
 	var b strings.Builder
-	if p.Flag() {
-		fmt.Fprintf(&b, "`--%s`", p.Name)
+	name := strings.Join(append(append([]string(nil), prefix...), p.Name), ".")
+	flag := p.flagAt(prefix)
+	if flag {
+		fmt.Fprintf(&b, "`--%s`", name)
 	} else {
-		fmt.Fprintf(&b, "`%s`", p.Name)
+		fmt.Fprintf(&b, "`%s`", name)
 	}
 	var facts []string
 	switch {
@@ -142,16 +167,18 @@ func paramLine(p Param) string {
 		facts = append(facts, "any JSON value")
 	case p.Type == "array" && p.Items != "":
 		facts = append(facts, "array of "+p.Items)
+	case p.Type == "object" && p.Values != "":
+		facts = append(facts, "map of "+p.Values)
 	default:
 		facts = append(facts, p.Type)
 	}
-	if p.Repeated() {
+	if flag && (p.Repeated() || p.Map()) {
 		facts = append(facts, "repeatable")
 	}
 	if p.Required {
 		facts = append(facts, "required")
 	}
-	if !p.Flag() {
+	if !flag && !p.nests() {
 		facts = append(facts, "JSON only")
 	}
 	fmt.Fprintf(&b, " (%s)", strings.Join(facts, ", "))

@@ -474,8 +474,11 @@ file-tools help read_file
 ```
 
 A parameter of a scalar type is a flag of its own name, and an array of
-scalars a flag that repeats. Anything else arrives in a JSON argument,
-which can also carry the whole object, inline or on stdin. The tool
+scalars a flag that repeats. A field of an object is a flag named by its
+path, `--target.host`, and a map of scalars takes `--limits cpu=2` once
+per entry. Anything else, such as an array of objects, arrives in a JSON
+argument, which can also carry the whole object, inline or on stdin.
+Flags add to the JSON argument, and a value given by both is an error. The tool
 validates its arguments as it does in process, so the model reads the
 same error either way. A tool from `New` checks them against its
 schema. One from `NewFunc` checks what its function checks, where

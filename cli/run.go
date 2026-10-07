@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -206,12 +207,9 @@ func (r Runner) parse(c Command, args []string) (json.RawMessage, bool, error) {
 	fs := flag.NewFlagSet(c.Name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var given []*value
-	for _, p := range c.Params {
-		if !p.Flag() {
-			continue
-		}
-		v := &value{param: p}
-		fs.Var(v, p.Name, "")
+	for _, f := range flagsOf(c.Params) {
+		v := &value{param: f.param, path: f.path}
+		fs.Var(v, v.name(), "")
 		given = append(given, v)
 	}
 	if err := fs.Parse(args); err != nil {
@@ -252,22 +250,15 @@ func (r Runner) parse(c Command, args []string) (json.RawMessage, bool, error) {
 
 	flagged := false
 	for _, v := range given {
-		if len(v.raw) == 0 {
-			continue
+		entries, err := v.entries()
+		if err != nil {
+			return nil, false, err
 		}
-		flagged = true
-		name := v.param.Name
-		if _, ok := obj[name]; ok {
-			return nil, false, fmt.Errorf("--%s and the JSON argument both give %q", name, name)
-		}
-		if v.param.Repeated() {
-			data, err := json.Marshal(v.raw)
-			if err != nil {
+		for _, e := range entries {
+			flagged = true
+			if err := put(obj, e.path, e.data, v.name(), nil); err != nil {
 				return nil, false, err
 			}
-			obj[name] = data
-		} else {
-			obj[name] = v.raw[0]
 		}
 	}
 	if !flagged && text != nil {
@@ -306,17 +297,70 @@ func checkObject(text []byte) error {
 	return nil
 }
 
-// value is one parameter's flag. Each value given is converted by the
-// parameter's type as it is parsed, so a wrong one is reported against
-// its flag.
+// put sets data at path in obj, the arguments object, descending
+// through the objects on the way and making those it does not give. A
+// value the JSON argument gives already is an error, as is a path
+// through one that is not an object, so that a flag adds to the JSON
+// and never replaces any of it. flag names the flag in the error, and
+// done is the part of the path walked.
+func put(obj map[string]json.RawMessage, path []string, data json.RawMessage, flag string, done []string) error {
+	name := path[0]
+	done = append(done, name)
+	if len(path) == 1 {
+		if _, ok := obj[name]; ok {
+			return fmt.Errorf("--%s and the JSON argument both give %q", flag, strings.Join(done, "."))
+		}
+		obj[name] = data
+		return nil
+	}
+	child := map[string]json.RawMessage{}
+	if raw, ok := obj[name]; ok {
+		if t := bytes.TrimSpace(raw); len(t) == 0 || t[0] != '{' || json.Unmarshal(t, &child) != nil {
+			return fmt.Errorf("--%s: the JSON argument gives %q, which is not an object", flag, strings.Join(done, "."))
+		}
+	}
+	if err := put(child, path[1:], data, flag, done); err != nil {
+		return err
+	}
+	merged, err := json.Marshal(child)
+	if err != nil {
+		return err
+	}
+	obj[name] = merged
+	return nil
+}
+
+// value is one flag: a parameter's or a field's. Each value given is
+// converted by the parameter's type as it is parsed, so a wrong one is
+// reported against its flag.
 type value struct {
 	param Param
+	path  []string
 	raw   []json.RawMessage
+	keys  []string // a map's, one per raw
 }
+
+func (v *value) name() string { return strings.Join(v.path, ".") }
 
 func (v *value) String() string { return "" }
 
 func (v *value) Set(s string) error {
+	if v.param.Map() {
+		key, val, ok := strings.Cut(s, "=")
+		if !ok || key == "" {
+			return fmt.Errorf("%q is not key=value", s)
+		}
+		if slices.Contains(v.keys, key) {
+			return fmt.Errorf("gives the key %q twice", key)
+		}
+		data, err := convert(v.param.Values, val)
+		if err != nil {
+			return err
+		}
+		v.keys = append(v.keys, key)
+		v.raw = append(v.raw, data)
+		return nil
+	}
 	if len(v.raw) > 0 && !v.param.Repeated() {
 		return errors.New("given more than once")
 	}
@@ -329,9 +373,40 @@ func (v *value) Set(s string) error {
 }
 
 // IsBoolFlag lets a boolean flag stand alone, --verbose for
-// --verbose=true, as the flag package allows; a repeated one too.
+// --verbose=true, as the flag package allows; a repeated one too. A
+// map of booleans takes key=value like any other map.
 func (v *value) IsBoolFlag() bool {
-	return v.param.value() == "boolean"
+	return v.param.value() == "boolean" && !v.param.Map()
+}
+
+// entry is one value a flag puts in the arguments, at its path.
+type entry struct {
+	path []string
+	data json.RawMessage
+}
+
+// entries are what the flag puts in the arguments: nothing when it was
+// not given, a value at its path, an array of what it was given when it
+// repeats, or one value under each key of a map, so that the JSON
+// argument may give the map's other keys.
+func (v *value) entries() ([]entry, error) {
+	switch {
+	case len(v.raw) == 0:
+		return nil, nil
+	case v.param.Map():
+		out := make([]entry, len(v.raw))
+		for i, data := range v.raw {
+			out[i] = entry{path: append(slices.Clone(v.path), v.keys[i]), data: data}
+		}
+		return out, nil
+	case v.param.Repeated():
+		data, err := json.Marshal(v.raw)
+		if err != nil {
+			return nil, err
+		}
+		return []entry{{path: v.path, data: data}}, nil
+	}
+	return []entry{{path: v.path, data: v.raw[0]}}, nil
 }
 
 // answerList is the --answer option: each one an [agenttool.Answer],
