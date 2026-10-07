@@ -5,7 +5,7 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
-## Unreleased
+## v0.0.17 - 2026-10-07
 
 - Changed: `cli.Markdown` teaches the JSON argument single-quoted on
   one line, and the quoted heredoc on stdin only for JSON that holds a
