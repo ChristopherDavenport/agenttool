@@ -59,6 +59,9 @@ type question struct {
 	schema *jsonschema.Resolved
 }
 
+// noFields is the schema of a form that asks for nothing.
+var noFields = json.RawMessage(`{"type":"object","properties":{}}`)
+
 // questionOf maps a tool's elicitation to MCP's: a URL makes it a URL
 // question, and anything else is a form.
 func questionOf(q agenttool.Elicitation) (question, error) {
@@ -70,6 +73,10 @@ func questionOf(q agenttool.Elicitation) (question, error) {
 	}
 	p.Mode = "form"
 	if len(q.Schema) == 0 {
+		// A question with no fields is a confirmation, which MCP asks as
+		// a form with none. The schema is required in form mode, and a
+		// client may refuse a form without one: Claude Code does.
+		p.RequestedSchema = noFields
 		return question{params: p}, nil
 	}
 	var schema jsonschema.Schema

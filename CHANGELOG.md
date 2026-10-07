@@ -5,6 +5,14 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Fixed: `mcpserver` sends a question with no fields, a confirmation,
+  as a form with an empty `requestedSchema`. It sent none, which MCP
+  requires in form mode, and Claude Code refused the request as
+  invalid, so a tool that asked before acting failed there. The Go SDK
+  client accepted it, which is why the tests did not catch it.
+
 ## v0.0.17 - 2026-10-07
 
 - Changed: `cli.Markdown` teaches the JSON argument single-quoted on
