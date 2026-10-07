@@ -187,6 +187,55 @@ func TestElicitationOlderClient(t *testing.T) {
 	}
 }
 
+// TestElicitationConfirmationHasASchema: a question with no fields is
+// sent as a form whose schema asks for nothing, since MCP requires the
+// schema in form mode and Claude Code refuses a form without one. It
+// holds for the round trip and for an older client asked directly.
+func TestElicitationConfirmationHasASchema(t *testing.T) {
+	yes := agenttool.Elicitation{Message: "delete it?"}
+	var sent any
+	cs := rawClient(t, newServer(t, "deployer", asker(yes)), &sdk.ClientOptions{
+		ElicitationHandler: func(_ context.Context, req *sdk.ElicitRequest) (*sdk.ElicitResult, error) {
+			sent = req.Params.RequestedSchema
+			return &sdk.ElicitResult{Action: "accept"}, nil
+		},
+	}, &sdk.ClientSessionOptions{ProtocolVersion: "2025-11-25"})
+	res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: "deploy"})
+	if err != nil || text(res) != "accept " {
+		t.Fatalf("res = %q, err = %v", text(res), err)
+	}
+	if !emptyForm(sent) {
+		t.Errorf("an older client was sent the schema %#v", sent)
+	}
+
+	_, first := manual(t, asker(yes))
+	data, err := json.Marshal(first.InputRequests[only(first)])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var params struct {
+		RequestedSchema any `json:"requestedSchema"`
+	}
+	if err := json.Unmarshal(data, &params); err != nil || !emptyForm(params.RequestedSchema) {
+		t.Errorf("the round trip asked %s; want a form with an empty schema", data)
+	}
+}
+
+// emptyForm reports whether schema is an object schema with no
+// properties, however it was decoded.
+func emptyForm(schema any) bool {
+	data, err := json.Marshal(schema)
+	if err != nil {
+		return false
+	}
+	var s map[string]any
+	if json.Unmarshal(data, &s) != nil || s["type"] != "object" || len(s) != 2 {
+		return false
+	}
+	props, ok := s["properties"].(map[string]any)
+	return ok && len(props) == 0
+}
+
 // TestElicitationNotOffered: a client that offers no elicitation is
 // asked nothing, and the tool finds nobody to ask, as before.
 func TestElicitationNotOffered(t *testing.T) {
