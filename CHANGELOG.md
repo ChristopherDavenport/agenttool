@@ -5,6 +5,19 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Changed: `cli.Markdown` teaches the JSON argument single-quoted on
+  one line, and the quoted heredoc on stdin only for JSON that holds a
+  single quote. It taught the heredoc for any value with quotes,
+  newlines or nesting, but Claude Code asks about a heredoc whose body
+  holds a brace followed by a quote, as every JSON object's does, even
+  for a command a skill's `allowed-tools` pre-approves. The parser
+  is unchanged.
+- Changed: a JSON argument the shell split into words, as a single
+  quote inside single quotes does, is reported as that, with the
+  heredoc to use instead, rather than as more than one JSON argument.
+
 ## v0.0.16 - 2026-10-06
 
 - `cli` runs the tools of a `Set` as the commands of one program, for a

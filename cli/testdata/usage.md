@@ -6,11 +6,11 @@ Run one command per call. A command takes its arguments as flags, as one JSON ob
 kit <command> --name value
 kit <command> '{"name": "value"}'
 kit <command> - <<'EOF'
-{"name": "value"}
+{"name": "it's"}
 EOF
 ```
 
-Use the last form for any value with quotes, newlines or nesting: a quoted heredoc reaches the command untouched by the shell. Flags go before the JSON argument, and a property is given once, as a flag or in the JSON. A boolean flag stands alone for true, or takes `=false`.
+Give a JSON argument in single quotes on one line, as the second form does: the shell passes single-quoted text to the command unchanged. A single quote inside would end the quoting, so JSON that holds one goes on stdin in a quoted heredoc instead, as the last form does. Write a newline inside a JSON string as `\n`. Flags go before the JSON argument, and a property is given once, as a flag or in the JSON. A boolean flag stands alone for true, or takes `=false`.
 
 The exit status says what happened:
 

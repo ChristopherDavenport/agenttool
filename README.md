@@ -466,8 +466,9 @@ func main() {
 
 ```sh
 file-tools read_file --path go.mod
+file-tools read_file '{"path": "go.mod"}'
 file-tools read_file - <<'EOF'
-{"path": "go.mod"}
+{"path": "it's.txt"}
 EOF
 file-tools help read_file
 ```
@@ -493,7 +494,11 @@ as JSON lines.
 
 `cli.Markdown` renders how to call each command, from the same
 description the parser reads. A skill that teaches a model the program
-is that text under a frontmatter.
+is that text under a frontmatter. It teaches the JSON argument
+single-quoted on one line, and in a heredoc only when it holds a single
+quote. Claude Code asks about any heredoc whose body holds a brace
+followed by a quote, even for a command a rule allows, so the inline
+form is the one a pre-approved command runs without asking.
 
 What one call per process cannot keep is lost. `Resource` and
 `Sequential` order nothing between two processes, and a tool that holds

@@ -27,6 +27,15 @@ func Markdown(program string, cmds []Command) string {
 // writeCalling writes the part of the usage that is the same for every
 // command: the forms of a call, the exit status and how to answer a
 // question.
+//
+// The JSON argument is taught single-quoted on one line, and in a
+// heredoc only when it holds a single quote, which would end the
+// quoting. Claude Code asks about a heredoc whose body holds a brace
+// followed by a quote, as every JSON object's does, even when a rule
+// allows the command, so a skill that pre-approves a command is asked
+// about each call made that way. Models do not escape a single quote
+// as \u0027 when told to, and a call that is asked about arrives
+// intact, which one the model mangles to get past a refusal does not.
 func writeCalling(b *strings.Builder, program string) {
 	fmt.Fprintf(b, "## Calling `%s`\n\n", program)
 	fmt.Fprintf(b, "Run one command per call. A command takes its arguments as flags, as one JSON object, or both:\n\n")
@@ -34,10 +43,10 @@ func writeCalling(b *strings.Builder, program string) {
 	fmt.Fprintf(b, "%s <command> --name value\n", program)
 	fmt.Fprintf(b, "%s <command> '{\"name\": \"value\"}'\n", program)
 	fmt.Fprintf(b, "%s <command> - <<'EOF'\n", program)
-	fmt.Fprintf(b, "{\"name\": \"value\"}\n")
+	fmt.Fprintf(b, "{\"name\": \"it's\"}\n")
 	fmt.Fprintf(b, "EOF\n")
 	fmt.Fprintf(b, "```\n\n")
-	fmt.Fprintf(b, "Use the last form for any value with quotes, newlines or nesting: a quoted heredoc reaches the command untouched by the shell. Flags go before the JSON argument, and a property is given once, as a flag or in the JSON. A boolean flag stands alone for true, or takes `=false`.\n\n")
+	fmt.Fprintf(b, "Give a JSON argument in single quotes on one line, as the second form does: the shell passes single-quoted text to the command unchanged. A single quote inside would end the quoting, so JSON that holds one goes on stdin in a quoted heredoc instead, as the last form does. Write a newline inside a JSON string as `\\n`. Flags go before the JSON argument, and a property is given once, as a flag or in the JSON. A boolean flag stands alone for true, or takes `=false`.\n\n")
 	fmt.Fprintf(b, "The exit status says what happened:\n\n")
 	fmt.Fprintf(b, "- 0: the command succeeded, and its output is on stdout. If stderr says the output could not be written, the command still ran: do not run it again for that.\n")
 	fmt.Fprintf(b, "- 1: the tool failed or refused the arguments, and says why on stderr. Correct the call and run it again.\n")
