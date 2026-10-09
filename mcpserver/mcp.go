@@ -13,7 +13,11 @@
 //
 // No policy runs here. A loop's hooks around tool calls belong to
 // whoever hosts the loop, and this package hosts only tools; a caller
-// who wants a policy applies it to the tools before serving them.
+// who wants a policy applies it to the tools before serving them. What
+// a policy decides on crosses, though: a tool's facts and replay claims
+// are answered by [FactsMethod], and what MCP has no field for, those
+// claims' presence, read-only, sequential and resource, is in each
+// definition's _meta under [ToolMetaKey].
 //
 // One server serves many clients and one Tool value serves them all, so
 // the call's context carries the session it arrived on: a tool that
@@ -168,6 +172,16 @@ func (o Options) NewServer(name, version string, tools ...agenttool.Tool) (*sdk.
 // notification's progress, total and message, so a tool that mcpclient
 // consumed and this package serves again keeps its numbers; otherwise
 // updates are numbered in order with no total.
+//
+// The tools' claims are served too. The server answers [FactsMethod],
+// a model response's calls together, with each call's facts claim
+// ([agenttool.Factual]) and replay claim ([agenttool.Replayable]), and
+// advertises [FactsCapability] so that a client knows to ask. Answering
+// asks the claims and never runs a tool. The facts are asked under a
+// context that carries the session, as a call's does, so a tool that
+// keys its state on [SessionFrom] answers for the client that asked. A
+// server that has tools added by several calls answers for all of
+// them, the one added last for a name that was added twice.
 func AddTools(s *sdk.Server, tools ...agenttool.Tool) error {
 	return Options{}.AddTools(s, tools...)
 }
@@ -182,6 +196,9 @@ func (o Options) AddTools(s *sdk.Server, tools ...agenttool.Tool) error {
 		}
 		handlers = append(handlers, h)
 	}
+	if err := serveFacts(s, tools); err != nil {
+		return err
+	}
 	for i, tl := range tools {
 		s.AddTool(Definition(tl), handlers[i])
 	}
@@ -193,6 +210,15 @@ func (o Options) AddTools(s *sdk.Server, tools ...agenttool.Tool) error {
 // hint stated rather than left to MCP's defaults, so a tool consumed by
 // mcpclient and served again here keeps the hints it arrived with. A
 // tool that carries none serves none.
+//
+// The tool's properties MCP has no field for, whether it makes the
+// facts and replay claims, read-only, sequential and resource, go in
+// the definition's _meta under [ToolMetaKey], so that a client reads
+// them as the server's statement about the tool rather than as hints,
+// and asks [FactsMethod] only about the tools that claim. A tool with
+// none of them carries no entry. A server that adds a tool with
+// Definition and [Handler] rather than [AddTools] marks it but neither
+// answers [FactsMethod] nor advertises it, so a client asks nothing.
 func Definition(tl agenttool.Tool) *sdk.Tool {
 	schema := tl.Parameters()
 	if len(schema) == 0 {
@@ -209,6 +235,9 @@ func Definition(tl agenttool.Tool) *sdk.Tool {
 			IdempotentHint:  a.Idempotent,
 			OpenWorldHint:   &openWorld,
 		}
+	}
+	if m := toolMeta(tl); m != nil {
+		def.Meta = sdk.Meta{ToolMetaKey: m}
 	}
 	return def
 }

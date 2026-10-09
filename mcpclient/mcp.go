@@ -20,6 +20,21 @@
 // [RemoteRecord], so [agenttool.RecordOf] reads it here as it would in
 // process.
 //
+// A server that serves its tools with mcpserver says more than MCP has
+// fields for. Each listed tool's _meta under [ToolMetaKey] says whether
+// it is sequential and the shared state it names, which the local tool
+// declares, and whether it makes the facts and replay claims. The
+// claims are taken only from a server the host trusts, by
+// [WithClaims]: a claim is what a policy decides a call on, so a server
+// that lied about what its calls touch could steer the policy into
+// allowing them. With the option, and a server that advertises
+// [FactsCapability], a tool the server marks as claiming is
+// [agenttool.Factual], or [agenttool.Replayable], and answers by asking
+// the server with [FactsMethod] under the caller's context;
+// [Remote.Facts] asks about a model response's calls in one request.
+// Without either, the server is never asked and its tools make no
+// claim, as before.
+//
 // Tools returns a snapshot. The remote subscribes to the server's
 // tool-list-changed notification and refreshes it, so a loop that reads
 // its tool list each turn should call Tools then rather than hold the
@@ -95,6 +110,7 @@ type options struct {
 	clientOpts     sdk.ClientOptions
 	onRefreshError func(error)
 	elicitation    bool
+	claims         bool
 	// protocolVersion is the version the session offers, the SDK's
 	// latest when empty; tests set it to reach an older server's path.
 	protocolVersion string
@@ -198,8 +214,11 @@ func WithPrefix(prefix string) Option {
 }
 
 // WithSequential marks the named tools agenttool.Sequential. Names are
-// matched before and after prefixing, so either form works. Remote tools
-// are never sequential otherwise.
+// matched before and after prefixing, so either form works. A remote
+// tool is otherwise sequential only when its server says so under
+// [ToolMetaKey]. The option adds to what the server says and cannot
+// take it away: running alone is the safe mistake, and a host that
+// overrode it would run in parallel a tool its server says must not.
 func WithSequential(names ...string) Option {
 	return func(o *options) {
 		if o.sequential == nil {
@@ -218,7 +237,12 @@ func WithSequential(names ...string) Option {
 // of one server named in one call share the state. When several options
 // name a tool, in either form, the last one given wins. It is what a remote
 // shell or container session needs, since a remote tool names no
-// resource of its own: MCP has no field for one.
+// resource of its own: MCP has no field for one. A server that says
+// under [ToolMetaKey] which state a tool touches is taken at its word,
+// and this option wins over it, an empty resource withdrawing it: the
+// host sees every server it composes and the server sees only itself,
+// so the host is the one that can name state two servers share, or say
+// that two servers' "shell:session" are not the same shell.
 //
 //	mcpclient.WithResource("shell:session", "bash", "run_tests")
 func WithResource(resource string, names ...string) Option {
@@ -352,6 +376,25 @@ func WithElicitation() Option {
 	return func(o *options) { o.elicitation = true }
 }
 
+// WithClaims takes the server's facts and replay claims for its tools,
+// for a server the host trusts, such as an executor it started itself.
+// Without it the remote's tools make no claim even when the server
+// offers them, and are decided on their own names and arguments. A
+// claim is what a policy decides a call on, and trusts as far as it
+// trusts the tool, and the tool here is whatever the server runs: a
+// server that said its delete reads a harmless file could steer a
+// policy into allowing the delete, and one that said a call is safe to
+// run again could have it run twice. With it, a tool the server marks
+// as claiming, on a server that advertises [FactsCapability], asks the
+// server with [FactsMethod]; a server that does not advertise it is
+// never asked either way.
+//
+// What the listing says of sequential and resource applies without it,
+// since it can only make calls run one after another.
+func WithClaims() Option {
+	return func(o *options) { o.claims = true }
+}
+
 // Remote is one connected MCP server: its session and the tools it
 // offers. It is the consume-side handle; mcpserver.NewServer returns
 // the SDK server for the serve side.
@@ -361,7 +404,12 @@ type Remote struct {
 
 	mu       sync.RWMutex
 	tools    []agenttool.Tool
+	claims   map[string]claimEntry             // by local name, beside tools
 	progress map[string]func(agenttool.Result) // by progress token
+
+	// factsCap says the server advertises [FactsCapability]. It is set
+	// before the remote is returned and read-only after.
+	factsCap bool
 
 	// grace bounds the post-call wait for a notification and
 	// listChanged reports whether the server says it sends any. Both are
@@ -403,6 +451,19 @@ type Remote struct {
 	callSeq atomic.Int64
 	sending sync.WaitGroup
 	closed  bool
+
+	// asking holds each [FactsMethod] request in flight, by a sequence
+	// number, so Close can end it. It is under mu. They are kept out of
+	// running, which is the calls a question from an older server may
+	// belong to.
+	asking map[int64]context.CancelCauseFunc
+}
+
+// claimEntry is what the remote keeps of a listed tool to answer
+// [Remote.Facts]: its name on the server and what the server says of it.
+type claimEntry struct {
+	remote string
+	meta   ToolMeta
 }
 
 // runningCall is a call in flight: its context, and the stop that ends
@@ -420,7 +481,7 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 	for _, opt := range opts {
 		opt(&o)
 	}
-	s := &Remote{opts: o, progress: make(map[string]func(agenttool.Result)), running: make(map[int64]runningCall), settledCh: make(chan struct{}), notified: make(chan struct{}), grace: DefaultNotificationGrace, cancelGrace: cancelGrace}
+	s := &Remote{opts: o, progress: make(map[string]func(agenttool.Result)), running: make(map[int64]runningCall), asking: make(map[int64]context.CancelCauseFunc), settledCh: make(chan struct{}), notified: make(chan struct{}), grace: DefaultNotificationGrace, cancelGrace: cancelGrace}
 	if o.grace != nil {
 		s.grace = *o.grace
 	}
@@ -473,6 +534,9 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 	}
 
 	client := sdk.NewClient(&o.client, &clientOpts)
+	if err := sdk.AddSendingCustomMethod[*factsParams, *factsResult](client, FactsMethod); err != nil {
+		return nil, fmt.Errorf("mcp: %w", err)
+	}
 	var sessionOpts *sdk.ClientSessionOptions
 	if o.protocolVersion != "" {
 		sessionOpts = &sdk.ClientSessionOptions{ProtocolVersion: o.protocolVersion}
@@ -482,8 +546,11 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 		return nil, fmt.Errorf("mcp: connect: %w", err)
 	}
 	s.session = session
-	if res := session.InitializeResult(); res != nil && res.Capabilities != nil && res.Capabilities.Tools != nil {
-		s.listChanged = res.Capabilities.Tools.ListChanged
+	if res := session.InitializeResult(); res != nil && res.Capabilities != nil {
+		if res.Capabilities.Tools != nil {
+			s.listChanged = res.Capabilities.Tools.ListChanged
+		}
+		_, s.factsCap = res.Capabilities.Experimental[FactsCapability]
 	}
 	if err := s.Refresh(ctx); err != nil {
 		_ = session.Close()
@@ -565,10 +632,10 @@ func (s *Remote) refresh(ctx context.Context, force bool) error {
 			return nil
 		}
 	}
-	tools, err := s.list(ctx)
+	tools, claims, err := s.list(ctx)
 	s.mu.Lock()
 	if err == nil {
-		s.tools = tools
+		s.tools, s.claims = tools, claims
 	}
 	s.settled = max(s.settled, gen)
 	s.settledErr = err
@@ -578,19 +645,22 @@ func (s *Remote) refresh(ctx context.Context, force bool) error {
 	return err
 }
 
-func (s *Remote) list(ctx context.Context) ([]agenttool.Tool, error) {
+func (s *Remote) list(ctx context.Context) ([]agenttool.Tool, map[string]claimEntry, error) {
 	var tools []agenttool.Tool
+	claims := map[string]claimEntry{}
 	for t, err := range s.session.Tools(ctx, nil) {
 		if err != nil {
-			return nil, fmt.Errorf("mcp: list tools: %w", err)
+			return nil, nil, fmt.Errorf("mcp: list tools: %w", err)
 		}
 		rt, err := s.wrap(t)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		tools = append(tools, rt)
+		meta, _ := ToolMetaOf(t)
+		claims[rt.Name()] = claimEntry{remote: t.Name, meta: meta}
 	}
-	return tools, nil
+	return tools, claims, nil
 }
 
 // Await returns once the snapshot reflects every tool-list-changed
@@ -617,7 +687,9 @@ func (s *Remote) Await(ctx context.Context) error {
 }
 
 // Close ends every call in flight with [ErrClosed], refuses every call
-// after it with the same, and closes the session. It returns within a
+// after it with the same, and closes the session. A [FactsMethod]
+// request in flight, a tool's claim or [Remote.Facts], ends the same
+// way. It returns within a
 // few seconds whatever the calls were doing.
 //
 // Ending a call cancels its request, so a server that keeps a session
@@ -645,6 +717,9 @@ func (s *Remote) Close() error {
 	s.closed = true
 	for _, c := range s.running {
 		c.stop(ErrClosed)
+	}
+	for _, stop := range s.asking {
+		stop(ErrClosed)
 	}
 	s.mu.Unlock()
 	done := make(chan struct{})
@@ -680,17 +755,21 @@ func (s *Remote) wrap(t *sdk.Tool) (agenttool.Tool, error) {
 	}
 	remote := t.Name
 	name := s.Name(remote)
-	readOnly := false
+	meta, _ := ToolMetaOf(t)
+	readOnly := meta.ReadOnly
 	if a, ok := AnnotationsOf(t); ok {
-		readOnly = a.ReadOnly
+		readOnly = readOnly || a.ReadOnly
 	}
 	var opts []agenttool.Option
-	if s.opts.sequential[remote] || s.opts.sequential[name] {
+	if s.opts.sequential[remote] || s.opts.sequential[name] || meta.Sequential {
 		opts = append(opts, agenttool.WithSequential())
 	}
 	if res, ok := latest(s.opts.resources, remote, name); ok {
 		opts = append(opts, agenttool.WithResource(res))
+	} else if meta.Resource != "" {
+		opts = append(opts, agenttool.WithResource(meta.Resource))
 	}
+	opts = append(opts, s.claimOptions(remote, meta)...)
 	if fn, ok := latest(s.opts.confined, remote, name); ok {
 		opts = append(opts, agenttool.WithConfined(fn))
 	}
@@ -713,9 +792,10 @@ func (s *Remote) wrap(t *sdk.Tool) (agenttool.Tool, error) {
 // The hints are the server's word and nothing more: a policy may use
 // them to be stricter and must not use them alone to allow a call. Nor
 // do they make a call safe to run again: the tool this package builds
-// declares no replay and reads as [agenttool.ReplayUnknown] whatever
-// its idempotent hint, since MCP defines no deduplication and
-// a call whose stream broke may or may not have run.
+// reads as [agenttool.ReplayUnknown] whatever its idempotent hint,
+// since MCP defines no deduplication and a call whose stream broke may
+// or may not have run, unless its server answers the replay claim over
+// [FactsMethod].
 func AnnotationsOf(t *sdk.Tool) (agenttool.Annotations, bool) {
 	if t == nil || t.Annotations == nil {
 		return agenttool.Annotations{}, false

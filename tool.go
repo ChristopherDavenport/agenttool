@@ -402,8 +402,9 @@ func (r Replay) String() string {
 // answers [ReplayUnknown] for a tool that does not implement it, even
 // one whose [Annotations] say ReadOnly or Idempotent: those are hints a
 // policy may use to be stricter, and running a call twice is an allow.
-// A tool from mcpclient reads as [ReplayUnknown], since MCP carries no
-// such claim and an untrusted server's hints are not one.
+// A tool from mcpclient reads as [ReplayUnknown] unless its server
+// answers the claim, as mcpserver does, since an untrusted server's
+// hints are not one.
 type Replayable interface {
 	Replay(ctx context.Context, args json.RawMessage) Replay
 }
