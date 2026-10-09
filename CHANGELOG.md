@@ -5,6 +5,28 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Added: a tool can say what a call would touch, before it runs and
+  without acting (#77). `Factual` is an optional per-call interface,
+  `Facts(ctx, args) (Facts, error)`, beside `Confined` and
+  `Replayable`. `Facts.Calls` are the calls this call amounts to, each a
+  `FactCall{Tool, Args, Text}` with an empty `Tool` for the claiming
+  tool, so a shell can say `cat .env > out/x` reads `.env` and writes
+  `out/x`. Nil `Calls` is the call itself, and empty, non-nil `Calls`
+  is a call with nothing the tool can state. `Facts.Rewrite` is the
+  arguments the call runs with if a policy allows it. `FactsOf(ctx, t,
+  args)` reads the claim, reports whether the tool makes one, and
+  returns the tool's error as is. `IsFactual(t)` says whether a tool
+  claims without asking about a call, and `WithFacts(fn)` sets the
+  claim on a tool from `New` or `NewFunc`. `Wrap` forwards it, presence
+  included, so a claim survives wrapping, which a claim defined outside
+  this package could not. Nothing changes for a tool that does not
+  claim, and a definition and its hash are unchanged. MCP carries no
+  facts yet: a tool from mcpclient makes no claim, and mcpserver does
+  not serve one. Carrying them is a follow-up that needs this release.
+  RFC 0001 is draft 0.5.
+
 ## v0.0.18 - 2026-10-07
 
 - Fixed: `mcpserver` sends a question with no fields, a confirmation,

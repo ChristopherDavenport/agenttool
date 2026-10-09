@@ -1,6 +1,6 @@
 # RFC 0001: Agent Tool Contract
 
-Status: draft 0.4
+Status: draft 0.5
 Author: Christopher Davenport
 Discussion: to be opened against this repository. The Go module at its
 root is the reference binding; agentturn is the reference harness.
@@ -183,7 +183,8 @@ A property is a fact about a tool that a harness reads and the model
 does not. Each is optional and has a default, and a tool that declares
 none of them is a complete tool that runs in parallel with everything,
 claims no shared state, says nothing about its behaviour, claims no
-sandbox, never runs a call twice and owns nothing that outlives a call.
+sandbox, never runs a call twice, is its own one fact and owns nothing
+that outlives a call.
 
 | Property | Type | Default | Read by |
 | --- | --- | --- | --- |
@@ -193,6 +194,7 @@ sandbox, never runs a call twice and owns nothing that outlives a call.
 | annotations | object | unstated | a policy layer |
 | confined | (ctx, args) → (boolean, string) | (false, `""`), unstated | a policy layer, per call |
 | replay | (ctx, args) → unknown, safe or keyed | unknown | a harness resuming or retrying, per call |
+| facts | (ctx, args) → (calls, rewrite) or error | absent: the call itself | a policy layer, per call |
 | closer | presence | absent, owns nothing | the host |
 
 - **strict** is the tool's claim that its parameters schema keeps the
@@ -235,6 +237,24 @@ sandbox, never runs a call twice and owns nothing that outlives a call.
   alone. A reader MUST treat a value it does not know as *unknown*, so
   a value added to this list later is read by an older harness as the
   safe mistake.
+- **facts** answer, for one call's arguments under one context and
+  without acting on anything, what the call would touch, in tool-call
+  terms. *Calls* are the calls it amounts to, each a tool name, its
+  arguments and a text for a question about it: a shell command
+  `cat .env > out/x` amounts to a read of `.env` and a write of
+  `out/x`. An empty tool name is the claiming tool. Absent calls are the
+  call itself, its own arguments; an empty list says the call amounts
+  to nothing the tool can state, and a reader MUST NOT take it for the
+  call itself. *Rewrite*, when present, is the arguments the call runs
+  with if a policy allows it, in place of the model's: a plan stamped
+  under a key only the tool holds. An error is a call nothing can be
+  said about, and a policy MUST NOT allow a call on it. Facts are a
+  claim with presence: a tool that does not make it is its own one
+  fact, decided on its arguments, and a binding MUST let a reader tell
+  that apart without asking about a call, so that a harness that would
+  pay a round trip for facts skips the tool. Like confined, this is
+  what a tool reports, never what it runs; a tool that rewrites checks
+  when it runs that what it runs is what it claimed.
 - **closer** says the tool owns something that outlives a call, a
   container, a persistent shell, a pool, and how to release it. See
   [Lifecycle](#lifecycle).
@@ -573,6 +593,7 @@ and everything else is optional.
 | annotations | `Annotated` interface and `Annotations` struct, read by `AnnotationsOf`, set by `WithAnnotations(a)` |
 | confined | `Confined` interface, read by `ConfinedBy(ctx, t, args)`, set by `WithConfined(fn)` |
 | replay | `Replayable` interface and `Replay` (`ReplayUnknown`, `ReplaySafe`, `ReplayKeyed`), read by `ReplayOf(ctx, t, args)`, which reads an unknown value as `ReplayUnknown`, set by `WithReplay(fn)` |
+| facts | `Factual` interface, `Facts{Calls, Rewrite}` and `FactCall{Tool, Args, Text}`, read by `FactsOf(ctx, t, args)`, which also reports whether the tool claims and returns its error as is, presence read by `IsFactual(t)`, set by `WithFacts(fn)`; a `New` or `NewFunc` tool built without it, and a `Wrap` of a tool that does not claim, has the method and reads as not claiming |
 | closer | `io.Closer`; `Set.Close()` closes a list in order and joins errors; `WithCloser(fn)` makes a `New` or `NewFunc` tool one, and without it the tool is not |
 | forwarding wrapper | `Wrap(t, exec)` forwards every property of `t` and closes it; `Unwrap(t)` returns it |
 | call | `Call{ID, Args, IdempotencyKey, OnUpdate}`; `Call.Update` sends progress |
@@ -615,6 +636,7 @@ the local side by the host and does not cross.
 | annotations | `annotations`: `title`, `readOnlyHint`, `destructiveHint` (absent is true), `idempotentHint`, `openWorldHint` (absent is true); a tool with no block is unstated | both |
 | confined | no field; `mcpclient.WithConfined(by, names…)` says a remote tool runs confined, and `WithConfinedFunc(fn, names…)` answers per call; the claim is the host's, which placed the server, and the server's does not cross | consume |
 | replay | no field; a consumed tool is *unknown* whatever its `idempotentHint`, since MCP defines no deduplication and a call whose stream broke may or may not have run; a served tool's claim does not cross | — |
+| facts | no field yet; a consumed tool makes no claim and a served tool's claim does not cross. A method of its own beside `tools/call`, answering a response's calls together, is the planned carriage | — |
 | idempotency key | no field; a consumed call's key is not sent, and a served call has none | — |
 | closer | not a closer: the remote session is closed through `mcpclient.Remote.Close` | consume |
 | arguments | `arguments`; the server validates against `inputSchema` with a general validator | both |
@@ -806,8 +828,8 @@ call started when the context is cancelled and keeps what the value
 owns; declares sequential or a resource if two of its calls must not
 overlap; declares a closer if it owns something beyond a call; answers
 *safe* only for a call whose second run has no further effect, and
-*keyed* only when it deduplicates on the key; and reports every
-property of a tool it wraps.
+*keyed* only when it deduplicates on the key; acts on nothing while it
+answers facts; and reports every property of a tool it wraps.
 
 **A conforming harness** offers a set of tools with distinct names;
 hands each call its arguments as a JSON object, `{}` when empty, and
@@ -909,6 +931,14 @@ module and is listed in the changelog as one.
   differ, `retryable` with a not-before time in a `_meta` block, a
   rate-limit error code, so it waits for one to settle. The MCP
   client handles its own transport failures meanwhile.
+
+## Changes since 0.4
+
+- Properties gain **facts**, per call, absent by default: the calls a
+  call amounts to in tool-call terms and the arguments it runs with if
+  a policy allows it, with presence a reader can see without asking.
+  The Go binding forwards it through `Wrap`; the MCP binding does not
+  carry it yet (#77).
 
 ## Changes since 0.3
 

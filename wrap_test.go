@@ -41,6 +41,15 @@ func (*everythingTool) Replay(_ context.Context, args json.RawMessage) Replay {
 	}
 	return ReplayUnknown
 }
+func (*everythingTool) Facts(_ context.Context, args json.RawMessage) (Facts, error) {
+	if string(args) == `{"sandbox":true}` {
+		return Facts{
+			Calls:   []FactCall{{Tool: "read", Args: json.RawMessage(`{"path":".env"}`), Text: "read .env"}},
+			Rewrite: json.RawMessage(`{"sandbox":true,"stamp":"s"}`),
+		}, nil
+	}
+	return Facts{}, nil
+}
 func (e *everythingTool) Close() error { e.closed++; return nil }
 
 // readers is every way a harness asks a tool about itself. A wrapper is
@@ -48,7 +57,12 @@ func (e *everythingTool) Close() error { e.closed++; return nil }
 func readers(ctx context.Context, t Tool) map[string]any {
 	confined, by := ConfinedBy(ctx, t, json.RawMessage(`{"sandbox":true}`))
 	_, closer := t.(io.Closer)
+	facts, claims, factsErr := FactsOf(ctx, t, json.RawMessage(`{"sandbox":true}`))
 	return map[string]any{
+		"factual":     IsFactual(t),
+		"facts":       facts,
+		"claims":      claims,
+		"factsErr":    factsErr,
 		"closer":      closer,
 		"name":        t.Name(),
 		"description": t.Description(),
@@ -279,5 +293,69 @@ func TestNewCanDeclareEveryOptionalInterface(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// A claim survives Wrap as the tool made it: the calls, nil and empty
+// told apart, the rewrite, and the tool's error itself rather than a
+// copy of it, through one wrapper or two.
+func TestWrapForwardsTheFactsClaim(t *testing.T) {
+	ctx := context.Background()
+	boom := errors.New("cannot read the link")
+	inner := NewFunc("bash", "", nil, func(context.Context, Call) (Result, error) { return Result{}, nil },
+		WithFacts(func(_ context.Context, args json.RawMessage) (Facts, error) {
+			switch string(args) {
+			case `"itself"`:
+				return Facts{}, nil
+			case `"nothing"`:
+				return Facts{Calls: []FactCall{}}, nil
+			case `"fails"`:
+				return Facts{}, boom
+			}
+			return Facts{Calls: []FactCall{{Tool: "write", Args: json.RawMessage(`{"path":"out"}`)}}, Rewrite: json.RawMessage(`{"stamped":true}`)}, nil
+		}))
+	once := Wrap(inner, inner.Execute)
+	twice := Wrap(once, once.Execute)
+	for name, w := range map[string]Tool{"once": once, "twice": twice} {
+		t.Run(name, func(t *testing.T) {
+			if !IsFactual(w) {
+				t.Fatal("the wrapper does not make the tool's claim")
+			}
+			f, ok, err := FactsOf(ctx, w, json.RawMessage(`"itself"`))
+			if !ok || err != nil || f.Calls != nil || f.Rewrite != nil {
+				t.Errorf("itself: FactsOf = %+v, %v, %v; want nil calls, claimed", f, ok, err)
+			}
+			f, ok, err = FactsOf(ctx, w, json.RawMessage(`"nothing"`))
+			if !ok || err != nil || f.Calls == nil || len(f.Calls) != 0 {
+				t.Errorf("nothing: FactsOf = %+v, %v, %v; want empty, non-nil calls", f, ok, err)
+			}
+			f, ok, err = FactsOf(ctx, w, json.RawMessage(`"fails"`))
+			if !ok || err != boom {
+				t.Errorf("fails: FactsOf = %+v, %v, %v; want the tool's own error", f, ok, err)
+			}
+			f, ok, err = FactsOf(ctx, w, json.RawMessage(`{}`))
+			if !ok || err != nil || len(f.Calls) != 1 || f.Calls[0].Tool != "write" || string(f.Rewrite) != `{"stamped":true}` {
+				t.Errorf("claim: FactsOf = %+v, %v, %v", f, ok, err)
+			}
+		})
+	}
+}
+
+// A wrapper around a tool that makes no claim makes none, though it has
+// the method: a harness skips the facts request for it, as for the tool.
+func TestWrapOfAToolWithoutFactsClaimsNone(t *testing.T) {
+	inner := NewFunc("plain", "", nil, func(context.Context, Call) (Result, error) { return Result{}, nil })
+	w := Wrap(inner, inner.Execute)
+	if IsFactual(w) {
+		t.Error("IsFactual(wrapper) = true for a tool that makes no claim")
+	}
+	f, ok, err := FactsOf(context.Background(), w, json.RawMessage(`{}`))
+	if ok || err != nil || f.Calls != nil || f.Rewrite != nil {
+		t.Errorf("FactsOf = %+v, %v, %v; want no claim", f, ok, err)
+	}
+	// Asked directly, it answers what no claim means: the call itself.
+	f, err = w.(Factual).Facts(context.Background(), json.RawMessage(`{}`))
+	if err != nil || f.Calls != nil || f.Rewrite != nil {
+		t.Errorf("Facts = %+v, %v; want the call itself", f, err)
 	}
 }
