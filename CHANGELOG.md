@@ -5,7 +5,7 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
-## Unreleased
+## v0.0.20 - 2026-10-09
 
 - Added: mcpserver serves its tools' facts and replay claims (#79).
   `execution/facts` (`FactsMethod`) is a method of its own: it takes a
