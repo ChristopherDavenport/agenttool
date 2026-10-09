@@ -78,11 +78,12 @@ MCP's behavioural hints for a policy layer to read; `Confined` says
 whether a call will run in a sandbox and by what, so a shared
 permission preset can ask about the calls that leave one without
 knowing a product's own argument for leaving it; `Strict` marks the
-schema strict; `Replayable` says whether a call may run again; and
-`io.Closer` releases what the tool owns. `WithSequential()`,
-`WithResource()`, `WithAnnotations()`, `WithStrict()`,
-`WithConfined()`, `WithReplay()` and `WithCloser()` set them on a tool
-from `New` or `NewFunc`. Embedding such a tool in a struct to add a
+schema strict; `Replayable` says whether a call may run again;
+`Factual` says what a call would touch, as the calls it amounts to and
+the arguments it would run with; and `io.Closer` releases what the
+tool owns. `WithSequential()`, `WithResource()`, `WithAnnotations()`,
+`WithStrict()`, `WithConfined()`, `WithReplay()`, `WithFacts()` and
+`WithCloser()` set them on a tool from `New` or `NewFunc`. Embedding such a tool in a struct to add a
 method compiles and silently drops the rest, so a tool built here gains
 a property through its option.
 
@@ -218,6 +219,34 @@ The same shell served over MCP arrives unconfined, since MCP has no
 field for it; the host that put the server in a container says so with
 `mcpclient.WithConfined("container:agent", "bash")`, or
 `WithConfinedFunc` when some calls leave it.
+
+A tool that can say what a call would touch, before it runs and
+without acting, makes the facts claim. The answer is in tool-call
+terms, the calls this call amounts to, so a policy can decide a shell
+command on the files it reads and writes without reading the machine
+itself:
+
+```go
+var Bash = agenttool.New("bash", "Run a shell command", shell.run,
+	agenttool.WithFacts(func(ctx context.Context, args json.RawMessage) (agenttool.Facts, error) {
+		// cat .env > out/x
+		return agenttool.Facts{Calls: []agenttool.FactCall{
+			{Tool: "read", Args: json.RawMessage(`{"path":".env"}`), Text: "read .env"},
+			{Tool: "write", Args: json.RawMessage(`{"path":"out/x"}`), Text: "write out/x"},
+		}}, nil
+	}))
+
+f, claims, err := agenttool.FactsOf(ctx, Bash, args)
+```
+
+Nil `Calls` is the call itself; empty and non-nil is a call with nothing
+the tool can state, which a reader must not take for the call itself.
+`Rewrite`, when set, is the arguments the call runs with if a policy
+allows it, such as a plan stamped under a key that never leaves the
+tool. An error is a call nothing can be said about, and a policy blocks
+or asks on it. `IsFactual` says whether a tool makes the claim at all,
+and `Wrap` forwards it. MCP has no field for facts yet, so a tool
+served or consumed over MCP makes no claim.
 
 ## A batch
 

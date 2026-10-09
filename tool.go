@@ -35,10 +35,10 @@ import (
 // Tool is something the model can call. Name and Parameters become the
 // function tool on the request; Execute runs one call. Everything else
 // a tool declares is an optional interface, [Strict], [Sequential],
-// [Resource], [Annotated], [Confined], [Replayable] and [io.Closer],
-// found by type assertion; a struct that embeds Tool forwards these
-// four methods alone and drops all of those, so a tool that stands in
-// for another is built with [Wrap].
+// [Resource], [Annotated], [Confined], [Replayable], [Factual] and
+// [io.Closer], found by type assertion; a struct that embeds Tool
+// forwards these four methods alone and drops all of those, so a tool
+// that stands in for another is built with [Wrap].
 type Tool interface {
 	Name() string
 	Description() string
@@ -424,6 +424,91 @@ func ReplayOf(ctx context.Context, t Tool, args json.RawMessage) Replay {
 	return ReplayUnknown
 }
 
+// FactCall is one call that a call amounts to, in tool-call terms: what
+// a policy's rules are asked about in place of the call itself. Tool
+// empty is the claiming tool, with Args as its arguments; another name
+// is that tool's call, as a shell redirect is a write of its target and
+// cat a read of what it reads. Text is what a question about this part
+// shows, and empty leaves it to the reader.
+type FactCall struct {
+	Tool string
+	Args json.RawMessage
+	Text string
+}
+
+// Facts is what a call would touch, as a tool claims it before the call
+// runs; see [Factual].
+type Facts struct {
+	// Calls are the calls the call amounts to. Nil is the call itself,
+	// one call of the claiming tool with its own arguments, which is
+	// what a claim that adds nothing returns. Empty and non-nil says the
+	// call amounts to nothing the tool can state, which a reader must not
+	// take for the call itself: there is nothing to decide it on, so a
+	// policy refuses or asks. A part the tool cannot read is a FactCall
+	// naming a tool or arguments no rule names.
+	Calls []FactCall
+	// Rewrite, when set, is the arguments the call runs with if a policy
+	// allows it, in place of the model's: a shell's arguments carrying
+	// the stamp of the plan its analysis found, or with a stamp the model
+	// forged taken off. It is part of the claim because only the tool can
+	// make it, when the stamp's key never leaves the tool. Nil is none.
+	Rewrite json.RawMessage
+}
+
+// Factual is implemented by a tool that can say what a call would touch,
+// for the call args describe, under the context it would run with,
+// without acting on anything. It is how a policy decides a call on what
+// the call does rather than on a reading of its arguments the policy
+// would have to make itself, from wherever it runs: a shell's claim
+// names the files its command reads and writes, which only something
+// that can see those files can say.
+//
+// An error is a call nothing can be said about, and [FactsOf] returns
+// it as the tool returned it. A policy reads it as a call it cannot
+// read: it blocks or asks, and never allows.
+//
+// Like [Confined], it is what a tool reports and never what it runs.
+// The claim is the tool's, so a policy trusts it as far as it trusts the
+// tool, and a tool that rewrites its arguments checks, when it runs,
+// that what it runs is what it claimed.
+type Factual interface {
+	Facts(ctx context.Context, args json.RawMessage) (Facts, error)
+}
+
+// factsDeclared is implemented by the tools this package builds and
+// wraps, which carry a Facts method whether or not they make the claim,
+// to say whether they do. A tool written elsewhere claims by having the
+// method.
+type factsDeclared interface {
+	factsDeclared() bool
+}
+
+// IsFactual reports whether t makes the facts claim, without asking it
+// about a call. A tool that does not is its own one fact, decided on its
+// own arguments, so a harness that would pay for a facts request, over
+// a wire, skips it; a policy that takes a tool's subjects from its
+// claim installs that reading only for a tool that makes one.
+func IsFactual(t Tool) bool {
+	if d, ok := t.(factsDeclared); ok {
+		return d.factsDeclared()
+	}
+	_, ok := t.(Factual)
+	return ok
+}
+
+// FactsOf reports what a call of t with args would touch, and whether t
+// makes the claim at all. A tool that does not reports false with the
+// zero Facts and no error, which a reader takes as the call itself, its
+// arguments as given. A tool that does is asked, and its answer and its
+// error are returned as they are.
+func FactsOf(ctx context.Context, t Tool, args json.RawMessage) (Facts, bool, error) {
+	if !IsFactual(t) {
+		return Facts{}, false, nil
+	}
+	f, err := t.(Factual).Facts(ctx, args)
+	return f, true, err
+}
+
 // Strict is implemented by a tool that claims its schema keeps the
 // strict rules (every field required, additionalProperties false,
 // optional fields nullable), so the provider may enforce them. The
@@ -587,9 +672,9 @@ func (s Set) Validate() error {
 // comes from elsewhere, such as a remote server. parameters is served
 // verbatim and never validated; nil means the tool takes no arguments.
 // [WithStrict], [WithSequential], [WithResource], [WithAnnotations],
-// [WithConfined], [WithReplay] and [WithCloser] apply; the options that
-// shape a reflected schema do not. A nil fn panics here, like a bad
-// schema in [New].
+// [WithConfined], [WithReplay], [WithFacts] and [WithCloser] apply; the
+// options that shape a reflected schema do not. A nil fn panics here,
+// like a bad schema in [New].
 func NewFunc(name, description string, parameters json.RawMessage, fn func(ctx context.Context, call Call) (Result, error), opts ...Option) Tool {
 	if fn == nil {
 		panic(fmt.Sprintf("agenttool.NewFunc(%q): nil function", name))
@@ -598,7 +683,7 @@ func NewFunc(name, description string, parameters json.RawMessage, fn func(ctx c
 	for _, opt := range opts {
 		opt(&o)
 	}
-	f := &funcTool{name: name, description: description, schema: parameters, fn: fn, strict: o.strict, sequential: o.sequential, resource: o.resource, annotations: o.annotations, confined: o.confined, replay: o.replay}
+	f := &funcTool{name: name, description: description, schema: parameters, fn: fn, strict: o.strict, sequential: o.sequential, resource: o.resource, annotations: o.annotations, confined: o.confined, replay: o.replay, facts: o.facts}
 	if o.closer != nil {
 		return &funcToolCloser{funcTool: f, close: o.closer}
 	}
@@ -616,6 +701,7 @@ type funcTool struct {
 	annotations Annotations
 	confined    func(ctx context.Context, args json.RawMessage) (bool, string)
 	replay      func(ctx context.Context, args json.RawMessage) Replay
+	facts       func(ctx context.Context, args json.RawMessage) (Facts, error)
 }
 
 func (f *funcTool) Name() string                { return f.name }
@@ -633,6 +719,12 @@ func (f *funcTool) Confined(ctx context.Context, args json.RawMessage) (bool, st
 func (f *funcTool) Replay(ctx context.Context, args json.RawMessage) Replay {
 	return replayBy(f.replay, ctx, args)
 }
+
+func (f *funcTool) Facts(ctx context.Context, args json.RawMessage) (Facts, error) {
+	return factsBy(f.facts, ctx, args)
+}
+
+func (f *funcTool) factsDeclared() bool { return f.facts != nil }
 
 func (f *funcTool) Execute(ctx context.Context, call Call) (Result, error) {
 	return f.fn(ctx, call)
@@ -655,5 +747,6 @@ var (
 	_ Annotated  = (*funcTool)(nil)
 	_ Confined   = (*funcTool)(nil)
 	_ Replayable = (*funcTool)(nil)
+	_ Factual    = (*funcTool)(nil)
 	_ io.Closer  = (*funcToolCloser)(nil)
 )

@@ -10,10 +10,10 @@ import (
 // Wrap returns a tool that runs exec in place of t.Execute and is t in
 // every other way: its name, description and parameters, and every
 // property t declares, strict, sequential, resource, annotations,
-// confined, replay and closer, reported exactly as t reports them. It
-// is how a policy that grants on use, a decorator that records, or a
-// proxy that audits stands in for a tool without changing what the
-// executor and a policy layer learn about it.
+// confined, replay, facts and closer, reported exactly as t reports
+// them. It is how a policy that grants on use, a decorator that
+// records, or a proxy that audits stands in for a tool without changing
+// what the executor and a policy layer learn about it.
 //
 // Embedding [Tool] in a struct forwards the four methods alone and
 // silently drops every optional interface, so a wrapped bash that was
@@ -28,7 +28,9 @@ import (
 // is what t reports too. Closer is presence rather than a value, so
 // the wrapper implements [io.Closer] exactly when t does, and its
 // Close closes t; a wrapper around a tool that owns nothing owns
-// nothing. [Unwrap] returns t. A nil exec panics, like a nil function
+// nothing. Facts are presence as well as a value: [IsFactual] reports
+// the wrapper as making the claim exactly when t does, and [FactsOf]
+// asks t. [Unwrap] returns t. A nil exec panics, like a nil function
 // in [NewFunc].
 func Wrap(t Tool, exec func(ctx context.Context, call Call) (Result, error)) Tool {
 	if t == nil {
@@ -95,6 +97,17 @@ func (w *wrapped) Replay(ctx context.Context, args json.RawMessage) Replay {
 	return ReplayOf(ctx, w.Tool, args)
 }
 
+// Facts forwards the tool's claim, which is exec's to keep: a wrapper
+// whose exec runs something other than what the tool claims reports
+// that, and is built without Wrap. A tool that makes no claim answers
+// the call itself.
+func (w *wrapped) Facts(ctx context.Context, args json.RawMessage) (Facts, error) {
+	f, _, err := FactsOf(ctx, w.Tool, args)
+	return f, err
+}
+
+func (w *wrapped) factsDeclared() bool { return IsFactual(w.Tool) }
+
 // wrappedCloser is the wrapper around a tool that is an [io.Closer], so
 // that closing the wrapper closes the tool and a wrapper around a tool
 // that owns nothing is not a closer.
@@ -113,6 +126,7 @@ var (
 	_ Annotated  = (*wrapped)(nil)
 	_ Confined   = (*wrapped)(nil)
 	_ Replayable = (*wrapped)(nil)
+	_ Factual    = (*wrapped)(nil)
 	_ Tool       = (*wrappedCloser)(nil)
 	_ io.Closer  = (*wrappedCloser)(nil)
 )

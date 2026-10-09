@@ -28,6 +28,7 @@ type options struct {
 	closer       func() error
 	confined     func(ctx context.Context, args json.RawMessage) (bool, string)
 	replay       func(ctx context.Context, args json.RawMessage) Replay
+	facts        func(ctx context.Context, args json.RawMessage) (Facts, error)
 }
 
 // WithStrict sets the strict flag on the function tool, and has [New]
@@ -76,6 +77,15 @@ func WithConfined(fn func(ctx context.Context, args json.RawMessage) (bool, stri
 // an answer this package does not know.
 func WithReplay(fn func(ctx context.Context, args json.RawMessage) Replay) Option {
 	return func(o *options) { o.replay = fn }
+}
+
+// WithFacts has the tool claim, through fn, what a call would touch; see
+// [Factual], which says what the answer means. A tool built without it,
+// or with a nil fn, makes no claim: [IsFactual] reports false and
+// [FactsOf] reads the call as itself, as for a tool that declares
+// nothing.
+func WithFacts(fn func(ctx context.Context, args json.RawMessage) (Facts, error)) Option {
+	return func(o *options) { o.facts = fn }
 }
 
 // WithParameters replaces the reflected schema of a [New] tool with
@@ -148,6 +158,7 @@ func New[Args, Out any](name, description string, fn func(context.Context, Args)
 		annotations: o.annotations,
 		confined:    o.confined,
 		replay:      o.replay,
+		facts:       o.facts,
 		fn:          fn,
 	}
 	if o.closer != nil {
@@ -168,6 +179,7 @@ type typed[Args, Out any] struct {
 	annotations Annotations
 	confined    func(ctx context.Context, args json.RawMessage) (bool, string)
 	replay      func(ctx context.Context, args json.RawMessage) Replay
+	facts       func(ctx context.Context, args json.RawMessage) (Facts, error)
 	fn          func(context.Context, Args) (Out, error)
 }
 
@@ -213,8 +225,17 @@ func (t *typed[Args, Out]) Replay(ctx context.Context, args json.RawMessage) Rep
 	return replayBy(t.replay, ctx, args)
 }
 
-// confinedBy and replayBy answer for a tool built with an optional
-// function: the function's answer, or the reader's default without one.
+// Facts reports what a call would touch, as [WithFacts] set.
+func (t *typed[Args, Out]) Facts(ctx context.Context, args json.RawMessage) (Facts, error) {
+	return factsBy(t.facts, ctx, args)
+}
+
+func (t *typed[Args, Out]) factsDeclared() bool { return t.facts != nil }
+
+// confinedBy, replayBy and factsBy answer for a tool built with an
+// optional function: the function's answer, or the reader's default
+// without one. Without one a tool's factsDeclared is false, so a reader
+// never asks it.
 func confinedBy(fn func(context.Context, json.RawMessage) (bool, string), ctx context.Context, args json.RawMessage) (bool, string) {
 	if fn == nil {
 		return false, ""
@@ -225,6 +246,13 @@ func confinedBy(fn func(context.Context, json.RawMessage) (bool, string), ctx co
 func replayBy(fn func(context.Context, json.RawMessage) Replay, ctx context.Context, args json.RawMessage) Replay {
 	if fn == nil {
 		return ReplayUnknown
+	}
+	return fn(ctx, args)
+}
+
+func factsBy(fn func(context.Context, json.RawMessage) (Facts, error), ctx context.Context, args json.RawMessage) (Facts, error) {
+	if fn == nil {
+		return Facts{}, nil
 	}
 	return fn(ctx, args)
 }
@@ -321,5 +349,6 @@ var (
 	_ Annotated  = (*typed[NoArgs, string])(nil)
 	_ Confined   = (*typed[NoArgs, string])(nil)
 	_ Replayable = (*typed[NoArgs, string])(nil)
+	_ Factual    = (*typed[NoArgs, string])(nil)
 	_ io.Closer  = (*typedCloser[NoArgs, string])(nil)
 )

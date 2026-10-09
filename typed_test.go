@@ -224,6 +224,7 @@ func everythingOptions(closed *int) []Option {
 		WithAnnotations(e.Annotations()),
 		WithConfined(e.Confined),
 		WithReplay(e.Replay),
+		WithFacts(e.Facts),
 		WithCloser(func() error { *closed++; return nil }),
 	}
 }
@@ -271,7 +272,7 @@ func TestNewWithoutOwnershipOptionsReadsAsBefore(t *testing.T) {
 	for name, tl := range map[string]Tool{
 		"New":       New("plain", "d", func(context.Context, NoArgs) (string, error) { return "", nil }),
 		"NewFunc":   NewFunc("plain", "d", nil, echo),
-		"nil funcs": NewFunc("plain", "d", nil, echo, WithCloser(nil), WithConfined(nil), WithReplay(nil)),
+		"nil funcs": NewFunc("plain", "d", nil, echo, WithCloser(nil), WithConfined(nil), WithReplay(nil), WithFacts(nil)),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, ok := tl.(io.Closer); ok {
@@ -282,6 +283,12 @@ func TestNewWithoutOwnershipOptionsReadsAsBefore(t *testing.T) {
 			}
 			if r := ReplayOf(ctx, tl, args); r != ReplayUnknown {
 				t.Errorf("ReplayOf = %v; want ReplayUnknown", r)
+			}
+			if IsFactual(tl) {
+				t.Error("a tool built without WithFacts should make no claim")
+			}
+			if f, ok, err := FactsOf(ctx, tl, args); ok || err != nil || f.Calls != nil || f.Rewrite != nil {
+				t.Errorf("FactsOf = %+v, %v, %v; want no claim", f, ok, err)
 			}
 		})
 	}
@@ -295,6 +302,7 @@ func TestOwnershipOptionsLeaveTheDefinition(t *testing.T) {
 	var closed int
 	own := []Option{WithConfined(func(context.Context, json.RawMessage) (bool, string) { return true, "seatbelt" }),
 		WithReplay(func(context.Context, json.RawMessage) Replay { return ReplaySafe }),
+		WithFacts(func(context.Context, json.RawMessage) (Facts, error) { return Facts{Calls: []FactCall{}}, nil }),
 		WithCloser(func() error { closed++; return nil })}
 	for name, pair := range map[string][2]Tool{
 		"New":     {New("r", "d", fn, WithStrict()), New("r", "d", fn, append(own, WithStrict())...)},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -413,6 +414,80 @@ func TestReplayOf(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := ReplayOf(context.Background(), tc.tool, json.RawMessage(tc.args)); got != tc.want {
 				t.Errorf("ReplayOf = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// redirect claims what a shell call touches from its command: nothing it
+// can state, the call itself, a read and a write, or an error.
+type redirect struct{ bareTool }
+
+var errUnreadable = errors.New("cannot read the link")
+
+func (redirect) Facts(_ context.Context, args json.RawMessage) (Facts, error) {
+	var a struct{ Command string }
+	_ = json.Unmarshal(args, &a)
+	switch a.Command {
+	case "ls":
+		return Facts{}, nil
+	case "eval":
+		return Facts{Calls: []FactCall{}}, nil
+	case "cat link":
+		return Facts{}, errUnreadable
+	}
+	return Facts{
+		Calls: []FactCall{
+			{Tool: "read", Args: json.RawMessage(`{"path":".env"}`), Text: "read .env"},
+			{Tool: "write", Args: json.RawMessage(`{"path":"out/x"}`), Text: "write out/x"},
+		},
+		Rewrite: json.RawMessage(`{"command":"cat .env > out/x","stamp":"s"}`),
+	}, nil
+}
+
+func TestFactsOf(t *testing.T) {
+	ctx := context.Background()
+	if IsFactual(bareTool{}) || IsFactual(annotatedSafe{}) {
+		t.Error("IsFactual of a tool that makes no claim")
+	}
+	if !IsFactual(redirect{}) {
+		t.Error("IsFactual of a tool with a Facts method")
+	}
+	cases := []struct {
+		name      string
+		tool      Tool
+		args      string
+		wantClaim bool
+		wantCalls []FactCall
+		wantErr   error
+		rewrite   string
+	}{
+		{name: "a tool that does not say", tool: bareTool{}, args: `{}`},
+		{name: "the call itself", tool: redirect{}, args: `{"command":"ls"}`, wantClaim: true},
+		{name: "nothing it can state", tool: redirect{}, args: `{"command":"eval"}`, wantClaim: true, wantCalls: []FactCall{}},
+		{name: "an error", tool: redirect{}, args: `{"command":"cat link"}`, wantClaim: true, wantErr: errUnreadable},
+		{name: "the calls it amounts to", tool: redirect{}, args: `{"command":"cat .env > out/x"}`, wantClaim: true,
+			wantCalls: []FactCall{
+				{Tool: "read", Args: json.RawMessage(`{"path":".env"}`), Text: "read .env"},
+				{Tool: "write", Args: json.RawMessage(`{"path":"out/x"}`), Text: "write out/x"},
+			},
+			rewrite: `{"command":"cat .env > out/x","stamp":"s"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, ok, err := FactsOf(ctx, tc.tool, json.RawMessage(tc.args))
+			if ok != tc.wantClaim {
+				t.Errorf("claims = %v, want %v", ok, tc.wantClaim)
+			}
+			// The error is the tool's own, not wrapped or replaced.
+			if err != tc.wantErr {
+				t.Errorf("err = %v, want %v", err, tc.wantErr)
+			}
+			if (f.Calls == nil) != (tc.wantCalls == nil) || !reflect.DeepEqual(f.Calls, tc.wantCalls) {
+				t.Errorf("calls = %#v, want %#v", f.Calls, tc.wantCalls)
+			}
+			if string(f.Rewrite) != tc.rewrite || (tc.rewrite == "") != (f.Rewrite == nil) {
+				t.Errorf("rewrite = %s, want %s", f.Rewrite, tc.rewrite)
 			}
 		})
 	}
