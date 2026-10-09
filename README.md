@@ -245,8 +245,8 @@ the tool can state, which a reader must not take for the call itself.
 allows it, such as a plan stamped under a key that never leaves the
 tool. An error is a call nothing can be said about, and a policy blocks
 or asks on it. `IsFactual` says whether a tool makes the claim at all,
-and `Wrap` forwards it. MCP has no field for facts yet, so a tool
-served or consumed over MCP makes no claim.
+and `Wrap` forwards it. The claim crosses MCP between `mcpserver` and
+`mcpclient`, as the [MCP section](#mcp) describes.
 
 ## A batch
 
@@ -293,7 +293,8 @@ and takes the whole batch; a tool that reports both is sequential. Two
 tools that name the same resource share it, which is how a shell tool
 and the tool that restarts that shell stay apart, and
 `mcpclient.WithResource("shell:session", "bash")` names it for a remote
-tool, since MCP has no field for one. Whether the second call waits or
+tool, since MCP has no field for one; a tool served by `mcpserver`
+brings its own. Whether the second call waits or
 is refused stays the tool's choice.
 
 The grouping is the executor's, and a harness can read it rather than
@@ -387,6 +388,38 @@ SDK behaves today rather than a guarantee, and a host that wants none
 of it installs the recorder in a `Wrap` around its tools. `make
 interop` checks both against the upstream reference server and the
 MCP Inspector over stdio.
+
+The claims a policy decides on cross as well, so a session can run its
+tools somewhere else and still decide each call on what it would
+touch. `mcpserver` puts what MCP has no field for in each listed
+tool's `_meta`: whether it makes the facts claim and answers replay,
+and its read-only, sequential and resource. These are the server's
+statement about the tool, not hints. It also answers a method of its
+own, `execution/facts`, which takes a model response's calls together
+and returns each call's facts, or its error, and its replay answer.
+The method asks the claims and never runs a tool. A method cannot
+reach the model's tool list, where a reserved tool name could. The
+server advertises the method as an experimental capability. On a
+server that does, an `mcpclient` tool marked as claiming is `Factual`
+or `Replayable`, and asks under the call's context. `Remote.Facts`
+asks about several calls in one request:
+
+```go
+answers, err := remote.Facts(ctx,
+	mcpclient.FactsCall{Name: "bash", Args: json.RawMessage(`{"command":"cat .env > out/x"}`)},
+	mcpclient.FactsCall{Name: "read", Args: json.RawMessage(`{"path":"go.mod"}`)})
+// answers[i].Claimed, .Facts, .Err and .Replay are what FactsOf and
+// ReplayOf report for that call; a tool that claims nothing is not sent.
+```
+
+A server that does not advertise the method is never asked, and its
+tools make no claim, as before. Sequential and resource come from the
+listing, so a host no longer names them for an `mcpserver` tool; a
+`WithResource` the host gives still wins, since the host sees every
+server it composes. `keyed` replay reads as `unknown` over MCP, because
+the idempotency key does not cross. The claims are as trustworthy as
+the server, and `mcpclient.WithoutClaims()` turns them off for one
+whose account of its own tools a host does not take.
 
 ### A server behind OAuth
 

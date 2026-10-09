@@ -1,6 +1,6 @@
 # RFC 0001: Agent Tool Contract
 
-Status: draft 0.5
+Status: draft 0.6
 Author: Christopher Davenport
 Discussion: to be opened against this repository. The Go module at its
 root is the reference binding; agentturn is the reference harness.
@@ -624,19 +624,23 @@ are added.
 ### MCP
 
 The adapters map to and from the contract and add nothing it cannot
-express. Where MCP has no field for a property, the property is set on
-the local side by the host and does not cross.
+express. Where MCP has no field for a property, the serving side
+states it in the tool's `_meta` under one namespaced key, `ToolMetaKey`,
+as the server's statement rather than a hint, and the per-call claims
+are answered by a method of their own; a property neither carries is
+set on the local side by the host and does not cross.
 
 | Contract | MCP | Direction |
 | --- | --- | --- |
 | name, description | `name`, `description` | both |
 | parameters | `inputSchema`; a nil schema is served as an empty object schema | both |
 | strict | no field; not carried | — |
-| sequential, resource | no field; `mcpclient.WithResource(resource, names…)` names a remote tool's state locally | consume |
+| sequential, resource | no field in MCP; the serving side puts them in the tool's `_meta` under `ToolMetaKey` (`sequential`, `resource`), and the consuming side declares them from there. `mcpclient.WithSequential(names…)` adds sequential, and `WithResource(resource, names…)` names a remote tool's state and wins over the server's, an empty resource withdrawing it, since the host sees every server it composes and the server only itself | both |
 | annotations | `annotations`: `title`, `readOnlyHint`, `destructiveHint` (absent is true), `idempotentHint`, `openWorldHint` (absent is true); a tool with no block is unstated | both |
 | confined | no field; `mcpclient.WithConfined(by, names…)` says a remote tool runs confined, and `WithConfinedFunc(fn, names…)` answers per call; the claim is the host's, which placed the server, and the server's does not cross | consume |
-| replay | no field; a consumed tool is *unknown* whatever its `idempotentHint`, since MCP defines no deduplication and a call whose stream broke may or may not have run; a served tool's claim does not cross | — |
-| facts | no field yet; a consumed tool makes no claim and a served tool's claim does not cross. A method of its own beside `tools/call`, answering a response's calls together, is the planned carriage | — |
+| replay | answered by `execution/facts` beside the call's facts, for a tool whose `_meta` marks `replay`; *keyed* is sent and read as *unknown*, since the idempotency key does not cross. A consumed tool of a server that does not answer is *unknown* whatever its `idempotentHint`, since MCP defines no deduplication and a call whose stream broke may or may not have run | both |
+| facts | `execution/facts`, a method of its own beside `tools/call`, so it cannot reach the model's tool list: its params are a response's calls together, `{name, arguments}`, and its result one answer per call in order, `facts` (`{calls: [{tool, args, text}], rewrite}`, calls `null` for the call itself and `[]` for nothing the tool can state), or `error` in its place, or neither for a tool that makes no claim, with the call's `replay`. Answering never runs a tool. The server advertises it as the experimental capability `FactsCapability`, and marks a claiming tool `facts` in its `_meta` under `ToolMetaKey`, which is the presence a reader sees without asking. A consumed tool so marked on a server that advertises it is factual and asks under the call's context; a server that does not advertise it is never asked | both |
+| read-only | the tool's `_meta` under `ToolMetaKey` carries `readOnly`, the served tool's annotation, as the server's statement rather than a hint; the consuming side reads it with `ToolMetaOf` | both |
 | idempotency key | no field; a consumed call's key is not sent, and a served call has none | — |
 | closer | not a closer: the remote session is closed through `mcpclient.Remote.Close` | consume |
 | arguments | `arguments`; the server validates against `inputSchema` with a general validator | both |
@@ -931,6 +935,17 @@ module and is listed in the changelog as one.
   differ, `retryable` with a not-before time in a `_meta` block, a
   rate-limit error code, so it waits for one to settle. The MCP
   client handles its own transport failures meanwhile.
+
+## Changes since 0.5
+
+- The MCP binding carries facts and replay (#79): `execution/facts`, a
+  method that takes a response's calls together and answers each with
+  its facts, or their error, and its replay, advertised as an
+  experimental capability. Facts presence, replay, read-only,
+  sequential and resource cross in each tool's `_meta`, so a consuming
+  host no longer names sequential and resource by hand; its own
+  resource still wins. *Keyed* replay reads as *unknown* over MCP,
+  since the idempotency key does not cross.
 
 ## Changes since 0.4
 

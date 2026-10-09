@@ -5,6 +5,44 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Added: mcpserver serves its tools' facts and replay claims (#79).
+  `execution/facts` (`FactsMethod`) is a method of its own: it takes a
+  model response's calls together, `{name, arguments}`, and answers
+  each one in order. An answer holds the call's facts
+  (`{calls: [{tool, args, text}], rewrite}`), or its error, or neither
+  for a tool that makes no claim, plus the call's replay. Nil calls
+  cross as `null` and an empty list as `[]`, and errors are per call.
+  Answering asks the claims under a context that carries the session
+  and never runs a tool. The server advertises the method as the
+  experimental capability `FactsCapability`. `Definition` puts what MCP
+  has no field for in each tool's `_meta` under `ToolMetaKey`: whether
+  it claims facts and answers replay, and its read-only, sequential
+  and resource. A tool with none of them carries no entry, so a
+  definition that had nothing to say is unchanged. Tools added by
+  several `AddTools` calls on one server are all answered. `keyed`
+  replay is sent as `unknown`, because a served call has no
+  idempotency key.
+- Added: mcpclient carries the claims (#79). On a server that
+  advertises `FactsCapability`, a tool whose `_meta` marks it as
+  claiming is `Factual`, and `Replayable` if marked so. It asks
+  `execution/facts` under the caller's context, and `Remote.Close`
+  ends a request in flight with `ErrClosed`. `Remote.Facts(ctx,
+  calls...)` asks about several calls in one request and answers each
+  as `FactsOf` and `ReplayOf` would. A call of a tool that claims
+  neither is answered without being sent. `ToolMetaOf` reads a listed
+  tool's `_meta`, and `WithoutClaims()` turns the claims off for a
+  server a host does not trust to describe its own tools. A server
+  that does not advertise the capability is never asked, and its
+  tools make no claim, as before.
+- Changed: mcpclient declares sequential and resource from the
+  listing's `_meta`, so a host no longer names them by hand for a tool
+  `mcpserver` serves. `WithResource` still wins, an empty resource
+  withdrawing the server's, because the host sees every server it
+  composes and the server sees only itself. `WithSequential` adds to
+  what the server says and cannot take it away. RFC 0001 is draft 0.6.
+
 ## v0.0.19 - 2026-10-09
 
 - Added: a tool can say what a call would touch, before it runs and
