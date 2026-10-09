@@ -58,9 +58,9 @@ const FactsCapability = "io.github.christopherdavenport.agenttool/facts"
 //
 // A field that would be false or empty is left out, and a tool that has
 // none of them carries no entry. facts says the tool makes the facts
-// claim ([agenttool.IsFactual]), so a client asks [FactsMethod] about
-// its calls and skips the request for one that does not; replay says the
-// tool answers [agenttool.Replayable], which every tool [agenttool.New]
+// claim ([agenttool.IsFactual]), so a client that trusts the server
+// asks [FactsMethod] about its calls and skips the request for one that
+// does not; replay says the tool answers [agenttool.Replayable], which every tool [agenttool.New]
 // and [agenttool.NewFunc] build does, so it says the server will answer
 // and not that the answer is other than unknown. readOnly is the tool's
 // [agenttool.Annotations] ReadOnly, sequential [agenttool.IsSequential]

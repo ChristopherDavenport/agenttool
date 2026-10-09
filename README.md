@@ -399,10 +399,17 @@ own, `execution/facts`, which takes a model response's calls together
 and returns each call's facts, or its error, and its replay answer.
 The method asks the claims and never runs a tool. A method cannot
 reach the model's tool list, where a reserved tool name could. The
-server advertises the method as an experimental capability. On a
-server that does, an `mcpclient` tool marked as claiming is `Factual`
-or `Replayable`, and asks under the call's context. `Remote.Facts`
-asks about several calls in one request:
+server advertises the method as an experimental capability.
+
+`mcpclient` takes the claims only when the host opts in with
+`mcpclient.WithClaims()`, for a server it trusts, such as an executor
+it started itself. A claim is what a policy decides a call on, so a
+server that lied about what its calls touch could steer the policy:
+a delete that claims to read a harmless file would be allowed as that
+read. With the option, on a server that advertises the method, an
+`mcpclient` tool marked as claiming is `Factual` or `Replayable`, and
+asks under the call's context. `Remote.Facts` asks about several calls
+in one request:
 
 ```go
 answers, err := remote.Facts(ctx,
@@ -412,14 +419,14 @@ answers, err := remote.Facts(ctx,
 // ReplayOf report for that call; a tool that claims nothing is not sent.
 ```
 
-A server that does not advertise the method is never asked, and its
-tools make no claim, as before. Sequential and resource come from the
-listing, so a host no longer names them for an `mcpserver` tool; a
-`WithResource` the host gives still wins, since the host sees every
-server it composes. `keyed` replay reads as `unknown` over MCP, because
-the idempotency key does not cross. The claims are as trustworthy as
-the server, and `mcpclient.WithoutClaims()` turns them off for one
-whose account of its own tools a host does not take.
+Without the option, or on a server that does not advertise the
+method, the server is never asked and its tools make no claim, as
+before. Sequential and resource come from the listing either way,
+since they can only make calls run one after another, so a host no
+longer names them for an `mcpserver` tool. A `WithResource` the host
+gives still wins, since the host sees every server it composes.
+`keyed` replay reads as `unknown` over MCP, because the idempotency
+key does not cross.
 
 ### A server behind OAuth
 

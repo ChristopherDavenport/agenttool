@@ -24,20 +24,23 @@ versions may break the API.
   several `AddTools` calls on one server are all answered. `keyed`
   replay is sent as `unknown`, because a served call has no
   idempotency key.
-- Added: mcpclient carries the claims (#79). On a server that
-  advertises `FactsCapability`, a tool whose `_meta` marks it as
-  claiming is `Factual`, and `Replayable` if marked so. It asks
+- Added: mcpclient carries the claims for a server the host trusts
+  (#79). They are opt-in, with `WithClaims()`: a claim is what a
+  policy decides a call on, so a server that lied about what its calls
+  touch could steer the policy into allowing them. With the option, on
+  a server that advertises `FactsCapability`, a tool whose `_meta`
+  marks it as claiming is `Factual`, and `Replayable` if marked so. It asks
   `execution/facts` under the caller's context, and `Remote.Close`
   ends a request in flight with `ErrClosed`. `Remote.Facts(ctx,
   calls...)` asks about several calls in one request and answers each
   as `FactsOf` and `ReplayOf` would. A call of a tool that claims
   neither is answered without being sent. `ToolMetaOf` reads a listed
-  tool's `_meta`, and `WithoutClaims()` turns the claims off for a
-  server a host does not trust to describe its own tools. A server
-  that does not advertise the capability is never asked, and its
-  tools make no claim, as before.
+  tool's `_meta`. Without the option, or on a server that does not
+  advertise the capability, the server is never asked and its tools
+  make no claim, as before.
 - Changed: mcpclient declares sequential and resource from the
-  listing's `_meta`, so a host no longer names them by hand for a tool
+  listing's `_meta`, with or without `WithClaims`, since they can only
+  make calls run one after another, so a host no longer names them by hand for a tool
   `mcpserver` serves. `WithResource` still wins, an empty resource
   withdrawing the server's, because the host sees every server it
   composes and the server sees only itself. `WithSequential` adds to

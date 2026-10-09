@@ -23,14 +23,17 @@
 // A server that serves its tools with mcpserver says more than MCP has
 // fields for. Each listed tool's _meta under [ToolMetaKey] says whether
 // it is sequential and the shared state it names, which the local tool
-// declares, and whether it makes the facts and replay claims. When the
-// server also advertises [FactsCapability], a tool it marks as claiming
-// is [agenttool.Factual], or [agenttool.Replayable], and answers by
-// asking the server with [FactsMethod] under the caller's context;
-// [Remote.Facts] asks about a model response's calls in one request. A
-// server that does not advertise it is never asked, and its tools make
-// no claim, as before. The claims are the server's, so a policy trusts
-// them as far as it trusts the server; [WithoutClaims] turns them off.
+// declares, and whether it makes the facts and replay claims. The
+// claims are taken only from a server the host trusts, by
+// [WithClaims]: a claim is what a policy decides a call on, so a server
+// that lied about what its calls touch could steer the policy into
+// allowing them. With the option, and a server that advertises
+// [FactsCapability], a tool the server marks as claiming is
+// [agenttool.Factual], or [agenttool.Replayable], and answers by asking
+// the server with [FactsMethod] under the caller's context;
+// [Remote.Facts] asks about a model response's calls in one request.
+// Without either, the server is never asked and its tools make no
+// claim, as before.
 //
 // Tools returns a snapshot. The remote subscribes to the server's
 // tool-list-changed notification and refreshes it, so a loop that reads
@@ -107,7 +110,7 @@ type options struct {
 	clientOpts     sdk.ClientOptions
 	onRefreshError func(error)
 	elicitation    bool
-	noClaims       bool
+	claims         bool
 	// protocolVersion is the version the session offers, the SDK's
 	// latest when empty; tests set it to reach an older server's path.
 	protocolVersion string
@@ -373,16 +376,23 @@ func WithElicitation() Option {
 	return func(o *options) { o.elicitation = true }
 }
 
-// WithoutClaims has the remote's tools make no facts or replay claim
-// even when the server offers them, for a host that does not take the
-// server's account of what its calls would touch: a policy that decides
-// a call on its facts trusts them as far as it trusts the tool, and the
-// tool here is whatever the server runs. The tools are then decided on
-// their own names and arguments, as before the server offered claims.
-// What the listing says of sequential and resource still applies, since
-// it only orders calls.
-func WithoutClaims() Option {
-	return func(o *options) { o.noClaims = true }
+// WithClaims takes the server's facts and replay claims for its tools,
+// for a server the host trusts, such as an executor it started itself.
+// Without it the remote's tools make no claim even when the server
+// offers them, and are decided on their own names and arguments. A
+// claim is what a policy decides a call on, and trusts as far as it
+// trusts the tool, and the tool here is whatever the server runs: a
+// server that said its delete reads a harmless file could steer a
+// policy into allowing the delete, and one that said a call is safe to
+// run again could have it run twice. With it, a tool the server marks
+// as claiming, on a server that advertises [FactsCapability], asks the
+// server with [FactsMethod]; a server that does not advertise it is
+// never asked either way.
+//
+// What the listing says of sequential and resource applies without it,
+// since it can only make calls run one after another.
+func WithClaims() Option {
+	return func(o *options) { o.claims = true }
 }
 
 // Remote is one connected MCP server: its session and the tools it

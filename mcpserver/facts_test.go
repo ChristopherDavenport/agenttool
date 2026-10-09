@@ -130,7 +130,7 @@ func claimsOf(t *testing.T, s *mcpclient.Remote, name string, args string) (agen
 
 func TestFactsRoundTrip(t *testing.T) {
 	c := &claimer{t: t}
-	s := roundTrip(t, newServer(t, "claims", c.tools()...))
+	s := roundTrip(t, newServer(t, "claims", c.tools()...), mcpclient.WithClaims())
 
 	f, claims, err := claimsOf(t, s, "sh", `{"command":"cat .env > out/x"}`)
 	if err != nil || !claims {
@@ -182,7 +182,7 @@ func TestFactsRoundTrip(t *testing.T) {
 
 func TestFactsReplayCarried(t *testing.T) {
 	c := &claimer{t: t}
-	s := roundTrip(t, newServer(t, "claims", c.tools()...))
+	s := roundTrip(t, newServer(t, "claims", c.tools()...), mcpclient.WithClaims())
 	tools := agenttool.Set(s.Tools())
 	for name, want := range map[string]agenttool.Replay{
 		"sh":    agenttool.ReplaySafe,
@@ -204,7 +204,7 @@ func TestFactsBatch(t *testing.T) {
 	c := &claimer{t: t}
 	server := newServer(t, "claims", c.tools()...)
 	requests := countFacts(server)
-	s := roundTrip(t, server, mcpclient.WithPrefix("x"))
+	s := roundTrip(t, server, mcpclient.WithPrefix("x"), mcpclient.WithClaims())
 	ctx := context.Background()
 
 	got, err := s.Facts(ctx,
@@ -286,7 +286,7 @@ func TestFactsWithoutCapability(t *testing.T) {
 		server.AddTool(Definition(tl), h)
 	}
 	requests := countFacts(server)
-	s := roundTrip(t, server)
+	s := roundTrip(t, server, mcpclient.WithClaims())
 	tl, _ := agenttool.Set(s.Tools()).Lookup("sh")
 	if agenttool.IsFactual(tl) {
 		t.Error("a tool of a server without the capability claims facts")
@@ -303,20 +303,35 @@ func TestFactsWithoutCapability(t *testing.T) {
 	}
 }
 
-func TestFactsWithoutClaims(t *testing.T) {
+// TestFactsIgnoredByDefault: a host takes a server's claims only by
+// opting in, since a claim is what a policy decides on and a server
+// that lied could steer it. Without WithClaims the server is never
+// asked, even though it advertises the method, and its tools claim
+// nothing; what the listing says of ordering still applies.
+func TestFactsIgnoredByDefault(t *testing.T) {
 	c := &claimer{t: t}
-	server := newServer(t, "claims", c.tools()...)
+	server := newServer(t, "claims", append(c.tools(), c.tool("seq", agenttool.WithSequential()))...)
 	requests := countFacts(server)
-	s := roundTrip(t, server, mcpclient.WithoutClaims())
-	tl, _ := agenttool.Set(s.Tools()).Lookup("sh")
-	if agenttool.IsFactual(tl) || agenttool.ReplayOf(context.Background(), tl, nil) != agenttool.ReplayUnknown {
-		t.Error("WithoutClaims left a claim on the tool")
+	s := roundTrip(t, server)
+	set := agenttool.Set(s.Tools())
+	for _, name := range []string{"sh", "nothing", "broken"} {
+		tl, _ := set.Lookup(name)
+		if agenttool.IsFactual(tl) {
+			t.Errorf("%s claims facts without WithClaims", name)
+		}
 	}
-	if got, err := s.Facts(context.Background(), mcpclient.FactsCall{Name: "sh"}); err != nil || got[0].Claimed {
+	sh, _ := set.Lookup("sh")
+	if r := agenttool.ReplayOf(context.Background(), sh, nil); r != agenttool.ReplayUnknown {
+		t.Errorf("sh: replay %v without WithClaims", r)
+	}
+	if got, err := s.Facts(context.Background(), mcpclient.FactsCall{Name: "sh"}, mcpclient.FactsCall{Name: "broken"}); err != nil || got[0].Claimed || got[1].Claimed || got[0].Replay != agenttool.ReplayUnknown {
 		t.Errorf("batch: %+v, %v", got, err)
 	}
-	if requests.Load() != 0 {
-		t.Error("WithoutClaims asked the server")
+	if requests.Load() != 0 || c.asked.Load() != 0 {
+		t.Error("the server was asked without WithClaims")
+	}
+	if seq, _ := set.Lookup("seq"); !agenttool.IsSequential(seq) {
+		t.Error("sequential from the listing needs no opt-in, and was dropped")
 	}
 }
 
@@ -331,7 +346,7 @@ func TestFactsCancelled(t *testing.T) {
 		stopped <- ctx.Err()
 		return agenttool.Facts{}, ctx.Err()
 	}))
-	s := roundTrip(t, newServer(t, "slow", slow))
+	s := roundTrip(t, newServer(t, "slow", slow), mcpclient.WithClaims())
 	tl, _ := agenttool.Set(s.Tools()).Lookup("slow")
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -361,7 +376,7 @@ func TestFactsClosed(t *testing.T) {
 		<-ctx.Done()
 		return agenttool.Facts{}, ctx.Err()
 	}))
-	s := roundTrip(t, newServer(t, "slow", slow))
+	s := roundTrip(t, newServer(t, "slow", slow), mcpclient.WithClaims())
 	tl, _ := agenttool.Set(s.Tools()).Lookup("slow")
 	go func() {
 		<-started
@@ -440,7 +455,7 @@ func TestFactsAcrossAddTools(t *testing.T) {
 	}))); err != nil {
 		t.Fatal(err)
 	}
-	s := roundTrip(t, server)
+	s := roundTrip(t, server, mcpclient.WithClaims())
 	got, err := s.Facts(context.Background(), mcpclient.FactsCall{Name: "sh", Args: json.RawMessage(`{"command":"ls"}`)}, mcpclient.FactsCall{Name: "again"})
 	if err != nil {
 		t.Fatal(err)

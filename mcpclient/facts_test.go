@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/ChristopherDavenport/agenttool"
@@ -80,7 +81,7 @@ func factsServer(t *testing.T, answer string, short bool) *sdk.Server {
 }
 
 func TestFactsFromAnyServer(t *testing.T) {
-	s := connect(t, factsServer(t, `{"facts":{"calls":[{"tool":"read","args":{"path":"a"}}],"rewrite":null},"replay":"keyed"}`, false))
+	s := connect(t, factsServer(t, `{"facts":{"calls":[{"tool":"read","args":{"path":"a"}}],"rewrite":null},"replay":"keyed"}`, false), WithClaims())
 	tl := lookup(t, s, "sh")
 	args := json.RawMessage(`{"command":"ls"}`)
 	f, claims, err := agenttool.FactsOf(context.Background(), tl, args)
@@ -97,7 +98,7 @@ func TestFactsFromAnyServer(t *testing.T) {
 }
 
 func TestFactsShortAnswer(t *testing.T) {
-	s := connect(t, factsServer(t, `{"replay":"safe"}`, true))
+	s := connect(t, factsServer(t, `{"replay":"safe"}`, true), WithClaims())
 	_, err := s.Facts(context.Background(), FactsCall{Name: "sh", Args: json.RawMessage(`{"command":"ls"}`)})
 	if err == nil || !strings.Contains(err.Error(), "0 answers for 1 calls") {
 		t.Errorf("err = %v", err)
@@ -109,5 +110,40 @@ func TestFactsShortAnswer(t *testing.T) {
 	}
 	if r := agenttool.ReplayOf(context.Background(), tl, json.RawMessage(`{"command":"ls"}`)); r != agenttool.ReplayUnknown {
 		t.Errorf("replay %v, want unknown", r)
+	}
+}
+
+// TestClaimsNeedTheOption: a server that advertises the method and
+// marks its tool is not asked unless the host opts in.
+func TestClaimsNeedTheOption(t *testing.T) {
+	var asked atomic.Int64
+	server := factsServer(t, `{"facts":{"calls":[]},"replay":"safe"}`, false)
+	server.AddReceivingMiddleware(func(next sdk.MethodHandler) sdk.MethodHandler {
+		return func(ctx context.Context, method string, req sdk.Request) (sdk.Result, error) {
+			if method == FactsMethod {
+				asked.Add(1)
+			}
+			return next(ctx, method, req)
+		}
+	})
+	s := connect(t, server)
+	tl := lookup(t, s, "sh")
+	args := json.RawMessage(`{"command":"ls"}`)
+	if agenttool.IsFactual(tl) || agenttool.ReplayOf(context.Background(), tl, args) != agenttool.ReplayUnknown {
+		t.Error("the tool claims without WithClaims")
+	}
+	if got, err := s.Facts(context.Background(), FactsCall{Name: "sh", Args: args}); err != nil || got[0].Claimed {
+		t.Errorf("batch: %+v, %v", got, err)
+	}
+	if asked.Load() != 0 {
+		t.Error("the server was asked without WithClaims")
+	}
+	s = connect(t, server, WithClaims())
+	tl = lookup(t, s, "sh")
+	if f, claims, err := agenttool.FactsOf(context.Background(), tl, args); err != nil || !claims || f.Calls == nil {
+		t.Errorf("with WithClaims: %+v, %v, %v", f, claims, err)
+	}
+	if asked.Load() != 1 {
+		t.Errorf("asked %d times with WithClaims, want 1", asked.Load())
 	}
 }

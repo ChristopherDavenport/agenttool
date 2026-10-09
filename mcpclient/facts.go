@@ -165,9 +165,9 @@ func rawOrNil(raw json.RawMessage) json.RawMessage {
 // round trip for all of them. It reads the current snapshot of the
 // tools: a call naming no tool of the remote is answered with an error,
 // and a call of a tool that claims neither facts nor replay is answered
-// as making no claim without being sent. A server that does not
-// advertise [FactsCapability] is not asked, and every answer is no
-// claim. The error is the request's, the end of ctx or of the remote
+// as making no claim without being sent. Without [WithClaims], or for a
+// server that does not advertise [FactsCapability], nothing is sent and
+// every answer is no claim. The error is the request's, the end of ctx or of the remote
 // included; each call's own is in its answer.
 func (s *Remote) Facts(ctx context.Context, calls ...FactsCall) ([]FactsAnswer, error) {
 	out := make([]FactsAnswer, len(calls))
@@ -217,8 +217,9 @@ func answerFor(a factsAnswer, meta ToolMeta) FactsAnswer {
 }
 
 // claimsOn reports whether the remote's tools carry the server's claims:
-// the server advertises [FactsCapability] and [WithoutClaims] is off.
-func (s *Remote) claimsOn() bool { return s.factsCap && !s.opts.noClaims }
+// the host passed [WithClaims] and the server advertises
+// [FactsCapability].
+func (s *Remote) claimsOn() bool { return s.opts.claims && s.factsCap }
 
 // askOne asks the server about one call of the tool named remote.
 func (s *Remote) askOne(ctx context.Context, remote string, args json.RawMessage) (factsAnswer, error) {
