@@ -5,7 +5,7 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
-## Unreleased
+## v0.0.22 - 2026-10-10
 
 - Added: `Answer.Note`, what the user said with an elicitation's
   answer, whatever the action: why they declined, or what to bear in
