@@ -5,6 +5,15 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Added: `Answer.Note`, what the user said with an elicitation's
+  answer, whatever the action: why they declined, or what to bear in
+  mind on an accept. An asker may pass it on; an agent loop that asked
+  whether a call may run tells the model. MCP's elicitation result has
+  no field for it, so `mcpclient` does not send it to a server and
+  `mcpserver`'s answers never carry one.
+
 ## v0.0.21 - 2026-10-09
 
 - Added: `mcpclient.WithClientSetup(fn)` lets a host configure the SDK
