@@ -46,6 +46,14 @@ type Answer struct {
 	// question's Schema, when the action is [ActionAccept]; nil
 	// otherwise.
 	Content json.RawMessage
+	// Note is what the user said with the answer, in their own words,
+	// whatever the action: why they declined, or what to bear in mind
+	// on an accept. It is for the asker, which may pass it on: an
+	// agent loop that asked whether a call may run tells the model.
+	// Empty when the user said nothing. MCP's elicitation result has
+	// no place for it, so mcpclient does not send it to a server and
+	// mcpserver's answers never carry one.
+	Note string
 }
 
 // Elicitor answers a question a tool asks the user mid-call. A harness
