@@ -52,6 +52,10 @@
 // snapshot as it was and reports through [WithRefreshError], or the
 // SDK logger when one is set; Await returns the same error until a
 // refresh succeeds.
+//
+// A host that speaks more than MCP to its server, a JSON-RPC method of
+// its own, registers the method on the SDK client [Connect] creates,
+// with [WithClientSetup], and sends it on [Remote.Session].
 package mcpclient
 
 import (
@@ -108,6 +112,7 @@ type options struct {
 	grace          *time.Duration
 	client         sdk.Implementation
 	clientOpts     sdk.ClientOptions
+	setups         []func(*sdk.Client) error
 	onRefreshError func(error)
 	elicitation    bool
 	claims         bool
@@ -310,6 +315,31 @@ func WithClientInfo(name, version string) Option {
 // chained to any the caller set.
 func WithClientOptions(opts sdk.ClientOptions) Option {
 	return func(o *options) { o.clientOpts = opts }
+}
+
+// WithClientSetup has [Connect] call fn on the SDK client it creates,
+// before it connects, so a host can register what the SDK only takes on
+// the client: a custom method the client sends, with
+// [sdk.AddSendingCustomMethod], or sending middleware. The host then
+// sends the method on the session, as
+// sdk.CallCustomMethod(ctx, remote.Session(), method, params).
+//
+// fn runs once, after the client options from [WithClientOptions] are
+// applied. An error from fn fails Connect, which returns it wrapped and
+// opens no session. Several of the option run in the order given.
+// [FactsMethod] is registered after them, so a setup cannot replace it.
+//
+// Register in fn, not later on a client fn kept: go-sdk v1.8.0 writes
+// its table of sending methods under the client's lock but reads it
+// without the lock on every request, so a registration made while the
+// session is sending races with it. fn must not connect the client
+// itself.
+func WithClientSetup(fn func(*sdk.Client) error) Option {
+	return func(o *options) {
+		if fn != nil {
+			o.setups = append(o.setups, fn)
+		}
+	}
 }
 
 // WithRefreshError sets the function called when the refresh that
@@ -534,6 +564,11 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 	}
 
 	client := sdk.NewClient(&o.client, &clientOpts)
+	for _, setup := range o.setups {
+		if err := setup(client); err != nil {
+			return nil, fmt.Errorf("mcp: client setup: %w", err)
+		}
+	}
 	if err := sdk.AddSendingCustomMethod[*factsParams, *factsResult](client, FactsMethod); err != nil {
 		return nil, fmt.Errorf("mcp: %w", err)
 	}

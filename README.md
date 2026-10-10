@@ -428,6 +428,23 @@ gives still wins, since the host sees every server it composes.
 `keyed` replay reads as `unknown` over MCP, because the idempotency
 key does not cross.
 
+A host can speak more than MCP to a server it runs, such as an
+executor that also starts processes for it. The SDK sends a JSON-RPC
+method of the host's own only once it is registered on the client,
+which `Connect` creates, so `mcpclient.WithClientSetup` hands the host
+that client before it connects:
+
+```go
+remote, err := mcpclient.Connect(ctx, t, mcpclient.WithClientSetup(func(c *mcp.Client) error {
+	return mcp.AddSendingCustomMethod[*StartParams, *StartResult](c, "acme/process.start")
+}))
+res, err := mcp.CallCustomMethod[*StartParams, *StartResult](ctx, remote.Session(), "acme/process.start", &StartParams{Command: "gopls"})
+```
+
+An error from the setup fails `Connect`. Register there and not later:
+the SDK reads its method table without a lock on every request, so a
+registration made while the session is sending races with it.
+
 ### A server behind OAuth
 
 `mcpclient` has no OAuth of its own yet (#58). A hosted server that

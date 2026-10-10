@@ -5,6 +5,20 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Added: `mcpclient.WithClientSetup(fn)` lets a host configure the SDK
+  client `Connect` creates (#81). `Connect` calls fn once, before it
+  connects, and an error from fn fails it without opening a session;
+  several setups run in the order given. A host registers a JSON-RPC
+  method of its own there, with `AddSendingCustomMethod`, and sends it
+  as `sdk.CallCustomMethod(ctx, remote.Session(), method, params)`.
+  Registration belongs in fn: go-sdk v1.8.0 reads its method table
+  without a lock on every request, so registering on a client kept
+  past `Connect` races with the session. `FactsMethod` is registered
+  after the setups, so one cannot replace it. Without the option
+  nothing changes.
+
 ## v0.0.20 - 2026-10-09
 
 - Added: mcpserver serves its tools' facts and replay claims (#79).
