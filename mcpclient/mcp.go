@@ -53,6 +53,17 @@
 // SDK logger when one is set; Await returns the same error until a
 // refresh succeeds.
 //
+// A session that ends, a server process that crashed or a connection
+// that dropped, stays ended unless the host passes [WithReconnect].
+// With it, the next request that would send on the ended session
+// restarts the server over a new transport first, and a restart is a
+// refresh: the restarted server's tools replace the snapshot, whatever
+// they are now. A call is never sent twice and never sent against a
+// tool that changed: a call cut by the end of its session returns its
+// error, and may or may not have run, and a call decided on a tool the
+// restarted server no longer lists as it was returns [ErrToolChanged]
+// unsent. [WithReconnected] reports each restart.
+//
 // A host that speaks more than MCP to its server, a JSON-RPC method of
 // its own, registers the method on the SDK client [Connect] creates,
 // with [WithClientSetup], and sends it on [Remote.Session].
@@ -116,6 +127,8 @@ type options struct {
 	onRefreshError func(error)
 	elicitation    bool
 	claims         bool
+	dial           func(context.Context) (sdk.Transport, error)
+	onReconnect    func(ReconnectInfo)
 	// protocolVersion is the version the session offers, the SDK's
 	// latest when empty; tests set it to reach an older server's path.
 	protocolVersion string
@@ -429,23 +442,30 @@ func WithClaims() Option {
 // offers. It is the consume-side handle; mcpserver.NewServer returns
 // the SDK server for the serve side.
 type Remote struct {
-	session *sdk.ClientSession
-	opts    options
+	opts options
+
+	// client is the SDK client every session of the remote is connected
+	// with, and sessionOpts the options each is connected under, so a
+	// restarted session is initialised as the first was. Both are set
+	// before the remote is returned and read-only after.
+	client      *sdk.Client
+	sessionOpts *sdk.ClientSessionOptions
 
 	mu       sync.RWMutex
-	tools    []agenttool.Tool
+	link     *link                             // the session, replaced on a restart
+	tools    []agenttool.Tool                  // listed on link
 	claims   map[string]claimEntry             // by local name, beside tools
 	progress map[string]func(agenttool.Result) // by progress token
 
-	// factsCap says the server advertises [FactsCapability]. It is set
-	// before the remote is returned and read-only after.
-	factsCap bool
+	// attempt is the restart in flight, when there is one; see
+	// [WithReconnect]. It is under mu. reconnectTimeout bounds it, and is
+	// [reconnectTimeout] but for tests.
+	attempt          *attempt
+	reconnectTimeout time.Duration
 
-	// grace bounds the post-call wait for a notification and
-	// listChanged reports whether the server says it sends any. Both are
-	// set before the remote is returned and read-only after.
-	grace       time.Duration
-	listChanged bool
+	// grace bounds the post-call wait for a notification. It is set
+	// before the remote is returned and read-only after.
+	grace time.Duration
 
 	// cancelGrace is [cancelGrace], but for tests.
 	cancelGrace time.Duration
@@ -490,10 +510,13 @@ type Remote struct {
 }
 
 // claimEntry is what the remote keeps of a listed tool to answer
-// [Remote.Facts]: its name on the server and what the server says of it.
+// [Remote.Facts]: its name on the server and what the server says of it,
+// and its definition, to tell whether a restarted server still offers
+// the same tool.
 type claimEntry struct {
 	remote string
 	meta   ToolMeta
+	def    string
 }
 
 // runningCall is a call in flight: its context, and the stop that ends
@@ -511,7 +534,7 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 	for _, opt := range opts {
 		opt(&o)
 	}
-	s := &Remote{opts: o, progress: make(map[string]func(agenttool.Result)), running: make(map[int64]runningCall), asking: make(map[int64]context.CancelCauseFunc), settledCh: make(chan struct{}), notified: make(chan struct{}), grace: DefaultNotificationGrace, cancelGrace: cancelGrace}
+	s := &Remote{opts: o, progress: make(map[string]func(agenttool.Result)), running: make(map[int64]runningCall), asking: make(map[int64]context.CancelCauseFunc), settledCh: make(chan struct{}), notified: make(chan struct{}), grace: DefaultNotificationGrace, cancelGrace: cancelGrace, reconnectTimeout: reconnectTimeout}
 	if o.grace != nil {
 		s.grace = *o.grace
 	}
@@ -572,31 +595,40 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 	if err := sdk.AddSendingCustomMethod[*factsParams, *factsResult](client, FactsMethod); err != nil {
 		return nil, fmt.Errorf("mcp: %w", err)
 	}
-	var sessionOpts *sdk.ClientSessionOptions
 	if o.protocolVersion != "" {
-		sessionOpts = &sdk.ClientSessionOptions{ProtocolVersion: o.protocolVersion}
+		s.sessionOpts = &sdk.ClientSessionOptions{ProtocolVersion: o.protocolVersion}
 	}
-	session, err := client.Connect(ctx, t, sessionOpts)
+	s.client = client
+	session, err := client.Connect(ctx, t, s.sessionOpts)
 	if err != nil {
 		return nil, fmt.Errorf("mcp: connect: %w", err)
 	}
-	s.session = session
-	if res := session.InitializeResult(); res != nil && res.Capabilities != nil {
-		if res.Capabilities.Tools != nil {
-			s.listChanged = res.Capabilities.Tools.ListChanged
-		}
-		_, s.factsCap = res.Capabilities.Experimental[FactsCapability]
-	}
-	if err := s.Refresh(ctx); err != nil {
+	// The session is the remote's before its tools are listed, since a
+	// notification may arrive while they are.
+	l := newLink(session, 0)
+	s.mu.Lock()
+	s.link = l
+	s.mu.Unlock()
+	if _, _, err := s.adopt(ctx, l); err != nil {
 		_ = session.Close()
 		return nil, err
 	}
 	return s, nil
 }
 
+// current returns the remote's session as it is now.
+func (s *Remote) current() *link {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.link
+}
+
 // Session returns the underlying SDK session, for resources, prompts and
-// anything else this package does not map.
-func (s *Remote) Session() *sdk.ClientSession { return s.session }
+// anything else this package does not map. With [WithReconnect] it is
+// the session as it is now: one that has ended is replaced when a
+// request restarts the server, and a host that sends on it can call
+// [Remote.Refresh] first to have the server restarted.
+func (s *Remote) Session() *sdk.ClientSession { return s.current().session }
 
 // ServerInfo returns the name and version the server gave at
 // initialize, and the zero value when it gave none. It is what a host
@@ -605,20 +637,14 @@ func (s *Remote) Session() *sdk.ClientSession { return s.session }
 // instances of one binary apart in a message about which server a tool
 // came from, which two claimed one name, or which one failed to
 // refresh.
-func (s *Remote) ServerInfo() sdk.Implementation {
-	res := s.session.InitializeResult()
-	if res == nil || res.ServerInfo == nil {
-		return sdk.Implementation{}
-	}
-	return *res.ServerInfo
-}
+func (s *Remote) ServerInfo() sdk.Implementation { return s.current().serverInfo() }
 
 // Instructions returns the instructions the server gave at initialize,
 // its own account of how to use it and its tools, and "" when it gave
 // none. A host that composes servers puts them where the model reads
 // them; this package does not.
 func (s *Remote) Instructions() string {
-	res := s.session.InitializeResult()
+	res := s.current().session.InitializeResult()
 	if res == nil {
 		return ""
 	}
@@ -646,6 +672,8 @@ func (s *Remote) refreshFailed(err error) {
 // runs automatically on the tool-list-changed notification; see
 // [WithRefreshError] for how a failure there is reported. Refreshes
 // are serialised, so a Refresh that finds one in flight waits its turn.
+// With [WithReconnect], a Refresh that finds the session ended restarts
+// the server, which lists its tools.
 func (s *Remote) Refresh(ctx context.Context) error {
 	return s.refresh(ctx, true)
 }
@@ -654,20 +682,40 @@ func (s *Remote) Refresh(ctx context.Context) error {
 // received before the listing began as settled, with the listing's
 // error. When force is false and a refresh that began after the last
 // notification has already settled, there is nothing to do: several
-// notifications in quick succession cost one listing.
+// notifications in quick succession cost one listing. With
+// [WithReconnect] it restarts an ended session first, and a listing
+// the end of its session cut is made once more on the restarted one.
 func (s *Remote) refresh(ctx context.Context, force bool) error {
+	for try := 0; ; try++ {
+		if _, err := s.live(ctx); err != nil {
+			return err
+		}
+		again, err := s.relist(ctx, force, try == 0)
+		if !again {
+			return err
+		}
+	}
+}
+
+// relist is one refresh on the session as it is. It reports again when
+// the listing was cut by the end of the session and may be made once
+// more, which it may only when first is set, and settles nothing then.
+// The session cannot be replaced while it runs, since a restart adopts
+// its session under the same lock.
+func (s *Remote) relist(ctx context.Context, force, first bool) (again bool, err error) {
 	s.listing.Lock()
 	defer s.listing.Unlock()
 	gen := s.seen.Load()
-	if !force {
-		s.mu.RLock()
-		settled := s.settled
-		s.mu.RUnlock()
-		if settled >= gen {
-			return nil
-		}
+	s.mu.RLock()
+	l, settled := s.link, s.settled
+	s.mu.RUnlock()
+	if !force && settled >= gen {
+		return false, nil
 	}
-	tools, claims, err := s.list(ctx)
+	tools, claims, err := s.list(ctx, l)
+	if err != nil && first && s.resend(ctx, l, err) {
+		return true, err
+	}
 	s.mu.Lock()
 	if err == nil {
 		s.tools, s.claims = tools, claims
@@ -677,23 +725,29 @@ func (s *Remote) refresh(ctx context.Context, force bool) error {
 	close(s.settledCh)
 	s.settledCh = make(chan struct{})
 	s.mu.Unlock()
-	return err
+	return false, err
 }
 
-func (s *Remote) list(ctx context.Context) ([]agenttool.Tool, map[string]claimEntry, error) {
+// list lists l's tools, wrapped as tools of the remote that send on
+// whichever session is the remote's then.
+func (s *Remote) list(ctx context.Context, l *link) ([]agenttool.Tool, map[string]claimEntry, error) {
 	var tools []agenttool.Tool
 	claims := map[string]claimEntry{}
-	for t, err := range s.session.Tools(ctx, nil) {
+	for t, err := range l.session.Tools(ctx, nil) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("mcp: list tools: %w", err)
 		}
-		rt, err := s.wrap(t)
+		def, err := definition(t, s.claimsOn(l))
+		if err != nil {
+			return nil, nil, err
+		}
+		rt, err := s.wrap(l, t, def)
 		if err != nil {
 			return nil, nil, err
 		}
 		tools = append(tools, rt)
 		meta, _ := ToolMetaOf(t)
-		claims[rt.Name()] = claimEntry{remote: t.Name, meta: meta}
+		claims[rt.Name()] = claimEntry{remote: t.Name, meta: meta, def: def}
 	}
 	return tools, claims, nil
 }
@@ -725,7 +779,9 @@ func (s *Remote) Await(ctx context.Context) error {
 // after it with the same, and closes the session. A [FactsMethod]
 // request in flight, a tool's claim or [Remote.Facts], ends the same
 // way. It returns within a
-// few seconds whatever the calls were doing.
+// few seconds whatever the calls were doing. With [WithReconnect] it
+// also stops a restart in flight, and nothing restarts the server after
+// it.
 //
 // Ending a call cancels its request, so a server that keeps a session
 // stops the tool, and over stateless HTTP, where the Go SDK's server
@@ -756,7 +812,11 @@ func (s *Remote) Close() error {
 	for _, stop := range s.asking {
 		stop(ErrClosed)
 	}
+	l, a := s.link, s.attempt
 	s.mu.Unlock()
+	if a != nil {
+		a.stop(ErrClosed)
+	}
 	done := make(chan struct{})
 	go func() {
 		s.sending.Wait()
@@ -768,7 +828,7 @@ func (s *Remote) Close() error {
 	case <-t.C:
 	}
 	t.Stop()
-	return s.session.Close()
+	return l.session.Close()
 }
 
 // Name returns the local name of a remote tool under this server's
@@ -780,7 +840,9 @@ func (s *Remote) Name(remote string) string {
 	return s.opts.prefix + "__" + remote
 }
 
-func (s *Remote) wrap(t *sdk.Tool) (agenttool.Tool, error) {
+// wrap makes t, as listed on l with the definition def, a tool of the
+// remote.
+func (s *Remote) wrap(l *link, t *sdk.Tool, def string) (agenttool.Tool, error) {
 	schema := json.RawMessage(`{"type":"object"}`)
 	if t.InputSchema != nil {
 		var err error
@@ -804,7 +866,8 @@ func (s *Remote) wrap(t *sdk.Tool) (agenttool.Tool, error) {
 	} else if meta.Resource != "" {
 		opts = append(opts, agenttool.WithResource(meta.Resource))
 	}
-	opts = append(opts, s.claimOptions(remote, meta)...)
+	ref := toolRef{remote: remote, name: name, gen: l.gen, def: def}
+	opts = append(opts, s.claimOptions(l, ref, meta)...)
 	if fn, ok := latest(s.opts.confined, remote, name); ok {
 		opts = append(opts, agenttool.WithConfined(fn))
 	}
@@ -812,7 +875,7 @@ func (s *Remote) wrap(t *sdk.Tool) (agenttool.Tool, error) {
 		opts = append(opts, agenttool.WithAnnotations(a))
 	}
 	return agenttool.NewFunc(name, t.Description, schema, func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
-		return s.call(ctx, remote, readOnly, call)
+		return s.call(ctx, ref, readOnly, call)
 	}, opts...), nil
 }
 
@@ -856,7 +919,12 @@ func AnnotationsOf(t *sdk.Tool) (agenttool.Annotations, bool) {
 // delivered concurrently with, or just after, the result; the batch
 // executor in the tool package serialises them and drops anything after
 // completion.
-func (s *Remote) call(ctx context.Context, remote string, readOnly bool, call agenttool.Call) (agenttool.Result, error) {
+//
+// With [WithReconnect] the call restarts an ended session before it is
+// sent, is not sent when its tool changed with the restart, and is never
+// sent twice; see [Remote.sendOn].
+func (s *Remote) call(ctx context.Context, ref toolRef, readOnly bool, call agenttool.Call) (agenttool.Result, error) {
+	remote := ref.remote
 	args := call.Args
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
@@ -890,13 +958,28 @@ func (s *Remote) call(ctx context.Context, remote string, readOnly bool, call ag
 		return agenttool.Result{}, fmt.Errorf("mcp: call %q: %w", remote, ErrClosed)
 	}
 	s.running[id] = runningCall{ctx: ctx, stop: stop}
-	s.sending.Add(1)
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
 		delete(s.running, id)
 		s.mu.Unlock()
 	}()
+	// The session is taken once the call is running, so Close ends a wait
+	// for a restart too.
+	l, err := s.sendOn(ctx, ref)
+	if err != nil {
+		if cause := context.Cause(ctx); errors.Is(cause, ErrClosed) {
+			err = cause
+		}
+		return agenttool.Result{}, fmt.Errorf("mcp: call %q: %w", remote, err)
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return agenttool.Result{}, fmt.Errorf("mcp: call %q: %w", remote, ErrClosed)
+	}
+	s.sending.Add(1)
+	s.mu.Unlock()
 	// The requests of the call outlive it by the one that answers
 	// its open questions cancel, so they run detached, and are
 	// cancelled with the call when there are none, which without
@@ -911,8 +994,13 @@ func (s *Remote) call(ctx context.Context, remote string, readOnly bool, call ag
 		}
 	})()
 	before := s.seen.Load()
-	res, err := s.callTool(ctx, send, cancel, params)
+	res, err := s.callTool(ctx, send, cancel, l.session, params)
 	if err != nil {
+		if s.opts.dial != nil && ctx.Err() == nil && cut(l, err) {
+			// Not sent again: the server may have run it, and a call that
+			// ran twice is worse than one that failed.
+			err = fmt.Errorf("%w while the call was in flight; it may or may not have run, and was not sent again: %w", ErrSessionEnded, err)
+		}
 		return agenttool.Result{}, fmt.Errorf("mcp: call %q: %w", remote, err)
 	}
 	if res.NeedsInput() {
@@ -925,7 +1013,7 @@ func (s *Remote) call(ctx context.Context, remote string, readOnly bool, call ag
 		// The server may notify after it answers, and the reference
 		// implementation does, so give the notification a moment to
 		// arrive before deciding the list is unchanged.
-		s.awaitNotification(ctx, before)
+		s.awaitNotification(ctx, l, before)
 	}
 	if s.seen.Load() != before {
 		// The list changed while this call ran, most likely because of
@@ -945,7 +1033,7 @@ func (s *Remote) call(ctx context.Context, remote string, readOnly bool, call ag
 // questions, and a call Close ended returns with ErrClosed while its
 // request is cancelled behind it. Those requests are counted in
 // s.sending, which the caller added to.
-func (s *Remote) callTool(ctx, send context.Context, cancel context.CancelFunc, params *sdk.CallToolParams) (*sdk.CallToolResult, error) {
+func (s *Remote) callTool(ctx, send context.Context, cancel context.CancelFunc, session *sdk.ClientSession, params *sdk.CallToolParams) (*sdk.CallToolResult, error) {
 	type outcome struct {
 		res *sdk.CallToolResult
 		err error
@@ -954,7 +1042,7 @@ func (s *Remote) callTool(ctx, send context.Context, cancel context.CancelFunc, 
 	go func() {
 		defer s.sending.Done()
 		defer cancel()
-		res, err := s.session.CallTool(send, params)
+		res, err := session.CallTool(send, params)
 		done <- outcome{res, err}
 	}()
 	select {
@@ -1111,9 +1199,10 @@ func (s *Remote) soleCall() (context.Context, bool) {
 // notification past target, and returns at once when the grace is off,
 // when the server advertises no tool-list-changed notification, or when
 // one has already arrived. It never fails a call: a notification that
-// does not come in time is reflected at the next [Remote.Await].
-func (s *Remote) awaitNotification(ctx context.Context, target int64) {
-	if s.grace <= 0 || !s.listChanged {
+// does not come in time is reflected at the next [Remote.Await]. l is the
+// session the call was sent on.
+func (s *Remote) awaitNotification(ctx context.Context, l *link, target int64) {
+	if s.grace <= 0 || !l.listChanged {
 		return
 	}
 	// The channel is taken before the counter is read, so a notification
