@@ -5,7 +5,7 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
-## Unreleased
+## v0.0.23 - 2026-10-15
 
 - Added: `mcpclient.WithReconnect(dial)` restarts a server whose
   session ended, a crashed process or a dropped connection, over a new
