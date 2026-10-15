@@ -168,11 +168,29 @@ func rawOrNil(raw json.RawMessage) json.RawMessage {
 // as making no claim without being sent. Without [WithClaims], or for a
 // server that does not advertise [FactsCapability], nothing is sent and
 // every answer is no claim. The error is the request's, the end of ctx or of the remote
-// included; each call's own is in its answer.
+// included; each call's own is in its answer. With [WithReconnect] an
+// ended session is restarted first, and the calls are answered against
+// the restarted server's tools; a request the end of its session cut is
+// made once more.
 func (s *Remote) Facts(ctx context.Context, calls ...FactsCall) ([]FactsAnswer, error) {
+	for try := 0; ; try++ {
+		out, again, err := s.facts(ctx, calls, try == 0)
+		if !again {
+			return out, err
+		}
+	}
+}
+
+// facts is one [Remote.Facts] on the session as it is. It reports again
+// when the request was cut by the end of the session and may be made
+// once more, which it may only when first is set.
+func (s *Remote) facts(ctx context.Context, calls []FactsCall, first bool) (_ []FactsAnswer, again bool, _ error) {
+	if _, err := s.live(ctx); err != nil {
+		return nil, false, fmt.Errorf("mcp: %s: %w", FactsMethod, err)
+	}
 	out := make([]FactsAnswer, len(calls))
 	s.mu.RLock()
-	entries := s.claims
+	l, entries := s.link, s.claims
 	s.mu.RUnlock()
 	var ask []factsCall
 	var at []int
@@ -183,7 +201,7 @@ func (s *Remote) Facts(ctx context.Context, calls ...FactsCall) ([]FactsAnswer, 
 			out[i] = FactsAnswer{Claimed: true, Err: fmt.Errorf("mcp: no tool %q", c.Name)}
 			continue
 		}
-		if !s.claimsOn() || (!e.meta.Facts && !e.meta.Replay) {
+		if !s.claimsOn(l) || (!e.meta.Facts && !e.meta.Replay) {
 			continue
 		}
 		ask = append(ask, factsCall{Name: e.remote, Arguments: c.Args})
@@ -191,16 +209,16 @@ func (s *Remote) Facts(ctx context.Context, calls ...FactsCall) ([]FactsAnswer, 
 		metas = append(metas, e.meta)
 	}
 	if len(ask) == 0 {
-		return out, nil
+		return out, false, nil
 	}
-	got, err := s.askFacts(ctx, ask)
+	got, err := s.askFacts(ctx, l, ask)
 	if err != nil {
-		return nil, err
+		return nil, first && s.resend(ctx, l, err), err
 	}
 	for j, i := range at {
 		out[i] = answerFor(got[j], metas[j])
 	}
-	return out, nil
+	return out, false, nil
 }
 
 // answerFor reads a server's answer as what the local tool, built from
@@ -216,23 +234,35 @@ func answerFor(a factsAnswer, meta ToolMeta) FactsAnswer {
 	return ans
 }
 
-// claimsOn reports whether the remote's tools carry the server's claims:
-// the host passed [WithClaims] and the server advertises
+// claimsOn reports whether the tools listed on l carry the server's
+// claims: the host passed [WithClaims] and the server advertises
 // [FactsCapability].
-func (s *Remote) claimsOn() bool { return s.opts.claims && s.factsCap }
+func (s *Remote) claimsOn(l *link) bool { return s.opts.claims && l.factsCap }
 
-// askOne asks the server about one call of the tool named remote.
-func (s *Remote) askOne(ctx context.Context, remote string, args json.RawMessage) (factsAnswer, error) {
-	got, err := s.askFacts(ctx, []factsCall{{Name: remote, Arguments: args}})
-	if err != nil {
-		return factsAnswer{}, err
+// askOne asks the server about one call of the tool ref. With
+// [WithReconnect] it is asked on the restarted server only when that
+// still lists the tool as ref has it, and a request the end of its
+// session cut is made once more.
+func (s *Remote) askOne(ctx context.Context, ref toolRef, args json.RawMessage) (factsAnswer, error) {
+	for try := 0; ; try++ {
+		l, err := s.sendOn(ctx, ref)
+		if err != nil {
+			return factsAnswer{}, fmt.Errorf("mcp: %s: %w", FactsMethod, err)
+		}
+		got, err := s.askFacts(ctx, l, []factsCall{{Name: ref.remote, Arguments: args}})
+		if err != nil {
+			if try == 0 && s.resend(ctx, l, err) {
+				continue
+			}
+			return factsAnswer{}, err
+		}
+		return got[0], nil
 	}
-	return got[0], nil
 }
 
-// askFacts sends one [FactsMethod] request under ctx and returns one
-// answer per call. [Remote.Close] ends it with [ErrClosed].
-func (s *Remote) askFacts(ctx context.Context, calls []factsCall) ([]factsAnswer, error) {
+// askFacts sends one [FactsMethod] request on l under ctx and returns
+// one answer per call. [Remote.Close] ends it with [ErrClosed].
+func (s *Remote) askFacts(ctx context.Context, l *link, calls []factsCall) ([]factsAnswer, error) {
 	for i := range calls {
 		if len(calls[i].Arguments) == 0 {
 			calls[i].Arguments = json.RawMessage("{}")
@@ -253,7 +283,7 @@ func (s *Remote) askFacts(ctx context.Context, calls []factsCall) ([]factsAnswer
 		delete(s.asking, id)
 		s.mu.Unlock()
 	}()
-	res, err := sdk.CallCustomMethod[*factsParams, *factsResult](ctx, s.session, FactsMethod, &factsParams{Calls: calls})
+	res, err := sdk.CallCustomMethod[*factsParams, *factsResult](ctx, l.session, FactsMethod, &factsParams{Calls: calls})
 	if err != nil {
 		if cause := context.Cause(ctx); errors.Is(cause, ErrClosed) {
 			err = cause
@@ -270,16 +300,16 @@ func (s *Remote) askFacts(ctx context.Context, calls []factsCall) ([]factsAnswer
 	return res.Results, nil
 }
 
-// claimOptions are the options that give the tool named remote the
+// claimOptions are the options that give the tool ref, listed on l, the
 // server's claims, as meta marks them, when the remote carries them.
-func (s *Remote) claimOptions(remote string, meta ToolMeta) []agenttool.Option {
-	if !s.claimsOn() {
+func (s *Remote) claimOptions(l *link, ref toolRef, meta ToolMeta) []agenttool.Option {
+	if !s.claimsOn(l) {
 		return nil
 	}
 	var opts []agenttool.Option
 	if meta.Facts {
 		opts = append(opts, agenttool.WithFacts(func(ctx context.Context, args json.RawMessage) (agenttool.Facts, error) {
-			a, err := s.askOne(ctx, remote, args)
+			a, err := s.askOne(ctx, ref, args)
 			if err != nil {
 				return agenttool.Facts{}, err
 			}
@@ -289,7 +319,7 @@ func (s *Remote) claimOptions(remote string, meta ToolMeta) []agenttool.Option {
 	}
 	if meta.Replay {
 		opts = append(opts, agenttool.WithReplay(func(ctx context.Context, args json.RawMessage) agenttool.Replay {
-			a, err := s.askOne(ctx, remote, args)
+			a, err := s.askOne(ctx, ref, args)
 			if err != nil {
 				return agenttool.ReplayUnknown
 			}

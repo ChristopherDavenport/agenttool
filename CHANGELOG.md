@@ -5,6 +5,30 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Added: `mcpclient.WithReconnect(dial)` restarts a server whose
+  session ended, a crashed process or a dropped connection, over a new
+  transport from dial (ChristopherDavenport/dax#87). It is lazy: the
+  next request that would send on the ended session, a call, a claim,
+  `Facts` or `Refresh`, restarts the server first; requests that find
+  it ended together share one attempt, bounded by 30 seconds, and a
+  failed attempt fails them with `ErrSessionEnded` while the next
+  request tries again. `Close` stops an attempt and is final. A restart
+  is a refresh: the new session is initialised with the same options
+  on the same SDK client, so elicitation and `WithClientSetup`
+  registrations carry over, and its tools replace the snapshot and
+  claims in one step. A tool call is never sent twice: one in flight
+  when the session ended returns `ErrSessionEnded`, saying it may or may
+  not have run, while a claim, `Facts` or a listing is sent once more.
+  A call decided on a tool from before the restart is sent only if the
+  restarted server lists it with the same definition and claims, and
+  returns `ErrToolChanged` unsent otherwise. `WithReconnected(fn)`
+  reports each attempt as a `ReconnectInfo`: the error, or the server's
+  implementation, whether its tools changed, and their names before and
+  after. `Session`, `ServerInfo` and `Instructions` read the current
+  session. Without the option nothing changes.
+
 ## v0.0.22 - 2026-10-10
 
 - Added: `Answer.Note`, what the user said with an elicitation's

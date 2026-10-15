@@ -705,7 +705,7 @@ func TestAwaitNotificationGrace(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := &Remote{notified: make(chan struct{}), grace: tc.grace, listChanged: tc.listChanged}
+			s := &Remote{notified: make(chan struct{}), grace: tc.grace}
 			if tc.notify {
 				time.AfterFunc(5*time.Millisecond, func() {
 					s.seen.Add(1)
@@ -716,7 +716,7 @@ func TestAwaitNotificationGrace(t *testing.T) {
 				})
 			}
 			start := time.Now()
-			s.awaitNotification(context.Background(), 0)
+			s.awaitNotification(context.Background(), &link{listChanged: tc.listChanged}, 0)
 			if waited := time.Since(start); (waited >= grace) != tc.wantWait {
 				t.Errorf("waited %v, want the whole grace = %v", waited, tc.wantWait)
 			}
@@ -724,10 +724,10 @@ func TestAwaitNotificationGrace(t *testing.T) {
 	}
 
 	// A notification already counted needs no waiting at all.
-	s := &Remote{notified: make(chan struct{}), grace: grace, listChanged: true}
+	s := &Remote{notified: make(chan struct{}), grace: grace}
 	s.seen.Add(1)
 	start := time.Now()
-	s.awaitNotification(context.Background(), 0)
+	s.awaitNotification(context.Background(), &link{listChanged: true}, 0)
 	if waited := time.Since(start); waited >= grace {
 		t.Errorf("waited %v for a notification already seen", waited)
 	}
@@ -736,7 +736,7 @@ func TestAwaitNotificationGrace(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	start = time.Now()
-	(&Remote{notified: make(chan struct{}), grace: grace, listChanged: true}).awaitNotification(ctx, 0)
+	(&Remote{notified: make(chan struct{}), grace: grace}).awaitNotification(ctx, &link{listChanged: true}, 0)
 	if waited := time.Since(start); waited >= grace {
 		t.Errorf("waited %v after the context ended", waited)
 	}
