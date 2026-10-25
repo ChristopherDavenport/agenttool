@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"iter"
 	"runtime/debug"
+	"sync"
 )
 
 // DefaultMaxParallel bounds concurrent tool calls in a batch when the
@@ -84,9 +85,14 @@ type Executor struct {
 //
 // Jobs whose tools name the same [Resource] run one after the other in
 // the model's order and alongside the rest of the batch; jobs that name
-// none run in parallel up to MaxParallel. A serial batch, from
+// none run in parallel up to MaxParallel. A [Barrier] job runs alone in
+// its place: after every job before it has completed and its final
+// event been taken, and before any job after it starts, so the batch
+// runs as segments in order, each barrier one, and the jobs between
+// two barriers a segment run as above. A serial batch, from
 // [Executor.Sequential] or a [Sequential] tool, runs every job in the
-// model's order and ignores resources, since it is already stricter.
+// model's order and ignores resources and barriers, since it is
+// already stricter.
 // Both orderings are within the batch given here: two Execute calls,
 // in one executor or two, order nothing against each other, so a tool
 // whose state outlives a batch guards it itself.
@@ -126,25 +132,53 @@ func (e Executor) Execute(ctx context.Context, jobs []Job) iter.Seq[Event] {
 		// final send, so the next job of a chain starts once the
 		// consumer has taken the last one's result.
 		sem := make(chan struct{}, limit)
-		for _, chain := range e.Chains(jobs) {
-			go func(chain []int) {
-				for _, i := range chain {
-					select {
-					case sem <- struct{}{}:
-					case <-ctx.Done():
-						// A job that never started still completes, with
-						// the cancellation as its error, so the consumer
-						// sees one final event per job.
-						final(Event{Index: i, Final: true, Err: ctx.Err()})
+		runChain := func(chain []int) {
+			for _, i := range chain {
+				select {
+				case sem <- struct{}{}:
+				case <-ctx.Done():
+					// A job that never started still completes, with
+					// the cancellation as its error, so the consumer
+					// sees one final event per job.
+					final(Event{Index: i, Final: true, Err: ctx.Err()})
+					continue
+				}
+				res, err := run(ctx, jobs[i], e.OnStart, func(r Result) {
+					progress(Event{Index: i, Result: r})
+				})
+				final(Event{Index: i, Final: true, Result: res, Err: err})
+				<-sem
+			}
+		}
+		if segments := segmentsOf(jobs, limit); segments == nil {
+			for _, chain := range e.Chains(jobs) {
+				go runChain(chain)
+			}
+		} else {
+			// A batch with a barrier: one segment at a time, each run as a
+			// batch of its own, the next started once every job of this one
+			// has completed and its final event been taken. A segment not
+			// started when the batch is cancelled completes job by job, in
+			// the model's order, with the cancellation as each one's error.
+			go func() {
+				for _, seg := range segments {
+					if ctx.Err() != nil {
+						for _, i := range seg {
+							final(Event{Index: i, Final: true, Err: ctx.Err()})
+						}
 						continue
 					}
-					res, err := run(ctx, jobs[i], e.OnStart, func(r Result) {
-						progress(Event{Index: i, Result: r})
-					})
-					final(Event{Index: i, Final: true, Result: res, Err: err})
-					<-sem
+					var wg sync.WaitGroup
+					for _, chain := range chainsIn(jobs, seg) {
+						wg.Add(1)
+						go func(chain []int) {
+							defer wg.Done()
+							runChain(chain)
+						}(chain)
+					}
+					wg.Wait()
 				}
-			}(chain)
+			}()
 		}
 
 		stopped := false
@@ -192,11 +226,77 @@ func (e Executor) Execute(ctx context.Context, jobs []Job) iter.Seq[Event] {
 // job to be settled before dispatching the next, reads it here rather
 // than restating the rules and drifting from them (#66). It reads the
 // tools' properties and runs nothing.
+//
+// A batch with a [Barrier] job is not chains: a barrier waits on every
+// job before it, and the jobs after it on the barrier. For such a batch
+// Chains returns one chain of every job in the model's order, an
+// ordering stricter than Execute's, so a harness that knows only
+// chains runs the batch one job at a time, as it did before barriers
+// existed, and never looser than Execute; [Executor.Preceding] gives
+// the real ordering, a list of jobs per job.
 func (e Executor) Chains(jobs []Job) [][]int {
 	if len(jobs) == 0 {
 		return nil
 	}
-	return chainsOf(jobs, e.limit(jobs))
+	limit := e.limit(jobs)
+	if segmentsOf(jobs, limit) != nil {
+		limit = 1
+	}
+	return chainsOf(jobs, limit)
+}
+
+// Preceding returns, for each job of the batch, the jobs [Executor.Execute]
+// hands it to its tool after: indices into jobs, each list in the
+// model's order, nil for a job that waits on none. A harness that waits
+// for every job listed to be settled before dispatching the job
+// orders the batch exactly as Execute does:
+//
+//   - in a serial batch ([Executor.Sequential], a [Sequential] tool or
+//     a MaxParallel of one), each job after the one before it;
+//   - otherwise, each job of a [Resource]'s chain after the one before
+//     it in that chain;
+//   - a [Barrier] job after every job of the segment before it (the
+//     jobs since the previous barrier, or that barrier when two are
+//     adjacent), and the first job of each chain after a barrier after
+//     that barrier.
+//
+// It is [Executor.Chains] for a harness that can wait on more than one
+// job, and agrees with it on a batch with no barrier. It reads the
+// tools' properties and runs nothing.
+func (e Executor) Preceding(jobs []Job) [][]int {
+	if len(jobs) == 0 {
+		return nil
+	}
+	pre := make([][]int, len(jobs))
+	limit := e.limit(jobs)
+	segments := segmentsOf(jobs, limit)
+	if segments == nil {
+		for _, chain := range chainsOf(jobs, limit) {
+			for k := 1; k < len(chain); k++ {
+				pre[chain[k]] = []int{chain[k-1]}
+			}
+		}
+		return pre
+	}
+	var prev []int // the segment before this one
+	for _, seg := range segments {
+		if len(seg) == 1 && jobs[seg[0]].Tool != nil && IsBarrier(jobs[seg[0]].Tool) {
+			if len(prev) > 0 {
+				pre[seg[0]] = append([]int(nil), prev...)
+			}
+		} else {
+			for _, chain := range chainsIn(jobs, seg) {
+				if len(prev) > 0 {
+					pre[chain[0]] = append([]int(nil), prev...)
+				}
+				for k := 1; k < len(chain); k++ {
+					pre[chain[k]] = []int{chain[k-1]}
+				}
+			}
+		}
+		prev = seg
+	}
+	return pre
 }
 
 // limit is the bound Execute runs jobs under: one for a serial batch,
@@ -274,19 +374,59 @@ func start(ctx context.Context, onStart func(context.Context, Job) error, job Jo
 // names no resource. Order inside a chain is the model's, which is what
 // a tool that owns state is told it can rely on.
 func chainsOf(jobs []Job, limit int) [][]int {
+	all := make([]int, len(jobs))
+	for i := range jobs {
+		all[i] = i
+	}
 	if limit == 1 {
-		all := make([]int, len(jobs))
-		for i := range jobs {
-			all[i] = i
-		}
 		return [][]int{all}
 	}
-	chains := make([][]int, 0, len(jobs))
-	byResource := make(map[string]int) // resource -> index in chains
+	return chainsIn(jobs, all)
+}
+
+// segmentsOf splits a batch with a [Barrier] job into the segments
+// Execute runs one after the other: each barrier job alone, and each
+// run of jobs between barriers together, in the model's order. It is
+// nil for a serial batch, which ignores barriers, and for a batch with
+// no barrier, which is one segment and runs as chains.
+func segmentsOf(jobs []Job, limit int) [][]int {
+	if limit == 1 {
+		return nil
+	}
+	var segments [][]int
+	var run []int
+	barriers := false
 	for i, job := range jobs {
+		if job.Tool != nil && IsBarrier(job.Tool) {
+			barriers = true
+			if len(run) > 0 {
+				segments = append(segments, run)
+				run = nil
+			}
+			segments = append(segments, []int{i})
+			continue
+		}
+		run = append(run, i)
+	}
+	if !barriers {
+		return nil
+	}
+	if len(run) > 0 {
+		segments = append(segments, run)
+	}
+	return segments
+}
+
+// chainsIn groups the jobs of one segment, idx, into chains as
+// [chainsOf] groups a parallel batch: a [Resource]'s jobs together in
+// the model's order, every other job alone.
+func chainsIn(jobs []Job, idx []int) [][]int {
+	chains := make([][]int, 0, len(idx))
+	byResource := make(map[string]int) // resource -> index in chains
+	for _, i := range idx {
 		res := ""
-		if job.Tool != nil {
-			res = ResourceOf(job.Tool)
+		if jobs[i].Tool != nil {
+			res = ResourceOf(jobs[i].Tool)
 		}
 		if res == "" {
 			chains = append(chains, []int{i})

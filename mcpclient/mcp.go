@@ -22,7 +22,7 @@
 //
 // A server that serves its tools with mcpserver says more than MCP has
 // fields for. Each listed tool's _meta under [ToolMetaKey] says whether
-// it is sequential and the shared state it names, which the local tool
+// it is sequential or a barrier and the shared state it names, which the local tool
 // declares, and whether it makes the facts and replay claims. The
 // claims are taken only from a server the host trusts, by
 // [WithClaims]: a claim is what a policy decides a call on, so a server
@@ -114,6 +114,7 @@ type Option func(*options)
 type options struct {
 	prefix     string
 	sequential map[string]bool
+	barrier    map[string]bool
 	resources  map[string]claim[string]
 	confined   map[string]claim[func(context.Context, json.RawMessage) (bool, string)]
 	// seq numbers the claims in the order their options were given, so
@@ -248,6 +249,24 @@ func WithSequential(names ...string) Option {
 	}
 }
 
+// WithBarrier marks the named tools agenttool.Barrier: each call runs
+// alone in its place in the batch, after the calls before it and before
+// the calls after it. Names are matched before and after prefixing, so
+// either form works. A remote tool is otherwise a barrier only when its
+// server says so under [ToolMetaKey]. Like [WithSequential] it adds to
+// what the server says and cannot take it away, and a tool both
+// options, or the server, name sequential is sequential.
+func WithBarrier(names ...string) Option {
+	return func(o *options) {
+		if o.barrier == nil {
+			o.barrier = make(map[string]bool, len(names))
+		}
+		for _, n := range names {
+			o.barrier[n] = true
+		}
+	}
+}
+
 // WithResource names the shared state the named tools touch, so the
 // executor runs two calls of them one after the other and the rest of
 // the batch alongside; see [agenttool.Resource]. Names are matched
@@ -377,7 +396,7 @@ func WithRefreshError(fn func(error)) Option {
 // request of its own, which names no call, so it is put to the one call
 // running on this remote; when there is none, or more than one, nobody
 // is asked. A harness that wants every question from an older server
-// asked names its tools [WithSequential] or one [WithResource], so that
+// asked names its tools [WithSequential], [WithBarrier] or one [WithResource], so that
 // no two of its calls in a batch overlap.
 //
 // Either way the elicitor is called with the call's context, the call
@@ -432,7 +451,7 @@ func WithElicitation() Option {
 // server with [FactsMethod]; a server that does not advertise it is
 // never asked either way.
 //
-// What the listing says of sequential and resource applies without it,
+// What the listing says of sequential, barrier and resource applies without it,
 // since it can only make calls run one after another.
 func WithClaims() Option {
 	return func(o *options) { o.claims = true }
@@ -860,6 +879,9 @@ func (s *Remote) wrap(l *link, t *sdk.Tool, def string) (agenttool.Tool, error) 
 	var opts []agenttool.Option
 	if s.opts.sequential[remote] || s.opts.sequential[name] || meta.Sequential {
 		opts = append(opts, agenttool.WithSequential())
+	}
+	if s.opts.barrier[remote] || s.opts.barrier[name] || meta.Barrier {
+		opts = append(opts, agenttool.WithBarrier())
 	}
 	if res, ok := latest(s.opts.resources, remote, name); ok {
 		opts = append(opts, agenttool.WithResource(res))

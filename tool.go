@@ -35,7 +35,7 @@ import (
 // Tool is something the model can call. Name and Parameters become the
 // function tool on the request; Execute runs one call. Everything else
 // a tool declares is an optional interface, [Strict], [Sequential],
-// [Resource], [Annotated], [Confined], [Replayable], [Factual] and
+// [Barrier], [Resource], [Annotated], [Confined], [Replayable], [Factual] and
 // [io.Closer], found by type assertion; a struct that embeds Tool
 // forwards these four methods alone and drops all of those, so a tool
 // that stands in for another is built with [Wrap].
@@ -267,6 +267,31 @@ type Sequential interface {
 // usually wants the model to see.
 type Resource interface {
 	Resource() string
+}
+
+// Barrier is implemented by a tool whose calls must not overlap any
+// other call of the batch, while the calls before it and after it may
+// overlap each other. A barrier call starts once every call before it
+// in the batch has ended, and every call after it starts once it has
+// ended; the calls between two barriers run as a batch of their own
+// would, in parallel up to [Executor.MaxParallel] and in a [Resource]'s
+// order. So a response of five reads with a shell command in the
+// middle runs the reads before the command together, then the command
+// alone, then the reads after it together: the model's order holds
+// around the command, and nothing waits on anything it does not need
+// to.
+//
+// It is what a shell command wants: it may touch anything, so it runs
+// alone and in its place, and the reads around it need not run one at
+// a time. [Sequential] is the stricter claim, a tool that wants the
+// whole batch run one call at a time, and wins: a batch with a
+// sequential tool runs one call at a time whatever its barriers. A
+// tool that reports both is sequential.
+//
+// The scope is one batch, as for [Resource]: nothing orders a call
+// against another batch's.
+type Barrier interface {
+	Barrier() bool
 }
 
 // Annotations are the behavioural hints a tool carries: what a policy
@@ -527,6 +552,17 @@ func IsSequential(t Tool) bool {
 	return ok && s.Sequential()
 }
 
+// IsBarrier reports whether t's calls run alone in their place in the
+// batch; see [Barrier]. A [Sequential] tool reports false here, since
+// it claims more.
+func IsBarrier(t Tool) bool {
+	if IsSequential(t) {
+		return false
+	}
+	b, ok := t.(Barrier)
+	return ok && b.Barrier()
+}
+
 // IsStrict reports whether t's schema is strict.
 func IsStrict(t Tool) bool {
 	s, ok := t.(Strict)
@@ -534,11 +570,12 @@ func IsStrict(t Tool) bool {
 }
 
 // ResourceOf returns the shared state t names, or "" when it names
-// none. A [Sequential] tool takes the whole batch and reports "" here
-// whatever it says, so a caller scheduling by resource does not have to
-// check both.
+// none. A [Sequential] tool takes the whole batch, and a [Barrier]
+// tool its place in it alone, so both report "" here whatever they
+// say, and a caller scheduling by resource does not have to check
+// them too.
 func ResourceOf(t Tool) string {
-	if IsSequential(t) {
+	if IsSequential(t) || IsBarrier(t) {
 		return ""
 	}
 	r, ok := t.(Resource)
@@ -672,7 +709,7 @@ func (s Set) Validate() error {
 // raw call: the untyped counterpart of [New] for tools whose schema
 // comes from elsewhere, such as a remote server. parameters is served
 // verbatim and never validated; nil means the tool takes no arguments.
-// [WithStrict], [WithSequential], [WithResource], [WithAnnotations],
+// [WithStrict], [WithSequential], [WithBarrier], [WithResource], [WithAnnotations],
 // [WithConfined], [WithReplay], [WithFacts] and [WithCloser] apply; the
 // options that shape a reflected schema do not. A nil fn panics here,
 // like a bad schema in [New].
@@ -684,7 +721,7 @@ func NewFunc(name, description string, parameters json.RawMessage, fn func(ctx c
 	for _, opt := range opts {
 		opt(&o)
 	}
-	f := &funcTool{name: name, description: description, schema: parameters, fn: fn, strict: o.strict, sequential: o.sequential, resource: o.resource, annotations: o.annotations, confined: o.confined, replay: o.replay, facts: o.facts}
+	f := &funcTool{name: name, description: description, schema: parameters, fn: fn, strict: o.strict, sequential: o.sequential, barrier: o.barrier, resource: o.resource, annotations: o.annotations, confined: o.confined, replay: o.replay, facts: o.facts}
 	if o.closer != nil {
 		return &funcToolCloser{funcTool: f, close: o.closer}
 	}
@@ -698,6 +735,7 @@ type funcTool struct {
 	fn          func(ctx context.Context, call Call) (Result, error)
 	strict      bool
 	sequential  bool
+	barrier     bool
 	resource    string
 	annotations Annotations
 	confined    func(ctx context.Context, args json.RawMessage) (bool, string)
@@ -709,6 +747,7 @@ func (f *funcTool) Name() string                { return f.name }
 func (f *funcTool) Description() string         { return f.description }
 func (f *funcTool) Parameters() json.RawMessage { return f.schema }
 func (f *funcTool) Sequential() bool            { return f.sequential }
+func (f *funcTool) Barrier() bool               { return f.barrier }
 func (f *funcTool) Strict() bool                { return f.strict }
 func (f *funcTool) Resource() string            { return f.resource }
 func (f *funcTool) Annotations() Annotations    { return f.annotations }
@@ -743,6 +782,7 @@ func (f *funcToolCloser) Close() error { return f.close() }
 var (
 	_ Tool       = (*funcTool)(nil)
 	_ Sequential = (*funcTool)(nil)
+	_ Barrier    = (*funcTool)(nil)
 	_ Strict     = (*funcTool)(nil)
 	_ Resource   = (*funcTool)(nil)
 	_ Annotated  = (*funcTool)(nil)

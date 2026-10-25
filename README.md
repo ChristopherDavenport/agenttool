@@ -72,8 +72,10 @@ that does not know their type: `RecordOf` gives the namespace and the
 value's JSON.
 
 Optional interfaces refine a tool. `Sequential` forces a batch
-containing it to run one call at a time and `Resource` serialises only
-the calls that touch one piece of shared state; `Annotated` carries
+containing it to run one call at a time, `Barrier` runs each of its
+calls alone in its place while the calls on either side overlap, and
+`Resource` serialises only the calls that touch one piece of shared
+state; `Annotated` carries
 MCP's behavioural hints for a policy layer to read; `Confined` says
 whether a call will run in a sandbox and by what, so a shared
 permission preset can ask about the calls that leave one without
@@ -81,7 +83,7 @@ knowing a product's own argument for leaving it; `Strict` marks the
 schema strict; `Replayable` says whether a call may run again;
 `Factual` says what a call would touch, as the calls it amounts to and
 the arguments it would run with; and `io.Closer` releases what the
-tool owns. `WithSequential()`, `WithResource()`, `WithAnnotations()`,
+tool owns. `WithSequential()`, `WithBarrier()`, `WithResource()`, `WithAnnotations()`,
 `WithStrict()`, `WithConfined()`, `WithReplay()`, `WithFacts()` and
 `WithCloser()` set them on a tool from `New` or `NewFunc`. Embedding such a tool in a struct to add a
 method compiles and silently drops the rest, so a tool built here gains
@@ -297,11 +299,29 @@ tool, since MCP has no field for one; a tool served by `mcpserver`
 brings its own. Whether the second call waits or
 is refused stays the tool's choice.
 
+A shell command that may touch anything, and should not make the reads
+around it wait on each other, is a barrier:
+
+```go
+var Bash = agenttool.New("bash", "Run a shell command", run,
+	agenttool.WithBarrier())
+```
+
+A response of `read read bash read read` then runs the first two reads
+together, `bash` alone once they have completed, and the last two
+together once it has: the model's order holds around the command, and
+three steps take the place of five. `Sequential` still wins: a batch
+with a sequential tool runs one call at a time whatever its barriers.
+
 The grouping is the executor's, and a harness can read it rather than
 restate it: `Executor.Chains` returns the chains a batch runs in, each
 in the model's order, for a harness that must know which call a given
 one follows, as agentturn does to settle a call before dispatching the
-next of its chain.
+next of its chain. A barrier waits on more than one call, which chains
+cannot say, so `Executor.Preceding` returns each call's predecessors,
+and `Chains` reads a batch with a barrier as one chain, stricter than
+the executor, so a harness that knows only chains runs it one call at
+a time, as before.
 
 The scope of both is one batch. The executor sees one batch at a time,
 so a `bash` in a sub-agent's batch, which runs under the parent call
@@ -393,7 +413,7 @@ The claims a policy decides on cross as well, so a session can run its
 tools somewhere else and still decide each call on what it would
 touch. `mcpserver` puts what MCP has no field for in each listed
 tool's `_meta`: whether it makes the facts claim and answers replay,
-and its read-only, sequential and resource. These are the server's
+and its read-only, sequential, barrier and resource. These are the server's
 statement about the tool, not hints. It also answers a method of its
 own, `execution/facts`, which takes a model response's calls together
 and returns each call's facts, or its error, and its replay answer.

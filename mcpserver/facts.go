@@ -54,7 +54,7 @@ const FactsCapability = "io.github.christopherdavenport.agenttool/facts"
 // rather than as MCP annotations, which are hints a policy must not use
 // alone:
 //
-//	{"facts": true, "replay": true, "readOnly": true, "sequential": true, "resource": "shell:session"}
+//	{"facts": true, "replay": true, "readOnly": true, "sequential": true, "barrier": true, "resource": "shell:session"}
 //
 // A field that would be false or empty is left out, and a tool that has
 // none of them carries no entry. facts says the tool makes the facts
@@ -64,8 +64,11 @@ const FactsCapability = "io.github.christopherdavenport.agenttool/facts"
 // and [agenttool.NewFunc] build does, so it says the server will answer
 // and not that the answer is other than unknown. readOnly is the tool's
 // [agenttool.Annotations] ReadOnly, sequential [agenttool.IsSequential]
-// and resource [agenttool.ResourceOf]. It is mcpclient.ToolMetaKey byte
-// for byte.
+// and resource [agenttool.ResourceOf]. barrier is [agenttool.IsBarrier],
+// and comes with sequential: a client that predates barriers reads the
+// tool as sequential and runs its batch one call at a time, which is
+// stricter, never looser; a client that reads barrier takes the tool as
+// a barrier alone. It is mcpclient.ToolMetaKey byte for byte.
 const ToolMetaKey = "io.github.christopherdavenport.agenttool/tool"
 
 // factsCall is one call [FactsMethod] is asked about.
@@ -121,7 +124,15 @@ func toolMeta(tl agenttool.Tool) map[string]any {
 	if agenttool.AnnotationsOf(tl).ReadOnly {
 		m["readOnly"] = true
 	}
-	if agenttool.IsSequential(tl) {
+	switch {
+	case agenttool.IsSequential(tl):
+		m["sequential"] = true
+	case agenttool.IsBarrier(tl):
+		// A client older than barriers reads sequential and runs the
+		// batch one call at a time, as it did before: safe, never
+		// looser. A client that reads barrier takes the tool as a
+		// barrier and not as sequential.
+		m["barrier"] = true
 		m["sequential"] = true
 	}
 	if r := agenttool.ResourceOf(tl); r != "" {

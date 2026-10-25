@@ -139,6 +139,7 @@ func TestPrefixSequentialAndResource(t *testing.T) {
 		opts         []Option
 		wantName     string
 		sequential   bool
+		barrier      bool
 		wantResource string
 	}{
 		{name: "no prefix", wantName: "upper"},
@@ -150,6 +151,10 @@ func TestPrefixSequentialAndResource(t *testing.T) {
 		{name: "resource, last wins across spellings", opts: []Option{WithPrefix("fs"), WithResource("shell:a", "upper"), WithResource("shell:b", "fs__upper")}, wantName: "fs__upper", wantResource: "shell:b"},
 		{name: "resource, last wins across spellings reversed", opts: []Option{WithPrefix("fs"), WithResource("shell:b", "fs__upper"), WithResource("shell:a", "upper")}, wantName: "fs__upper", wantResource: "shell:a"},
 		{name: "sequential wins over resource", opts: []Option{WithSequential("upper"), WithResource("shell:session", "upper")}, wantName: "upper", sequential: true},
+		{name: "barrier by remote name", opts: []Option{WithPrefix("fs"), WithBarrier("upper")}, wantName: "fs__upper", barrier: true},
+		{name: "barrier by local name", opts: []Option{WithPrefix("fs"), WithBarrier("fs__upper")}, wantName: "fs__upper", barrier: true},
+		{name: "barrier wins over resource", opts: []Option{WithBarrier("upper"), WithResource("shell:session", "upper")}, wantName: "upper", barrier: true},
+		{name: "sequential wins over barrier", opts: []Option{WithSequential("upper"), WithBarrier("upper")}, wantName: "upper", sequential: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -158,11 +163,14 @@ func TestPrefixSequentialAndResource(t *testing.T) {
 			if agenttool.IsSequential(tl) != tc.sequential {
 				t.Errorf("sequential = %v, want %v", agenttool.IsSequential(tl), tc.sequential)
 			}
+			if agenttool.IsBarrier(tl) != tc.barrier {
+				t.Errorf("barrier = %v, want %v", agenttool.IsBarrier(tl), tc.barrier)
+			}
 			if got := agenttool.ResourceOf(tl); got != tc.wantResource {
 				t.Errorf("resource = %q, want %q", got, tc.wantResource)
 			}
 			other := lookup(t, s, s.Name("image"))
-			if agenttool.IsSequential(other) || agenttool.ResourceOf(other) != "" {
+			if agenttool.IsSequential(other) || agenttool.IsBarrier(other) || agenttool.ResourceOf(other) != "" {
 				t.Error("other tools should be neither sequential nor resourced")
 			}
 		})

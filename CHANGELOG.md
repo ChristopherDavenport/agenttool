@@ -5,6 +5,37 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Added: `Barrier`, a tool property read by `IsBarrier` and set by
+  `WithBarrier()`: each call of the tool runs alone in its place in the
+  batch, after every call before it and before every call after it,
+  while those overlap each other. A batch with barriers runs as
+  segments in the model's order, each barrier alone and the calls
+  between two barriers together, in parallel up to `MaxParallel` and in
+  resource chains. So `read read bash read read` takes three steps, not
+  five as under `Sequential`, and the model's order still holds around
+  the command. `Sequential` is unchanged and wins: a tool that reports
+  both is sequential, and a batch with a sequential tool runs one call
+  at a time whatever its barriers. A barrier's resource reads as none
+  (`ResourceOf`), and `Wrap` forwards the property.
+- Added: `Executor.Preceding(jobs)`, each job's predecessors, the jobs
+  `Execute` hands it over after, for a harness that settles a call
+  before dispatching the next and must wait on more than one call.
+  `Executor.Chains` reads a batch with a barrier as one chain of every
+  job, which is stricter than `Execute`: a harness that reads only
+  chains, agentturn up to v0.0.30, runs such a batch one call at a time,
+  as it ran a batch with a sequential tool, and never looser than the
+  executor.
+- Added: the MCP binding carries barrier. mcpserver puts `"barrier":
+  true` in a barrier tool's `_meta` under `ToolMetaKey`, with
+  `"sequential": true` beside it, so a client that predates barriers
+  reads the tool as sequential and runs its batch one call at a time,
+  stricter and never looser. mcpclient reads `barrier` as a barrier and
+  not as sequential (`ToolMeta.Barrier`), and `mcpclient.WithBarrier(names…)`
+  marks remote tools a barrier as `WithSequential` marks them sequential,
+  adding to what the server says. RFC 0001 is draft 0.7.
+
 ## v0.0.23 - 2026-10-15
 
 - Added: `mcpclient.WithReconnect(dial)` restarts a server whose

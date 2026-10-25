@@ -16,7 +16,7 @@
 // who wants a policy applies it to the tools before serving them. What
 // a policy decides on crosses, though: a tool's facts and replay claims
 // are answered by [FactsMethod], and what MCP has no field for, those
-// claims' presence, read-only, sequential and resource, is in each
+// claims' presence, read-only, sequential, barrier and resource, is in each
 // definition's _meta under [ToolMetaKey].
 //
 // One server serves many clients and one Tool value serves them all, so
@@ -212,7 +212,7 @@ func (o Options) AddTools(s *sdk.Server, tools ...agenttool.Tool) error {
 // tool that carries none serves none.
 //
 // The tool's properties MCP has no field for, whether it makes the
-// facts and replay claims, read-only, sequential and resource, go in
+// facts and replay claims, read-only, sequential, barrier and resource, go in
 // the definition's _meta under [ToolMetaKey], so that a client reads
 // them as the server's statement about the tool rather than as hints,
 // and asks [FactsMethod] only about the tools that claim. A tool with
