@@ -28,6 +28,7 @@ func (*everythingTool) Execute(context.Context, Call) (Result, error) {
 }
 func (*everythingTool) Strict() bool     { return true }
 func (*everythingTool) Sequential() bool { return false }
+func (*everythingTool) Barrier() bool    { return false }
 func (*everythingTool) Resource() string { return "shell:session" }
 func (*everythingTool) Annotations() Annotations {
 	return Annotations{Title: "All", ReadOnly: true, Idempotent: true}
@@ -69,6 +70,7 @@ func readers(ctx context.Context, t Tool) map[string]any {
 		"parameters":  string(t.Parameters()),
 		"strict":      IsStrict(t),
 		"sequential":  IsSequential(t),
+		"barrier":     IsBarrier(t),
 		"resource":    ResourceOf(t),
 		"annotations": AnnotationsOf(t),
 		"confined":    confined,

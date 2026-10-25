@@ -21,6 +21,7 @@ type Option func(*options)
 type options struct {
 	strict       bool
 	sequential   bool
+	barrier      bool
 	resource     string
 	annotations  Annotations
 	schema       json.RawMessage
@@ -39,6 +40,11 @@ func WithStrict() Option { return func(o *options) { o.strict = true } }
 
 // WithSequential marks the tool [Sequential].
 func WithSequential() Option { return func(o *options) { o.sequential = true } }
+
+// WithBarrier marks the tool a [Barrier]: each of its calls runs alone
+// in its place in the batch, after the calls before it and before the
+// calls after it.
+func WithBarrier() Option { return func(o *options) { o.barrier = true } }
 
 // WithResource names the shared state a call of the tool touches, so
 // [Executor] runs two calls of it in one batch one after the other
@@ -154,6 +160,7 @@ func New[Args, Out any](name, description string, fn func(context.Context, Args)
 		tree:        tree,
 		strict:      o.strict,
 		sequential:  o.sequential,
+		barrier:     o.barrier,
 		resource:    o.resource,
 		annotations: o.annotations,
 		confined:    o.confined,
@@ -175,6 +182,7 @@ type typed[Args, Out any] struct {
 	tree        *Schema
 	strict      bool
 	sequential  bool
+	barrier     bool
 	resource    string
 	annotations Annotations
 	confined    func(ctx context.Context, args json.RawMessage) (bool, string)
@@ -207,6 +215,10 @@ func (t *typed[Args, Out]) Strict() bool { return t.strict }
 
 // Sequential reports whether the tool runs alone.
 func (t *typed[Args, Out]) Sequential() bool { return t.sequential }
+
+// Barrier reports whether each call runs alone in its place in the
+// batch.
+func (t *typed[Args, Out]) Barrier() bool { return t.barrier }
 
 // Resource reports the shared state a call touches.
 func (t *typed[Args, Out]) Resource() string { return t.resource }
@@ -345,6 +357,7 @@ var (
 	_ Tool       = (*typed[NoArgs, string])(nil)
 	_ Strict     = (*typed[NoArgs, string])(nil)
 	_ Sequential = (*typed[NoArgs, string])(nil)
+	_ Barrier    = (*typed[NoArgs, string])(nil)
 	_ Resource   = (*typed[NoArgs, string])(nil)
 	_ Annotated  = (*typed[NoArgs, string])(nil)
 	_ Confined   = (*typed[NoArgs, string])(nil)

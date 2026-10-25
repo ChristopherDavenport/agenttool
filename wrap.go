@@ -9,7 +9,7 @@ import (
 
 // Wrap returns a tool that runs exec in place of t.Execute and is t in
 // every other way: its name, description and parameters, and every
-// property t declares, strict, sequential, resource, annotations,
+// property t declares, strict, sequential, barrier, resource, annotations,
 // confined, replay, facts and closer, reported exactly as t reports
 // them. It is how a policy that grants on use, a decorator that
 // records, or a proxy that audits stands in for a tool without changing
@@ -75,6 +75,14 @@ func (w *wrapped) Strict() bool             { return IsStrict(w.Tool) }
 func (w *wrapped) Sequential() bool         { return IsSequential(w.Tool) }
 func (w *wrapped) Annotations() Annotations { return AnnotationsOf(w.Tool) }
 
+// Barrier forwards what the tool declares rather than [IsBarrier]'s
+// reading of it, as Resource does, so a reader applying the sequential
+// rule to the wrapper sees exactly what it would see on the tool.
+func (w *wrapped) Barrier() bool {
+	b, ok := w.Tool.(Barrier)
+	return ok && b.Barrier()
+}
+
 // Resource forwards what the tool declares rather than [ResourceOf]'s
 // reading of it, so a reader applying the sequential rule to the
 // wrapper sees exactly what it would see on the tool.
@@ -122,6 +130,7 @@ var (
 	_ Tool       = (*wrapped)(nil)
 	_ Strict     = (*wrapped)(nil)
 	_ Sequential = (*wrapped)(nil)
+	_ Barrier    = (*wrapped)(nil)
 	_ Resource   = (*wrapped)(nil)
 	_ Annotated  = (*wrapped)(nil)
 	_ Confined   = (*wrapped)(nil)
