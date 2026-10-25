@@ -29,7 +29,7 @@ const ToolMetaKey = "io.github.christopherdavenport.agenttool/tool"
 
 // ToolMeta is what a server says about one of its tools under
 // [ToolMetaKey]: whether it makes the facts claim and the replay claim,
-// and whether it is read-only, sequential, and the shared state it
+// and whether it is read-only, sequential, a barrier, and the shared state it
 // names. They are the server's statement about the tool, not the hints
 // of its MCP annotations, and they are as trustworthy as the server.
 type ToolMeta struct {
@@ -42,6 +42,11 @@ type ToolMeta struct {
 	ReadOnly bool
 	// Sequential says the tool must not run alongside other tools.
 	Sequential bool
+	// Barrier says each call of the tool runs alone in its place in the
+	// batch ([agenttool.Barrier]). A server sends sequential with it, for
+	// clients that predate barriers; a barrier is read as a barrier and
+	// not as sequential.
+	Barrier bool
 	// Resource names the shared state the tool touches, "" for none.
 	Resource string
 }
@@ -59,7 +64,12 @@ func ToolMetaOf(t *sdk.Tool) (ToolMeta, bool) {
 	}
 	flag := func(k string) bool { b, _ := m[k].(bool); return b }
 	res, _ := m["resource"].(string)
-	return ToolMeta{Facts: flag("facts"), Replay: flag("replay"), ReadOnly: flag("readOnly"), Sequential: flag("sequential"), Resource: res}, true
+	meta := ToolMeta{Facts: flag("facts"), Replay: flag("replay"), ReadOnly: flag("readOnly"), Sequential: flag("sequential"), Barrier: flag("barrier"), Resource: res}
+	if meta.Barrier {
+		// sequential beside barrier is for clients that predate barriers.
+		meta.Sequential = false
+	}
+	return meta, true
 }
 
 // FactsCall is one call [Remote.Facts] is asked about: a tool of the

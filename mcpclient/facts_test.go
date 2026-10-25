@@ -22,6 +22,12 @@ func TestToolMetaOf(t *testing.T) {
 		{name: "other keys", meta: sdk.Meta{"x": 1}},
 		{name: "all", meta: sdk.Meta{ToolMetaKey: map[string]any{"facts": true, "replay": true, "readOnly": true, "sequential": true, "resource": "shell:1"}},
 			want: ToolMeta{Facts: true, Replay: true, ReadOnly: true, Sequential: true, Resource: "shell:1"}, ok: true},
+		// A server sends sequential with barrier for clients that predate
+		// barriers; this client reads a barrier, not a sequential tool.
+		{name: "barrier with its sequential", meta: sdk.Meta{ToolMetaKey: map[string]any{"sequential": true, "barrier": true}},
+			want: ToolMeta{Barrier: true}, ok: true},
+		{name: "barrier alone", meta: sdk.Meta{ToolMetaKey: map[string]any{"barrier": true}},
+			want: ToolMeta{Barrier: true}, ok: true},
 		{name: "wrong types read as unset", meta: sdk.Meta{ToolMetaKey: map[string]any{"facts": "yes", "sequential": 1, "resource": true}}, ok: true},
 		{name: "not an object", meta: sdk.Meta{ToolMetaKey: "facts"}},
 	} {

@@ -1,6 +1,6 @@
 # RFC 0001: Agent Tool Contract
 
-Status: draft 0.6
+Status: draft 0.7
 Author: Christopher Davenport
 Discussion: to be opened against this repository. The Go module at its
 root is the reference binding; agentturn is the reference harness.
@@ -190,6 +190,7 @@ that outlives a call.
 | --- | --- | --- | --- |
 | strict | boolean | false | the provider, via the definition |
 | sequential | boolean | false | the executor |
+| barrier | boolean | false | the executor |
 | resource | string | `""`, none | the executor |
 | annotations | object | unstated | a policy layer |
 | confined | (ctx, args) → (boolean, string) | (false, `""`), unstated | a policy layer, per call |
@@ -204,13 +205,19 @@ that outlives a call.
 - **sequential** says the tool must not run alongside any other tool in
   the same batch. When any tool in a batch reports it, the whole batch
   runs one call at a time in the model's order.
+- **barrier** says each call of the tool must not overlap any other
+  call of the batch, while the calls before it and after it may overlap
+  each other: it runs after every call before it and before every call
+  after it. A tool that reports both sequential and barrier is
+  sequential, and reads as no barrier.
 - **resource** names shared state a call of the tool touches, free-form
   and `<kind>:<id>` by convention, `shell:session` or `container:47`.
   Two calls in one batch that name the same resource run one after the
   other in the model's order, while the rest of the batch runs
   alongside them. Two tools that name the same resource share it. A
   tool that reports both sequential and a resource is sequential, and
-  its resource reads as none: the batch is what it claims.
+  its resource reads as none: the batch is what it claims. A barrier's
+  resource reads as none too, since it runs alone in its place.
 - **annotations** are the behavioural hints MCP defines: a title, and
   whether the tool is read-only, destructive, idempotent and
   open-world. They are hints from the tool's author and never
@@ -455,7 +462,7 @@ the model's order, whatever order the results arrived in.
 Calls run in parallel up to a bound the harness sets, default 8, in
 whatever order the executor schedules them. Two calls of one batch MAY
 therefore overlap, and a tool that cannot tolerate that declares
-[sequential or a resource](#properties).
+[sequential, barrier or a resource](#properties).
 
 ### Serialisation
 
@@ -463,10 +470,21 @@ therefore overlap, and a tool that cannot tolerate that declares
   tool reports sequential, every call of the batch runs one after the
   other in the model's order, and resources are ignored, since a serial
   batch is already stricter.
-- **A resource chain.** Otherwise the calls whose tools name one
-  resource run one after the other in the model's order, and alongside
-  everything else. A call whose tool names no resource is a chain of
-  its own.
+- **Barriers.** Otherwise, when any call's tool reports barrier, the
+  batch runs as segments in the model's order: each barrier call is a
+  segment alone, and each run of calls between two barriers is one. A
+  segment starts once every call of the one before it has completed and
+  its result been taken, and the calls of a segment run as a batch of
+  their own would, in parallel up to the bound and in resource chains.
+  A response of five reads and a shell command, `read read bash read
+  read`, runs the first two reads together, then `bash` alone, then the
+  last two together: the model's order holds around the command, and
+  the reads do not wait on each other. Under a serial batch the same
+  response runs one call at a time.
+- **A resource chain.** Otherwise, and within a segment, the calls
+  whose tools name one resource run one after the other in the model's
+  order, and alongside everything else. A call whose tool names no
+  resource is a chain of its own.
 - **The scope is one batch.** Serialisation is between calls of one
   batch; nothing here orders a call in one batch against a call in
   another, in a sub-agent's batch, or in a concurrent run. A tool whose
@@ -589,7 +607,8 @@ and everything else is optional.
 | name, description, parameters | `Tool.Name`, `Tool.Description`, `Tool.Parameters` (nil is no arguments, and `Definition` serves it as `NoArgsSchema`) |
 | strict | `Strict` interface, read by `IsStrict`, set by `WithStrict()` |
 | sequential | `Sequential` interface, read by `IsSequential`, set by `WithSequential()` |
-| resource | `Resource` interface, read by `ResourceOf` (which applies the sequential rule), set by `WithResource(name)` |
+| barrier | `Barrier` interface, read by `IsBarrier` (which applies the sequential rule), set by `WithBarrier()` |
+| resource | `Resource` interface, read by `ResourceOf` (which applies the sequential and barrier rules), set by `WithResource(name)` |
 | annotations | `Annotated` interface and `Annotations` struct, read by `AnnotationsOf`, set by `WithAnnotations(a)` |
 | confined | `Confined` interface, read by `ConfinedBy(ctx, t, args)`, set by `WithConfined(fn)` |
 | replay | `Replayable` interface and `Replay` (`ReplayUnknown`, `ReplaySafe`, `ReplayKeyed`), read by `ReplayOf(ctx, t, args)`, which reads an unknown value as `ReplayUnknown`, set by `WithReplay(fn)` |
@@ -608,7 +627,8 @@ and everything else is optional.
 | arguments validation | `New` validates a reflected schema with `Schema.ValidateJSON`; `ValidationError{Path, Msg}` |
 | executor | `Executor{MaxParallel, Sequential, Recorder, OnStart}`; `Execute` yields `Event{Index, Final, Result, Err}`; `Results` collects in job order |
 | a call starts | `Executor.OnStart(ctx, job) error`, on the job's goroutine, after the slot and the turn, with the call on `ctx`, before `Execute`; an error completes the job without running the tool |
-| the chains of a batch | `Executor.Chains(jobs) [][]int` returns the chains `Execute` runs the batch in, each in the model's order, one chain for a serial batch; a harness that waits for a call's predecessor to settle reads it rather than restating the rules |
+| the chains of a batch | `Executor.Chains(jobs) [][]int` returns the chains `Execute` runs the batch in, each in the model's order, one chain for a serial batch, and one chain of every call for a batch with a barrier, which is stricter than `Execute`; a harness that waits for a call's predecessor to settle reads it rather than restating the rules |
+| what a call waits on | `Executor.Preceding(jobs) [][]int` returns, per call, the calls `Execute` hands it over after, which in a batch with barriers is more than one; a harness that waits for each listed call to settle orders the batch as `Execute` does, and agrees with `Chains` on a batch with no barrier |
 | schema generation | `New`, `SchemaFor`, `SchemaOf`, `Reflect`; `Schemer` supplies a schema; see the [schema section](#schema-generation) |
 
 One place where the binding does not yet do what this document says:
@@ -635,7 +655,7 @@ set on the local side by the host and does not cross.
 | name, description | `name`, `description` | both |
 | parameters | `inputSchema`; a nil schema is served as an empty object schema | both |
 | strict | no field; not carried | — |
-| sequential, resource | no field in MCP; the serving side puts them in the tool's `_meta` under `ToolMetaKey` (`sequential`, `resource`), and the consuming side declares them from there. `mcpclient.WithSequential(names…)` adds sequential, and `WithResource(resource, names…)` names a remote tool's state and wins over the server's, an empty resource withdrawing it, since the host sees every server it composes and the server only itself | both |
+| sequential, barrier, resource | no field in MCP; the serving side puts them in the tool's `_meta` under `ToolMetaKey` (`sequential`, `barrier`, `resource`), and the consuming side declares them from there. A barrier is served with `sequential` beside it, so a consumer that predates barriers runs its batch one call at a time, stricter and never looser; a consumer that reads `barrier` takes the tool as a barrier alone. `mcpclient.WithSequential(names…)` adds sequential, `WithBarrier(names…)` adds barrier, and `WithResource(resource, names…)` names a remote tool's state and wins over the server's, an empty resource withdrawing it, since the host sees every server it composes and the server only itself | both |
 | annotations | `annotations`: `title`, `readOnlyHint`, `destructiveHint` (absent is true), `idempotentHint`, `openWorldHint` (absent is true); a tool with no block is unstated | both |
 | confined | no field; `mcpclient.WithConfined(by, names…)` says a remote tool runs confined, and `WithConfinedFunc(fn, names…)` answers per call; the claim is the host's, which placed the server, and the server's does not cross | consume |
 | replay | answered by `execution/facts` beside the call's facts, for a tool whose `_meta` marks `replay`, and taken by the consuming side only when the host opts in (`mcpclient.WithClaims`), as for facts; *keyed* is sent and read as *unknown*, since the idempotency key does not cross. A consumed tool not so taken is *unknown* whatever its `idempotentHint`, since MCP defines no deduplication and a call whose stream broke may or may not have run | both |
@@ -935,6 +955,18 @@ module and is listed in the changelog as one.
   differ, `retryable` with a not-before time in a `_meta` block, a
   rate-limit error code, so it waits for one to settle. The MCP
   client handles its own transport failures meanwhile.
+
+## Changes since 0.6
+
+- Properties gain **barrier**, false by default: a call that runs alone
+  in its place in the batch, after the calls before it and before the
+  calls after it, while those overlap each other. Sequential is
+  unchanged and wins over it. Serialisation describes the segments a
+  batch with barriers runs in. The Go binding adds `Executor.Preceding`,
+  each call's predecessors, and `Executor.Chains` reads a batch with a
+  barrier as one chain, so a harness that knows only chains is never
+  looser than the executor. The MCP binding carries it in `_meta` with
+  `sequential` beside it for consumers that predate it.
 
 ## Changes since 0.5
 

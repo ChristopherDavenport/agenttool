@@ -397,6 +397,7 @@ func TestToolMetaListing(t *testing.T) {
 		c.tool("seq", agenttool.WithSequential()),
 		c.tool("res", agenttool.WithResource("shell:session")),
 		c.tool("ro", agenttool.WithAnnotations(agenttool.Annotations{ReadOnly: true})),
+		c.tool("bar", agenttool.WithBarrier()),
 	)
 	cs := rawClient(t, newServer(t, "claims", tools...), nil, nil)
 	listed := map[string]*sdk.Tool{}
@@ -411,6 +412,7 @@ func TestToolMetaListing(t *testing.T) {
 		"seq":  {Replay: true, Sequential: true},
 		"res":  {Replay: true, Resource: "shell:session"},
 		"ro":   {Replay: true, ReadOnly: true},
+		"bar":  {Replay: true, Barrier: true},
 		"bare": {},
 	} {
 		got, ok := mcpclient.ToolMetaOf(listed[name])
@@ -425,6 +427,14 @@ func TestToolMetaListing(t *testing.T) {
 	res, _ := set.Lookup("res")
 	if !agenttool.IsSequential(seq) {
 		t.Error("seq is not sequential on the client")
+	}
+	if bar, _ := set.Lookup("bar"); !agenttool.IsBarrier(bar) || agenttool.IsSequential(bar) {
+		t.Errorf("bar on the client: barrier %v, sequential %v; want a barrier alone", agenttool.IsBarrier(bar), agenttool.IsSequential(bar))
+	}
+	// A client older than barriers reads only sequential, which the
+	// server sends beside barrier, and runs the batch one call at a time.
+	if raw, _ := listed["bar"].Meta[ToolMetaKey].(map[string]any); raw["sequential"] != true || raw["barrier"] != true {
+		t.Errorf("bar's listed _meta = %v, want sequential and barrier both", raw)
 	}
 	if got := agenttool.ResourceOf(res); got != "shell:session" {
 		t.Errorf("res: resource %q", got)
