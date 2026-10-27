@@ -340,7 +340,7 @@ progress channel.
   none. An update after the final result is dropped.
 
 The call reaches the tool on its **context**, and the context carries
-three things:
+four things:
 
 - **The call itself**, so a tool built without a typed wrapper, or a
   recorder installed for the batch, can name the call it is serving.
@@ -349,6 +349,11 @@ three things:
 - **The recorder**, when the harness has one; see [Records](#records).
 - **Cancellation**, which is the harness's interrupt; see
   [Stopping a call](#stopping-a-call).
+- **The elicitor**, when the harness has one: how a tool asks the user
+  a question mid-call and waits for the answer, a confirmation, a form
+  or a page to visit, so the question reaches the harness as part of
+  the call that asked. A tool with none has nobody to ask, and reads
+  the question as cancelled, which says nobody chose.
 
 ### A result
 
@@ -541,6 +546,18 @@ right answer when the output so far is worth the model's while. What
 the tool value owns across calls, the shell, the container, is
 untouched, because the context belongs to the call and not to the tool.
 
+A harness MAY bound a call by a **maximum time** and by an **idle
+time** that each [progress](#progress) update resets. On expiry it
+stops the call as its interrupt does, and completes it with an error
+naming the limit. A call stopped so has an ambiguous outcome, since the
+tool may have acted before it stopped: running it again follows
+[Running a call again](#running-a-call-again). Time the call spends
+waiting on the user, a question it put to the elicitor, counts toward
+neither limit, since the wait is not the tool's. A tool that runs long
+and wants to stay under an idle limit sends progress. A harness that
+runs a call through an adapter, a remote tool, MAY leave the limits to
+the adapter, as the MCP binding does.
+
 There is deliberately no interrupt method. The reference agent that
 has one has it because its language has no cancellation to hand, and a
 second way to say "stop" would leave every tool guessing which one a
@@ -680,6 +697,7 @@ set on the local side by the host and does not cross.
 | call on the context | the server installs it for every call, as the executor does | serve |
 | recorder on the context | the handler leaves one it finds; the go-sdk at v1.8.0 derives each call's context from the one the session was opened with, `Run` or `Connect` over stdio and in memory, the initialize request over streamable HTTP, which is observed behaviour a test pins and not a documented guarantee | serve |
 | client identity | the server puts the MCP session on the context: `mcpserver.SessionFrom` | serve |
+| timeout | the consuming side MAY bound a call by a host-set idle time and maximum time, per server or per tool, `mcpclient.WithCallTimeout`, as [Stopping a call](#stopping-a-call) says; a progress notification for the call resets the idle time, so the consuming side asks for progress under an idle limit whether or not its caller takes updates; expiry cancels the request, which sends `notifications/cancelled`, and the call is not sent again | consume |
 | roots | no field in the contract. The consuming side offers the roots capability only when the host supplies roots, `mcpclient.WithRoots`, and answers `roots/list` with them; without them it MUST NOT advertise roots, so a server that scopes itself to its client's roots is not told it has some and then given none | consume |
 | logging | no field in the contract. The consuming side asks for log messages only when the host takes them, `mcpclient.WithLogging`: from 2026-07-28 by the log level in each call's `_meta`, `io.modelcontextprotocol/logLevel`, and before it by `logging/setLevel` when the session starts. It hands each message to the host, with the call on the context when the message belongs to a call it can name, and a log message never reaches a call's output, its details or the model | consume |
 | elicitation | `elicitation/create` ↔ the elicitor on the call's context. The client offers it only with `mcpclient.WithElicitation`; from 2026-07-28 the question returns with its call and is that call's, and before it a question the server sends on its own is put to the one call in flight, and to nobody when there is none or several; nobody to ask answers `cancel`. The server installs an elicitor on a served call's context when the client offers elicitation: from 2026-07-28 a question goes back as the call's input request, the tool running on while the client asks, and before it as `elicitation/create`; a question of a mode the client does not take answers `cancel` | both |
@@ -1055,6 +1073,13 @@ module and is listed in the changelog as one.
   contract carries: the consuming side offers roots only when the host
   supplies them, and asks for log messages only for a host that takes
   them, which never reach the model (#99).
+- The call's context lists the elicitor beside the call, the recorder
+  and cancellation. Stopping a call gains time limits: a harness MAY
+  bound a call by a maximum time and an idle time that progress
+  resets, and stops it on expiry as its interrupt does, with an error
+  naming the limit and an ambiguous outcome; the user's wait on a
+  question counts toward neither. The MCP binding applies them on the
+  consuming side (#96).
 
 ## Changes since 0.6
 

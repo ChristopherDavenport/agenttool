@@ -76,6 +76,19 @@ versions may break the API.
   sends nothing, and an older server that advertises logging is sent
   `logging/setLevel` when its session starts, a restarted one included.
   A log message never reaches a call's output or the model.
+- Added: `mcpclient.WithCallTimeout(idle, max, names…)` bounds a call
+  by an idle time, which each progress notification for the call
+  restarts, and a maximum time that holds whatever progress says, for
+  every tool of the server or for the named ones (#96). On expiry the
+  request is cancelled, which sends the server `notifications/cancelled`,
+  and the call returns a `*TimeoutError` naming the limit and saying the
+  call may or may not have taken effect; it is not sent again. Time a
+  question of the call waits on the user counts toward neither limit. A
+  call under an idle limit asks for progress whether or not its caller
+  takes updates. A call used to wait as long as its caller's context, so
+  a hung server held a headless run until the harness killed it. RFC
+  0001 states the rule for any harness under "Stopping a call", and the
+  context of a call now lists the elicitor.
 - Dependencies: every module requires `openresponses` v0.0.17, up from
   v0.0.13. Its `Text` no longer documents itself for function call
   outputs, which take `input_text`, and its types keep members they do

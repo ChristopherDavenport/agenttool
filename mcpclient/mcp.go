@@ -135,8 +135,12 @@ type options struct {
 	// [WithLogging].
 	logLevel sdk.LoggingLevel
 	onLog    func(context.Context, *sdk.LoggingMessageParams)
-	dial           func(context.Context) (sdk.Transport, error)
-	onReconnect    func(ReconnectInfo)
+	// timeout is every call's limits, and timeouts a tool's own; see
+	// [WithCallTimeout].
+	timeout     callTimeout
+	timeouts    map[string]claim[callTimeout]
+	dial        func(context.Context) (sdk.Transport, error)
+	onReconnect func(ReconnectInfo)
 	// protocolVersion is the version the session offers, the SDK's
 	// latest when empty; tests set it to reach an older server's path.
 	protocolVersion string
@@ -586,11 +590,22 @@ type claimEntry struct {
 	def    string
 }
 
-// runningCall is a call in flight: its context, and the stop that ends
-// it with a cause.
+// runningCall is a call in flight: its context, the stop that ends it
+// with a cause, and the limiter that stops it on a timeout, nil without
+// one.
 type runningCall struct {
 	ctx  context.Context
 	stop context.CancelCauseFunc
+	lim  *limiter
+}
+
+// callPlan is what a listed tool's calls are made under: whether the
+// tool is read-only, the output schema its results are checked against,
+// and its time limits.
+type callPlan struct {
+	readOnly bool
+	out      *outputCheck
+	limit    callTimeout
 }
 
 // Connect opens one session over t, lists its tools and returns the
@@ -977,9 +992,12 @@ func (s *Remote) wrap(l *link, t *sdk.Tool, def string) (agenttool.Tool, error) 
 	if a, ok := AnnotationsOf(t); ok {
 		opts = append(opts, agenttool.WithAnnotations(a))
 	}
-	out := outputCheckOf(t)
+	plan := callPlan{readOnly: readOnly, out: outputCheckOf(t), limit: s.opts.timeout}
+	if lim, ok := latest(s.opts.timeouts, remote, name); ok {
+		plan.limit = lim
+	}
 	return agenttool.NewFunc(name, t.Description, schema, func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
-		return s.call(ctx, ref, readOnly, out, call)
+		return s.call(ctx, ref, plan, call)
 	}, opts...), nil
 }
 
@@ -1032,7 +1050,10 @@ func AnnotationsOf(t *sdk.Tool) (agenttool.Annotations, bool) {
 // structured content validated against it, a missing one included, and
 // a violation returned as an error beginning "invalid result:" that says
 // the call ran; see [outputCheck.check].
-func (s *Remote) call(ctx context.Context, ref toolRef, readOnly bool, out *outputCheck, call agenttool.Call) (agenttool.Result, error) {
+//
+// With [WithCallTimeout] the call is stopped when a limit runs out, its
+// request cancelled, and returns a [*TimeoutError].
+func (s *Remote) call(ctx context.Context, ref toolRef, plan callPlan, call agenttool.Call) (agenttool.Result, error) {
 	remote := ref.remote
 	args := call.Args
 	if len(args) == 0 {
@@ -1042,14 +1063,33 @@ func (s *Remote) call(ctx context.Context, ref toolRef, readOnly bool, out *outp
 	if s.opts.onLog != nil {
 		params.Meta = sdk.Meta{sdk.MetaKeyLogLevel: s.opts.logLevel}
 	}
-	if call.OnUpdate != nil {
+	if _, ok := agenttool.CallFrom(ctx); !ok {
+		ctx = agenttool.WithCall(ctx, call)
+	}
+	// Every call is tracked, whatever the options, so Close can end it
+	// through stop, which is released when the call returns. A limit
+	// ends it through the same stop.
+	ctx, stop := context.WithCancelCause(ctx)
+	defer stop(nil)
+	lim := startLimiter(ref.name, plan.limit, stop)
+	defer lim.end()
+	if call.OnUpdate != nil || plan.limit.idle > 0 {
+		// A progress notification restarts the idle clock, so a call
+		// under an idle limit asks for them whether or not its caller
+		// takes updates.
 		token := "agenttool-" + strconv.FormatInt(s.token.Add(1), 10)
 		if params.Meta == nil {
 			params.Meta = sdk.Meta{}
 		}
 		params.Meta["progressToken"] = token
+		onUpdate := func(r agenttool.Result) {
+			lim.progress()
+			if call.OnUpdate != nil {
+				call.OnUpdate(r)
+			}
+		}
 		s.mu.Lock()
-		s.progress[token] = call.OnUpdate
+		s.progress[token] = onUpdate
 		s.mu.Unlock()
 		// Notifications are dispatched asynchronously and can trail the
 		// result, so the token outlives the call briefly.
@@ -1059,20 +1099,13 @@ func (s *Remote) call(ctx context.Context, ref toolRef, readOnly bool, out *outp
 			s.mu.Unlock()
 		})
 	}
-	if _, ok := agenttool.CallFrom(ctx); !ok {
-		ctx = agenttool.WithCall(ctx, call)
-	}
-	// Every call is tracked, whatever the options, so Close can end it
-	// through stop, which is released when the call returns.
-	ctx, stop := context.WithCancelCause(ctx)
-	defer stop(nil)
 	id := s.callSeq.Add(1)
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return agenttool.Result{}, fmt.Errorf("mcp: call %q: %w", remote, ErrClosed)
 	}
-	s.running[id] = runningCall{ctx: ctx, stop: stop}
+	s.running[id] = runningCall{ctx: ctx, stop: stop, lim: lim}
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
@@ -1083,7 +1116,7 @@ func (s *Remote) call(ctx context.Context, ref toolRef, readOnly bool, out *outp
 	// for a restart too.
 	l, err := s.sendOn(ctx, ref)
 	if err != nil {
-		if cause := context.Cause(ctx); errors.Is(cause, ErrClosed) {
+		if cause := context.Cause(ctx); stoppedBy(cause) {
 			err = cause
 		}
 		return agenttool.Result{}, fmt.Errorf("mcp: call %q: %w", remote, err)
@@ -1099,7 +1132,7 @@ func (s *Remote) call(ctx context.Context, ref toolRef, readOnly bool, out *outp
 	// its open questions cancel, so they run detached, and are
 	// cancelled with the call when there are none, which without
 	// elicitation is always.
-	c := &ownCall{remote: s, ctx: ctx}
+	c := &ownCall{remote: s, ctx: ctx, lim: lim}
 	send, cancel := context.WithCancel(context.WithValue(context.WithoutCancel(ctx), ownCallKey{}, c))
 	defer context.AfterFunc(ctx, func() {
 		if c.answeringCancel() {
@@ -1124,7 +1157,7 @@ func (s *Remote) call(ctx context.Context, ref toolRef, readOnly bool, out *outp
 		// input, not an outcome: read as one, it is an empty success.
 		return agenttool.Result{}, fmt.Errorf("mcp: call %q: the server needs input the client did not give; multi round-trip handling is off", remote)
 	}
-	if s.seen.Load() == before && !readOnly {
+	if s.seen.Load() == before && !plan.readOnly {
 		// The server may notify after it answers, and the reference
 		// implementation does, so give the notification a moment to
 		// arrive before deciding the list is unchanged.
@@ -1139,8 +1172,8 @@ func (s *Remote) call(ctx context.Context, ref toolRef, readOnly bool, out *outp
 		_ = s.Await(ctx)
 	}
 	r, err := ResultOf(res)
-	if err == nil && out != nil {
-		if err := out.check(res); err != nil {
+	if err == nil && plan.out != nil {
+		if err := plan.out.check(res); err != nil {
 			// Unprefixed, as an isError result's message is: it is phrased
 			// for the model, and the rule is that it begins so.
 			return agenttool.Result{Details: r.Details}, err
@@ -1174,17 +1207,25 @@ func (s *Remote) callTool(ctx, send context.Context, cancel context.CancelFunc, 
 		// its cancellation before ctx's end is selected; the call still
 		// ended because the remote closed, and says so.
 		if o.err != nil {
-			if cause := context.Cause(ctx); errors.Is(cause, ErrClosed) {
+			if cause := context.Cause(ctx); stoppedBy(cause) {
 				return nil, cause
 			}
 		}
 		return o.res, o.err
 	case <-ctx.Done():
-		if err := context.Cause(ctx); errors.Is(err, ErrClosed) {
+		if err := context.Cause(ctx); stoppedBy(err) {
 			return nil, err
 		}
 		return nil, ctx.Err()
 	}
+}
+
+// stoppedBy reports whether a call's context ended because this remote
+// stopped it, closed or out of time, rather than because its caller
+// cancelled: the cause is then what the call returns.
+func stoppedBy(cause error) bool {
+	var timeout *TimeoutError
+	return errors.Is(cause, ErrClosed) || errors.As(cause, &timeout)
 }
 
 // ownCallKey marks the requests of a call this remote made, with its
@@ -1200,6 +1241,7 @@ type ownCallKey struct{}
 type ownCall struct {
 	remote *Remote
 	ctx    context.Context
+	lim    *limiter
 
 	mu        sync.Mutex
 	asking    int  // questions with the elicitor
@@ -1246,17 +1288,19 @@ func (s *Remote) elicit(ctx context.Context, req *sdk.ElicitRequest) (*sdk.Elici
 		return nobody, nil
 	}
 	var callCtx context.Context
+	var lim *limiter
 	own, _ := ctx.Value(ownCallKey{}).(*ownCall)
 	if own != nil && own.remote == s {
-		callCtx = own.ctx
+		callCtx, lim = own.ctx, own.lim
 	} else {
 		// Sent by the server on its own, before 2026-07-28: no call is
 		// named, so only an unambiguous one is asked.
 		own = nil
-		var ok bool
-		if callCtx, ok = s.soleCall(); !ok {
+		c, ok := s.soleCall()
+		if !ok {
 			return nobody, nil
 		}
+		callCtx, lim = c.ctx, c.lim
 	}
 	ask, ok := agenttool.ElicitorFrom(callCtx)
 	if !ok {
@@ -1276,7 +1320,11 @@ func (s *Remote) elicit(ctx context.Context, req *sdk.ElicitRequest) (*sdk.Elici
 	if own != nil && !own.ask() {
 		return nobody, nil
 	}
+	// The wait for the user's answer is not the server's, so the call's
+	// time limits do not run while it lasts.
+	answered := lim.ask()
 	ans, err := ask(askCtx, q)
+	answered()
 	if own != nil {
 		// Ended by the call rather than by the server's question: nobody
 		// chose, and the server is told so on the call's next request.
@@ -1304,18 +1352,17 @@ func (s *Remote) elicit(ctx context.Context, req *sdk.ElicitRequest) (*sdk.Elici
 	return res, nil
 }
 
-// soleCall returns the context of the call in flight when there is
-// exactly one.
-func (s *Remote) soleCall() (context.Context, bool) {
+// soleCall returns the call in flight when there is exactly one.
+func (s *Remote) soleCall() (runningCall, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if len(s.running) != 1 {
-		return nil, false
+		return runningCall{}, false
 	}
 	for _, c := range s.running {
-		return c.ctx, true
+		return c, true
 	}
-	return nil, false
+	return runningCall{}, false
 }
 
 // awaitNotification waits up to the grace for a tool-list-changed
@@ -1355,8 +1402,8 @@ func (s *Remote) onLog(ctx context.Context, req *sdk.LoggingMessageRequest) {
 	}
 	if own, _ := ctx.Value(ownCallKey{}).(*ownCall); own != nil && own.remote == s {
 		ctx = context.WithoutCancel(own.ctx)
-	} else if callCtx, ok := s.soleCall(); ok {
-		ctx = context.WithoutCancel(callCtx)
+	} else if c, ok := s.soleCall(); ok {
+		ctx = context.WithoutCancel(c.ctx)
 	} else {
 		ctx = context.WithoutCancel(ctx)
 	}

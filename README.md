@@ -407,6 +407,13 @@ may work in, a workspace's root, and without it no roots are offered;
 each to `fn`, with the call on its context when it can tell which, and
 never to the model.
 
+A call waits as long as its caller lets it unless the host bounds it:
+`WithCallTimeout(30*time.Second, 10*time.Minute)` stops a call that
+sends no progress for half a minute or runs past ten, cancelling its
+request, and returns a `*TimeoutError` that says the call may or may
+not have taken effect. Names after the two limits set one tool's
+limits; the user's wait on a question the call asked is not counted.
+
 A record crosses too. The tool that most wants one, a shell inside a
 sandbox recording which container served the call, is the tool most
 likely to be behind a server, so `mcpserver` puts the `Record` of a
