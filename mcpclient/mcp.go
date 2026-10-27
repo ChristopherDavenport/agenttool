@@ -914,8 +914,9 @@ func (s *Remote) wrap(l *link, t *sdk.Tool, def string) (agenttool.Tool, error) 
 	if a, ok := AnnotationsOf(t); ok {
 		opts = append(opts, agenttool.WithAnnotations(a))
 	}
+	out := outputCheckOf(t)
 	return agenttool.NewFunc(name, t.Description, schema, func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
-		return s.call(ctx, ref, readOnly, call)
+		return s.call(ctx, ref, readOnly, out, call)
 	}, opts...), nil
 }
 
@@ -963,7 +964,12 @@ func AnnotationsOf(t *sdk.Tool) (agenttool.Annotations, bool) {
 // With [WithReconnect] the call restarts an ended session before it is
 // sent, is not sent when its tool changed with the restart, and is never
 // sent twice; see [Remote.sendOn].
-func (s *Remote) call(ctx context.Context, ref toolRef, readOnly bool, call agenttool.Call) (agenttool.Result, error) {
+//
+// A tool that lists an output schema has a successful result's
+// structured content validated against it, a missing one included, and
+// a violation returned as an error beginning "invalid result:" that says
+// the call ran; see [outputCheck.check].
+func (s *Remote) call(ctx context.Context, ref toolRef, readOnly bool, out *outputCheck, call agenttool.Call) (agenttool.Result, error) {
 	remote := ref.remote
 	args := call.Args
 	if len(args) == 0 {
@@ -1063,7 +1069,15 @@ func (s *Remote) call(ctx context.Context, ref toolRef, readOnly bool, call agen
 		// that outlives ctx is reflected after the next Await.
 		_ = s.Await(ctx)
 	}
-	return ResultOf(res)
+	r, err := ResultOf(res)
+	if err == nil && out != nil {
+		if err := out.check(res); err != nil {
+			// Unprefixed, as an isError result's message is: it is phrased
+			// for the model, and the rule is that it begins so.
+			return agenttool.Result{Details: r.Details}, err
+		}
+	}
+	return r, err
 }
 
 // callTool makes the call on send and returns its outcome, or the end
@@ -1287,8 +1301,9 @@ func (s *Remote) onProgress(p *sdk.ProgressNotificationParams) {
 // content mapping states. Text-only content becomes Output.Text; image,
 // audio and blob content becomes Output.Parts with the matching
 // openresponses content types, and the text beside it input_text parts,
-// the one text part a function call output takes; structured content is
-// appended as JSON text. Audio is an input_file whose data is a data URL
+// the one text part a function call output takes. Structured content is
+// appended as JSON text unless a text block already holds it, a value
+// equal to it under RFC 8785, as MCP asks a server to send it. Audio is an input_file whose data is a data URL
 // of its media type, which is what mcpserver serves back as audio; its
 // name, "audio.wav" for audio/wav, is for a reader that goes by names.
 //
@@ -1321,7 +1336,7 @@ func ResultOf(res *sdk.CallToolResult) (agenttool.Result, error) {
 		details = rec
 	}
 	var parts openresponses.Contents
-	var texts []string
+	var texts, blocks []string
 	textOnly := true
 	addText := func(text string) {
 		texts = append(texts, text)
@@ -1334,6 +1349,7 @@ func ResultOf(res *sdk.CallToolResult) (agenttool.Result, error) {
 		switch v := c.(type) {
 		case *sdk.TextContent:
 			addText(v.Text)
+			blocks = append(blocks, v.Text)
 		case *sdk.ImageContent:
 			textOnly = false
 			parts = append(parts, &openresponses.InputImage{ImageURL: dataURL(v.MIMEType, v.Data)})
@@ -1362,7 +1378,7 @@ func ResultOf(res *sdk.CallToolResult) (agenttool.Result, error) {
 	}
 	if res.StructuredContent != nil {
 		data, err := json.Marshal(res.StructuredContent)
-		if err == nil {
+		if err == nil && !carries(blocks, data) {
 			addText(string(data))
 		}
 	}

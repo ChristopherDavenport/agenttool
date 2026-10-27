@@ -672,6 +672,7 @@ set on the local side by the host and does not cross.
 | closer | not a closer: the remote session is closed through `mcpclient.Remote.Close` | consume |
 | arguments | `arguments`; the server validates against `inputSchema` with a general validator | both |
 | output | content blocks ↔ the output, as [Content](#content) states | both |
+| output schema | no property in the contract, and not served. A consumed tool that lists an `outputSchema` has a successful result's `structuredContent` validated against it with a general validator, and a result with none fails it. A failure completes the call with an error beginning `invalid result:` that says the call ran, since it did and may have had its effect: the outcome is known, not [ambiguous](#running-a-call-again), and the model is not told the call failed. A schema the validator cannot read fails every result the same way, naming the schema | consume |
 | error | `isError` with the message as text; the consuming side returns it as an error and the harness applies `Error:` once | both |
 | progress | `notifications/progress` when the request carries a token; `progress`, `total`, `message` ↔ progress info | both |
 | details | the consuming side sets the raw `CallToolResult` as details | consume |
@@ -694,7 +695,7 @@ differently send different requests and record different sessions.
 | image | `input_image` whose `image_url` is a data URL of its `mimeType`, `application/octet-stream` when it has none | `input_image` whose `image_url` is a base64 data URL; one with any other URL is served as a resource link |
 | audio | `input_file` whose `file_data` is a data URL of its `mimeType`; the `filename`, `audio.<ext>` after the type in the reference binding, is informational | `input_file` whose `file_data` is a data URL of an `audio/*` type, as audio of that type; the media type decides, never the filename |
 | embedded text resource | `input_text`: the line `resource <uri> (<mimeType>)`, without ` (<mimeType>)` when it has none, a newline, then its text | not served: an `input_text` is served as text |
-| embedded blob resource | with an `image/*` `mimeType`, `input_image` whose `image_url` is a data URL of that type; with another `mimeType`, `input_file` whose `filename` is the URI and whose `file_data` is a data URL of that type; with none, `input_file` whose `filename` is the URI and whose `file_data` is bare base64, which a reader types by the filename's extension | `input_file` with `file_data`, other than audio: a data URL is a blob of its type, and bare base64 a blob typed by the `filename`'s extension under the table below, untyped when the extension is not in it; its URI is the [file URI](#content) below; `file_data` that is neither is served as text |
+| embedded blob resource | with an `image/*` `mimeType`, `input_image` whose `image_url` is a data URL of that type; with another `mimeType`, `input_file` whose `filename` is the URI and whose `file_data` is a data URL of that type; with none, `input_file` whose `filename` is the URI and whose `file_data` is bare base64, which a reader types by the filename's extension | `input_file` with `file_data`, other than audio: a data URL is a blob of its type, and bare base64 a blob typed by the `filename`'s extension under the table below, untyped when the extension is not in it; its URI is as below; `file_data` that is neither is served as text |
 | resource link | `input_text`: `resource_link <uri>: <name>, <description>, <mimeType>, <size> bytes`, each member the link leaves out left out with its comma, and `resource_link <uri>` when it leaves out all four | `input_image` with a URL that is not a data URL; `input_file` with `file_url` and no `file_data`, named by `filename` |
 | any other block | `input_text` holding the block's JSON | a part of any other type, as its JSON in a text block |
 
@@ -708,7 +709,14 @@ differently send different requests and record different sessions.
   consumed as text, the texts joined with a newline, and a text output
   is served as one text block.
 - **Structured content** is consumed as one more `input_text` part
-  holding its JSON, after the blocks.
+  holding its JSON, after the blocks, only when no text block that
+  reaches the model parses, as a whole, to a JSON value equal to it
+  under RFC 8785, the form the [definition hash](#canonical-definition-and-definition-hash)
+  uses: MCP asks a server to send structured content as text too, and
+  the model reads it once. Equal under RFC 8785 means the same bytes
+  once canonicalised, so members in another order, `1.0` for `1` and
+  insignificant whitespace are equal, and a number a double cannot
+  hold equals nothing.
 - **An error result** is consumed as an error whose message is the
   text the result would have had.
 - **A served blob's URI** is the part's `file_url` when it has one;
@@ -1037,6 +1045,10 @@ module and is listed in the changelog as one.
   served back as audio by that type, not by its filename; a served
   blob carries its type, and its URI is the filename when that is
   already a URI, rather than `file:///` put in front of it (#97).
+- Structured content a text block already holds, equal under RFC 8785,
+  is not sent again; a consumed tool's output schema is checked, and a
+  result that fails it is an error beginning `invalid result:` that
+  says the call ran, which is not an ambiguous outcome (#95).
 
 ## Changes since 0.6
 

@@ -48,6 +48,19 @@ versions may break the API.
   base64 the one RFC 0001's fixed extension table gives. A blob's URI is
   the filename when that is already a URI, so `db://report` no longer
   comes back as `file:///db://report`.
+- Fixed: mcpclient sends a result's structured content to the model
+  once (#95). MCP asks a server to send it as text too, and `ResultOf`
+  appended it whatever the text held, so a spec-following server's
+  result reached the model twice. It is now appended only when no text
+  block parses to a value equal to it under RFC 8785.
+- Added: mcpclient validates a consumed tool's structured content
+  against the `outputSchema` it lists, with the validator mcpserver uses
+  for arguments (#95). A result that fails it, or has no structured
+  content, is an error beginning `invalid result: the call ran, but`,
+  so the model does not trust it and does not read it as a call that
+  failed and may be made again. mcpclient now requires
+  `github.com/google/jsonschema-go` directly. An output schema on
+  `agenttool.Tool`, served by mcpserver, is a follow-up.
 - Dependencies: every module requires `openresponses` v0.0.17, up from
   v0.0.13. Its `Text` no longer documents itself for function call
   outputs, which take `input_text`, and its types keep members they do
