@@ -74,6 +74,15 @@ type Options struct {
 	// once rather than sent to a client that would give up on the call
 	// instead of answering.
 	MaxRequests int
+
+	// Instructions is the server's guidance for whoever uses it, given
+	// to the client at initialize: what the server is for and how its
+	// tools go together. The contract has no field for it, since a tool
+	// set has no description, so it is the host's to give when it builds
+	// the server; the client's host decides whether the model reads it.
+	// [Options.NewServer] serves it; a host that builds its own
+	// [sdk.Server] sets it in the server's options instead.
+	Instructions string
 }
 
 // NewServer builds an SDK server named name that serves tools. It fails
@@ -84,7 +93,11 @@ func NewServer(name, version string, tools ...agenttool.Tool) (*sdk.Server, erro
 
 // NewServer is [NewServer] with o.
 func (o Options) NewServer(name, version string, tools ...agenttool.Tool) (*sdk.Server, error) {
-	s := sdk.NewServer(&sdk.Implementation{Name: name, Version: version}, nil)
+	var opts *sdk.ServerOptions
+	if o.Instructions != "" {
+		opts = &sdk.ServerOptions{Instructions: o.Instructions}
+	}
+	s := sdk.NewServer(&sdk.Implementation{Name: name, Version: version}, opts)
 	if err := o.AddTools(s, tools...); err != nil {
 		return nil, err
 	}

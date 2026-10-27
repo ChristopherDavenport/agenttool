@@ -661,3 +661,18 @@ func TestRecordMetaKeyMatchesClient(t *testing.T) {
 		t.Errorf("mcpserver key %q != mcpclient key %q", RecordMetaKey, theirs)
 	}
 }
+
+// TestInstructions: the instructions a host gives NewServer reach the
+// client at initialize, and a server given none gives none (#98).
+func TestInstructions(t *testing.T) {
+	server, err := Options{Instructions: "Read before you write."}.NewServer("files", "1", fixtures[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := roundTrip(t, server).Instructions(); got != "Read before you write." {
+		t.Errorf("Instructions = %q", got)
+	}
+	if got := roundTrip(t, newServer(t, "plain", fixtures[0])).Instructions(); got != "" {
+		t.Errorf("Instructions of a server given none = %q", got)
+	}
+}

@@ -7,6 +7,14 @@ versions may break the API.
 
 ## Unreleased
 
+- Added: `mcpserver.Options.Instructions`, served by `Options.NewServer`
+  as the server's instructions at initialize (#98). A server built with
+  mcpserver gave none, so a client such as Claude Code, which reads them
+  to decide when to look for a server's tools, found the tools by their
+  names alone. mcpclient already reads them with `Remote.Instructions`.
+  RFC 0001 draft 0.8 states the mapping: the contract has no field for
+  them, the serving host gives them and the consuming host decides
+  whether the model reads them.
 - Dependencies: every module requires `openresponses` v0.0.17, up from
   v0.0.13. Its `Text` no longer documents itself for function call
   outputs, which take `input_text`, and its types keep members they do

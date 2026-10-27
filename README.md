@@ -394,6 +394,12 @@ connects, so the call's context carries the session it arrived on:
 directory, a container or a shell keys that state on, and two editor
 windows then get two shells instead of one.
 
+A tool set has no description in the contract, but a server has
+instructions: what it is for and how its tools go together.
+`mcpserver.Options{Instructions: …}.NewServer` serves them at
+initialize, and `mcpclient.Remote.Instructions` reads them; the host
+decides whether the model does.
+
 A record crosses too. The tool that most wants one, a shell inside a
 sandbox recording which container served the call, is the tool most
 likely to be behind a server, so `mcpserver` puts the `Record` of a
