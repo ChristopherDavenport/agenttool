@@ -16,7 +16,7 @@
 // who wants a policy applies it to the tools before serving them. What
 // a policy decides on crosses, though: a tool's facts and replay claims
 // are answered by [FactsMethod], and what MCP has no field for, those
-// claims' presence, read-only, sequential, barrier and resource, is in each
+// claims' presence, read-only, sequential, barrier, resource and flow, is in each
 // definition's _meta under [ToolMetaKey].
 //
 // One server serves many clients and one Tool value serves them all, so
@@ -223,10 +223,13 @@ func (o Options) AddTools(s *sdk.Server, tools ...agenttool.Tool) error {
 // [agenttool.Annotations] serves them as MCP tool annotations, each
 // hint stated rather than left to MCP's defaults, so a tool consumed by
 // mcpclient and served again here keeps the hints it arrived with. A
-// tool that carries none serves none.
+// tool that carries none serves none, which MCP reads as open-world. A
+// tool whose [agenttool.Flow] reads untrusted content or sends is served
+// open-world whatever its annotations say, so a client that reads only
+// MCP's hints is never looser than one that reads the flow.
 //
 // The tool's properties MCP has no field for, whether it makes the
-// facts and replay claims, read-only, sequential, barrier and resource, go in
+// facts and replay claims, read-only, sequential, barrier, resource and flow, go in
 // the definition's _meta under [ToolMetaKey], so that a client reads
 // them as the server's statement about the tool rather than as hints,
 // and asks [FactsMethod] only about the tools that claim. A tool with
@@ -241,6 +244,11 @@ func Definition(tl agenttool.Tool) *sdk.Tool {
 	def := &sdk.Tool{Name: tl.Name(), Description: tl.Description(), InputSchema: schema}
 	if a := agenttool.AnnotationsOf(tl); a != (agenttool.Annotations{}) {
 		destructive, openWorld := a.Destructive, a.OpenWorld
+		if f, ok := agenttool.FlowOf(tl); ok && (f.Sends || f.ReadsLabel(agenttool.LabelUntrusted)) {
+			// A client that reads only MCP takes a closed world as safe;
+			// a tool that reads untrusted content or sends is not.
+			openWorld = true
+		}
 		def.Title = a.Title
 		def.Annotations = &sdk.ToolAnnotations{
 			Title:           a.Title,

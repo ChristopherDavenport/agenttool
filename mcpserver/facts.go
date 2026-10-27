@@ -138,6 +138,20 @@ func toolMeta(tl agenttool.Tool) map[string]any {
 	if r := agenttool.ResourceOf(tl); r != "" {
 		m["resource"] = r
 	}
+	if f, ok := agenttool.FlowOf(tl); ok {
+		reads := make([]string, len(f.Reads))
+		for i, l := range f.Reads {
+			reads[i] = string(l)
+		}
+		flow := map[string]any{"reads": reads, "sends": f.Sends}
+		if len(f.To) > 0 {
+			flow["to"] = f.To
+		}
+		if len(f.Carries) > 0 {
+			flow["carries"] = f.Carries
+		}
+		m["flow"] = flow
+	}
 	if len(m) == 0 {
 		return nil
 	}

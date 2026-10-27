@@ -15,7 +15,9 @@
 // A remote tool's annotations, the read-only and destructive hints MCP
 // carries, reach the local tool through [agenttool.AnnotationsOf]; they
 // are the server's word, so a policy may read them and must not trust
-// them alone. A record a served tool returned with its result, under
+// them alone. Its open-world hint, true or absent, is also its
+// [agenttool.Flow]: untrusted content, and a call that sends, which only
+// a server whose claims the host takes can say otherwise. A record a served tool returned with its result, under
 // [RecordMetaKey] in the result's _meta, becomes the local Details as a
 // [RemoteRecord], so [agenttool.RecordOf] reads it here as it would in
 // process.
@@ -941,6 +943,9 @@ func (s *Remote) wrap(l *link, t *sdk.Tool, def string) (agenttool.Tool, error) 
 	}
 	if a, ok := AnnotationsOf(t); ok {
 		opts = append(opts, agenttool.WithAnnotations(a))
+	}
+	if flow, ok := flowOf(t, meta, s.opts.claims); ok {
+		opts = append(opts, agenttool.WithFlow(flow))
 	}
 	out, err := outputCheckOf(t)
 	if err != nil {

@@ -714,7 +714,7 @@ func (s Set) Validate() error {
 // comes from elsewhere, such as a remote server. parameters is served
 // verbatim and never validated; nil means the tool takes no arguments.
 // [WithStrict], [WithSequential], [WithBarrier], [WithResource], [WithAnnotations],
-// [WithConfined], [WithReplay], [WithFacts] and [WithCloser] apply; the
+// [WithConfined], [WithReplay], [WithFacts], [WithFlow] and [WithCloser] apply; the
 // options that shape a reflected schema do not. A nil fn panics here,
 // like a bad schema in [New].
 func NewFunc(name, description string, parameters json.RawMessage, fn func(ctx context.Context, call Call) (Result, error), opts ...Option) Tool {
@@ -725,7 +725,7 @@ func NewFunc(name, description string, parameters json.RawMessage, fn func(ctx c
 	for _, opt := range opts {
 		opt(&o)
 	}
-	f := &funcTool{name: name, description: description, schema: parameters, fn: fn, strict: o.strict, sequential: o.sequential, barrier: o.barrier, resource: o.resource, annotations: o.annotations, confined: o.confined, replay: o.replay, facts: o.facts}
+	f := &funcTool{name: name, description: description, schema: parameters, fn: fn, strict: o.strict, sequential: o.sequential, barrier: o.barrier, resource: o.resource, annotations: o.annotations, confined: o.confined, replay: o.replay, facts: o.facts, flow: o.flow}
 	if o.closer != nil {
 		return &funcToolCloser{funcTool: f, close: o.closer}
 	}
@@ -745,6 +745,7 @@ type funcTool struct {
 	confined    func(ctx context.Context, args json.RawMessage) (bool, string)
 	replay      func(ctx context.Context, args json.RawMessage) Replay
 	facts       func(ctx context.Context, args json.RawMessage) (Facts, error)
+	flow        *Flow
 }
 
 func (f *funcTool) Name() string                { return f.name }
@@ -769,6 +770,8 @@ func (f *funcTool) Facts(ctx context.Context, args json.RawMessage) (Facts, erro
 }
 
 func (f *funcTool) factsDeclared() bool { return f.facts != nil }
+
+func (f *funcTool) Flow() (Flow, bool) { return flowBy(f.flow) }
 
 func (f *funcTool) Execute(ctx context.Context, call Call) (Result, error) {
 	return f.fn(ctx, call)

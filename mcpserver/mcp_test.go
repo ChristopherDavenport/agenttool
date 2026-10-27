@@ -718,3 +718,40 @@ func TestInstructions(t *testing.T) {
 		t.Errorf("Instructions of a server given none = %q", got)
 	}
 }
+
+// TestServedFlow: a tool's flow crosses in its _meta, and its open-world
+// hint is served true whenever the flow reads untrusted content or
+// sends, whatever its annotations say, so a client that reads only MCP
+// is never looser (#92).
+func TestServedFlow(t *testing.T) {
+	fn := func(context.Context, agenttool.Call) (agenttool.Result, error) { return agenttool.Text("ok"), nil }
+	mail := agenttool.Flow{Reads: []agenttool.Label{agenttool.LabelPrivate}, Sends: true, To: []string{"to"}, Carries: []string{"body"}}
+	send := agenttool.NewFunc("send_email", "", nil, fn, agenttool.WithFlow(mail), agenttool.WithAnnotations(agenttool.Annotations{Destructive: true}))
+	notes := agenttool.NewFunc("notes", "", nil, fn, agenttool.WithFlow(agenttool.Flow{Reads: []agenttool.Label{agenttool.LabelPrivate}}), agenttool.WithAnnotations(agenttool.Annotations{ReadOnly: true}))
+	plain := agenttool.NewFunc("plain", "", nil, fn, agenttool.WithAnnotations(agenttool.Annotations{ReadOnly: true}))
+
+	if a := Definition(send).Annotations; a == nil || a.OpenWorldHint == nil || !*a.OpenWorldHint {
+		t.Errorf("send_email openWorldHint = %+v, want true for a tool that sends", a)
+	}
+	if a := Definition(notes).Annotations; a == nil || a.OpenWorldHint == nil || *a.OpenWorldHint {
+		t.Errorf("notes openWorldHint = %+v, want the tool's own false", a)
+	}
+
+	server := newServer(t, "mail", send, notes, plain)
+	trusted := roundTrip(t, server, mcpclient.WithClaims())
+	for name, want := range map[string]agenttool.Flow{"send_email": mail, "notes": {Reads: []agenttool.Label{agenttool.LabelPrivate}}} {
+		tl, _ := agenttool.Set(trusted.Tools()).Lookup(name)
+		if got, ok := agenttool.FlowOf(tl); !ok || fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("%s under claims: flow = %+v, %v; want %+v", name, got, ok, want)
+		}
+	}
+	tl, _ := agenttool.Set(trusted.Tools()).Lookup("plain")
+	if f, ok := agenttool.FlowOf(tl); ok {
+		t.Errorf("plain: flow = %+v, want unstated, as its closed-world hint says nothing", f)
+	}
+	untrusted := roundTrip(t, server)
+	tl, _ = agenttool.Set(untrusted.Tools()).Lookup("send_email")
+	if got, ok := agenttool.FlowOf(tl); !ok || !got.Sends || len(got.To) != 0 || !got.ReadsLabel(agenttool.LabelUntrusted) || !got.ReadsLabel(agenttool.LabelPrivate) {
+		t.Errorf("send_email untrusted: flow = %+v, %v; want the strict reading", got, ok)
+	}
+}

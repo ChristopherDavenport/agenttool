@@ -82,10 +82,13 @@ permission preset can ask about the calls that leave one without
 knowing a product's own argument for leaving it; `Strict` marks the
 schema strict; `Replayable` says whether a call may run again;
 `Factual` says what a call would touch, as the calls it amounts to and
-the arguments it would run with; and `io.Closer` releases what the
-tool owns. `WithSequential()`, `WithBarrier()`, `WithResource()`, `WithAnnotations()`,
-`WithStrict()`, `WithConfined()`, `WithReplay()`, `WithFacts()` and
-`WithCloser()` set them on a tool from `New` or `NewFunc`. Embedding such a tool in a struct to add a
+the arguments it would run with; `Flowing` says whether its output is
+untrusted or private and whether a call sends data out, and through
+which arguments, which is what a defence against prompt injection
+decides on; and `io.Closer` releases what the tool owns.
+`WithSequential()`, `WithBarrier()`, `WithResource()`, `WithAnnotations()`,
+`WithStrict()`, `WithConfined()`, `WithReplay()`, `WithFacts()`,
+`WithFlow()` and `WithCloser()` set them on a tool from `New` or `NewFunc`. Embedding such a tool in a struct to add a
 method compiles and silently drops the rest, so a tool built here gains
 a property through its option.
 
@@ -377,7 +380,9 @@ what a permission layer keys on instead of a per-server name list;
 `AnnotationsOf` reads them from any tool and `mcpserver` serves the
 ones a Go tool carries, so they survive a round trip. They are the
 server's word, so a policy may use them to be stricter and may not use
-them alone to allow a call. The refresh is a round trip: `Await` blocks until
+them alone to allow a call. An open-world hint, true or absent, is
+also the tool's flow: it reads untrusted content and sends, unless a
+server whose claims the host takes says otherwise. The refresh is a round trip: `Await` blocks until
 it has landed, and a call that returns after the notification arrived
 waits for it. A server need not notify before it answers, and the
 reference Go SDK arms the notification on a 10 ms timer, so a call

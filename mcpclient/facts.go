@@ -49,6 +49,10 @@ type ToolMeta struct {
 	Barrier bool
 	// Resource names the shared state the tool touches, "" for none.
 	Resource string
+	// Flow is the tool's flow ([agenttool.Flow]), nil when the server
+	// states none. It is taken as stated only under [WithClaims]; see
+	// [Remote.Tools] for how it is read otherwise.
+	Flow *agenttool.Flow
 }
 
 // ToolMetaOf reads a listed tool's [ToolMeta], reporting false when it
@@ -64,12 +68,71 @@ func ToolMetaOf(t *sdk.Tool) (ToolMeta, bool) {
 	}
 	flag := func(k string) bool { b, _ := m[k].(bool); return b }
 	res, _ := m["resource"].(string)
-	meta := ToolMeta{Facts: flag("facts"), Replay: flag("replay"), ReadOnly: flag("readOnly"), Sequential: flag("sequential"), Barrier: flag("barrier"), Resource: res}
+	meta := ToolMeta{Facts: flag("facts"), Replay: flag("replay"), ReadOnly: flag("readOnly"), Sequential: flag("sequential"), Barrier: flag("barrier"), Resource: res, Flow: flowMeta(m["flow"])}
 	if meta.Barrier {
 		// sequential beside barrier is for clients that predate barriers.
 		meta.Sequential = false
 	}
 	return meta, true
+}
+
+// flowMeta reads a flow from a tool's _meta, nil when there is none or
+// it is not an object. A member of the wrong type reads as unset, and a
+// label that is not a string as one this package does not know, which
+// [agenttool.FlowOf] reads as untrusted.
+func flowMeta(v any) *agenttool.Flow {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	strs := func(k string) []string {
+		list, _ := m[k].([]any)
+		var out []string
+		for _, e := range list {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	f := &agenttool.Flow{To: strs("to"), Carries: strs("carries")}
+	f.Sends, _ = m["sends"].(bool)
+	list, _ := m["reads"].([]any)
+	for _, e := range list {
+		s, _ := e.(string)
+		f.Reads = append(f.Reads, agenttool.Label(s))
+	}
+	return f
+}
+
+// flowOf is a listed tool's flow as this side reads it. MCP's open-world
+// hint, true or absent, as MCP defaults it whether or not the tool
+// carries an annotations block, is untrusted content and a call that
+// sends; a hint of false says nothing, since a closed world is a
+// loosening claim. The server's own flow is taken as stated when the
+// host takes its claims, and otherwise only where it is stricter: its
+// labels are added, and the tool reads as sending through every
+// argument, since an untrusted server's word that a tool sends nothing,
+// or only through some arguments, would loosen a policy.
+func flowOf(t *sdk.Tool, meta ToolMeta, trusted bool) (agenttool.Flow, bool) {
+	var flow agenttool.Flow
+	stated := t.Annotations == nil || t.Annotations.OpenWorldHint == nil || *t.Annotations.OpenWorldHint
+	if stated {
+		flow = agenttool.Flow{Reads: []agenttool.Label{agenttool.LabelUntrusted}, Sends: true}
+	}
+	switch {
+	case meta.Flow == nil:
+		return flow, stated
+	case trusted:
+		return *meta.Flow, true
+	}
+	for _, l := range meta.Flow.Reads {
+		if !flow.ReadsLabel(l) {
+			flow.Reads = append(flow.Reads, l)
+		}
+	}
+	flow.Sends = true
+	return flow, true
 }
 
 // FactsCall is one call [Remote.Facts] is asked about: a tool of the

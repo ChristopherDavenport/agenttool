@@ -126,6 +126,23 @@ versions may break the API.
 - Added: `Elicitation.Check(answer)`, the rules RFC 0001's new
   Questions section states for an answer, for a harness to apply
   before it gives one (#85). RFC 0001 gains a Command line binding.
+- Added: `Flow`, a tool property read by `FlowOf` and set by
+  `WithFlow` (#92). It labels a tool's output `LabelUntrusted`, content
+  an outside party wrote, or `LabelPrivate`, content that must not leave
+  the session, and says whether a call sends data out (`Sends`) and
+  through which arguments (`To`, `Carries`). It has presence, so a tool
+  that said nothing is told apart from one that declared it reads and
+  sends nothing, and `FlowOf` reads a label it does not know as
+  untrusted. `Wrap` forwards it. A policy and a recorder read it in
+  place of a product's map of tool names.
+- Added: the MCP binding carries flow (#92). mcpclient reads a tool's
+  `openWorldHint`, true or absent, with or without an annotations
+  block, as reading untrusted content and sending, and a hint of false
+  as saying nothing. A server's own flow, which mcpserver serves in the
+  tool's `_meta` under `ToolMetaKey`, is taken as stated under
+  `WithClaims`, and otherwise only where it is stricter. mcpserver
+  serves `openWorldHint: true` for a tool whose flow reads untrusted
+  content or sends, whatever its annotations say.
 - Dependencies: every module requires `openresponses` v0.0.17, up from
   v0.0.13. Its `Text` no longer documents itself for function call
   outputs, which take `input_text`, and its types keep members they do
