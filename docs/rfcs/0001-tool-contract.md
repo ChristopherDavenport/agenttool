@@ -671,7 +671,7 @@ set on the local side by the host and does not cross.
 | idempotency key | no field; a consumed call's key is not sent, and a served call has none | — |
 | closer | not a closer: the remote session is closed through `mcpclient.Remote.Close` | consume |
 | arguments | `arguments`; the server validates against `inputSchema` with a general validator | both |
-| output | text, image and resource content ↔ output parts, text content ↔ `input_text`; text alone ↔ text; audio content consumed becomes an input file part, and is served back as an embedded blob rather than audio | both |
+| output | content blocks ↔ the output, as [Content](#content) states | both |
 | error | `isError` with the message as text; the consuming side returns it as an error and the harness applies `Error:` once | both |
 | progress | `notifications/progress` when the request carries a token; `progress`, `total`, `message` ↔ progress info | both |
 | details | the consuming side sets the raw `CallToolResult` as details | consume |
@@ -680,6 +680,37 @@ set on the local side by the host and does not cross.
 | recorder on the context | the handler leaves one it finds; the go-sdk at v1.8.0 derives each call's context from the one the session was opened with, `Run` or `Connect` over stdio and in memory, the initialize request over streamable HTTP, which is observed behaviour a test pins and not a documented guarantee | serve |
 | client identity | the server puts the MCP session on the context: `mcpserver.SessionFrom` | serve |
 | elicitation | `elicitation/create` ↔ the elicitor on the call's context. The client offers it only with `mcpclient.WithElicitation`; from 2026-07-28 the question returns with its call and is that call's, and before it a question the server sends on its own is put to the one call in flight, and to nobody when there is none or several; nobody to ask answers `cancel`. The server installs an elicitor on a served call's context when the client offers elicitation: from 2026-07-28 a question goes back as the call's input request, the tool running on while the client asks, and before it as `elicitation/create`; a question of a mode the client does not take answers `cancel` | both |
+
+#### Content
+
+A result's content blocks map to the output's parts one by one, in
+order, and each rendering is stated exactly: it is what the model reads
+and what a session records, so two adapters that render one block
+differently send different requests and record different sessions.
+
+| MCP content | Consumed as | Served from |
+| --- | --- | --- |
+| text | `input_text` with its text | `input_text`; `text` and `output_text`, read as `input_text` |
+| image | `input_image` whose `image_url` is a data URL of its `mimeType`, `application/octet-stream` when it has none | `input_image` whose `image_url` is a base64 data URL; one with any other URL is served as a resource link |
+| audio | `input_file` named `audio.<ext>` after its `mimeType`, with its bytes as bare base64 | not served: an `input_file` is served as a blob resource |
+| embedded text resource | `input_text`: the line `resource <uri> (<mimeType>)`, without ` (<mimeType>)` when it has none, a newline, then its text | not served: an `input_text` is served as text |
+| embedded blob resource | with an `image/*` `mimeType`, `input_image` whose `image_url` is a data URL of that type; with another `mimeType`, `input_file` whose `filename` is the URI and whose `file_data` is a data URL of that type; with none, `input_file` whose `filename` is the URI and whose `file_data` is bare base64, which a reader types by the filename's extension | `input_file` with `file_data`, untyped, its URI `file_url` when set and `file:///` followed by `filename` otherwise; `file_data` that is not base64 is served as text |
+| resource link | `input_text`: `resource_link <uri>: <name>, <description>, <mimeType>, <size> bytes`, each member the link leaves out left out with its comma, and `resource_link <uri>` when it leaves out all four | `input_image` with a URL that is not a data URL; `input_file` with `file_url` and no `file_data`, named by `filename` |
+| any other block | `input_text` holding the block's JSON | a part of any other type, as its JSON in a text block |
+
+- **Audience.** A block whose `annotations.audience` is present and does
+  not include `assistant` is for the user alone, and the consuming side
+  leaves it out of the output; it stays in the details, with the rest
+  of the result. A result all of whose blocks are left out has empty
+  text output, and an error result so made has the message `tool call
+  failed`, as one with no text has.
+- **Text alone.** A result whose blocks all map to `input_text` is
+  consumed as text, the texts joined with a newline, and a text output
+  is served as one text block.
+- **Structured content** is consumed as one more `input_text` part
+  holding its JSON, after the blocks.
+- **An error result** is consumed as an error whose message is the
+  text the result would have had.
 
 ### Open Responses
 
@@ -975,6 +1006,13 @@ module and is listed in the changelog as one.
   binding builds no other, and a reader takes `text` and `output_text`
   as `input_text` (#100). The Open Responses binding and the MCP
   output row follow.
+- The MCP binding's output row becomes [Content](#content), a table
+  stating each block's rendering both ways. A consumed resource keeps
+  its URI, media type, name, description and size: a typed blob is a
+  data URL of its type, an image blob an `input_image`, an embedded
+  text resource is preceded by a line naming it and a link is a line
+  naming it. A block whose audience leaves out the assistant is not
+  in the output (#93).
 
 ## Changes since 0.6
 

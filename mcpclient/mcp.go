@@ -1283,18 +1283,33 @@ func (s *Remote) onProgress(p *sdk.ProgressNotificationParams) {
 	fn(r)
 }
 
-// ResultOf maps an MCP call result to a tool result. Text-only content
-// becomes Output.Text; image, audio and resource content becomes
-// Output.Parts with the matching openresponses content types, and the
-// text beside it input_text parts, the one text part a function call
-// output takes; structured content is appended as JSON text. An isError result becomes an error
-// whose message is the text content, so the loop produces the error
-// output the model sees. Details carries the SDK result verbatim, or,
-// when the server put a record under [RecordMetaKey], a [RemoteRecord]
-// holding it and the SDK result both, so [agenttool.RecordOf] on this
-// side gives the record the tool wrote on that side. An error result
-// keeps its record too, since a failed call is the one a reader most
-// wants to trace.
+// ResultOf maps an MCP call result to a tool result, as RFC 0001's MCP
+// content mapping states. Text-only content becomes Output.Text; image,
+// audio and blob content becomes Output.Parts with the matching
+// openresponses content types, and the text beside it input_text parts,
+// the one text part a function call output takes; structured content is
+// appended as JSON text.
+//
+// A blob with a media type is sent as a data URL of that type, an
+// input_image when the type is an image and an input_file named by its
+// URI otherwise, so an adapter can type it whatever the URI looks like;
+// a blob without one keeps its URI as the name and its bytes as bare
+// base64, which a reader types by the name's extension. An embedded
+// text resource is its text after a line naming it,
+// "resource <uri> (<mimeType>)", and a resource link is the line
+// "resource_link <uri>: <name>, <description>, <mimeType>, <size> bytes",
+// each without the members the server left out, so the model can tell
+// what it was given and where from. A content block whose audience is
+// stated and leaves out the assistant is for the user alone and is not
+// in the output; the SDK result in Details still holds it.
+//
+// An isError result becomes an error whose message is the text content,
+// so the loop produces the error output the model sees. Details carries
+// the SDK result verbatim, or, when the server put a record under
+// [RecordMetaKey], a [RemoteRecord] holding it and the SDK result both,
+// so [agenttool.RecordOf] on this side gives the record the tool wrote
+// on that side. An error result keeps its record too, since a failed
+// call is the one a reader most wants to trace.
 func ResultOf(res *sdk.CallToolResult) (agenttool.Result, error) {
 	if res == nil {
 		return agenttool.Result{}, errors.New("mcp: empty result")
@@ -1306,11 +1321,17 @@ func ResultOf(res *sdk.CallToolResult) (agenttool.Result, error) {
 	var parts openresponses.Contents
 	var texts []string
 	textOnly := true
+	addText := func(text string) {
+		texts = append(texts, text)
+		parts = append(parts, &openresponses.InputText{Text: text})
+	}
 	for _, c := range res.Content {
+		if !forModel(c) {
+			continue
+		}
 		switch v := c.(type) {
 		case *sdk.TextContent:
-			texts = append(texts, v.Text)
-			parts = append(parts, &openresponses.InputText{Text: v.Text})
+			addText(v.Text)
 		case *sdk.ImageContent:
 			textOnly = false
 			parts = append(parts, &openresponses.InputImage{ImageURL: dataURL(v.MIMEType, v.Data)})
@@ -1323,29 +1344,24 @@ func ResultOf(res *sdk.CallToolResult) (agenttool.Result, error) {
 			}
 			if len(v.Resource.Blob) > 0 {
 				textOnly = false
-				parts = append(parts, &openresponses.InputFile{Filename: v.Resource.URI, FileData: base64.StdEncoding.EncodeToString(v.Resource.Blob)})
+				parts = append(parts, blobPart(v.Resource))
 				continue
 			}
-			texts = append(texts, v.Resource.Text)
-			parts = append(parts, &openresponses.InputText{Text: v.Resource.Text})
+			addText(resourceText(v.Resource))
 		case *sdk.ResourceLink:
-			line := "resource: " + v.URI
-			texts = append(texts, line)
-			parts = append(parts, &openresponses.InputText{Text: line})
+			addText(linkText(v))
 		default:
 			data, err := json.Marshal(c)
 			if err != nil {
 				continue
 			}
-			texts = append(texts, string(data))
-			parts = append(parts, &openresponses.InputText{Text: string(data)})
+			addText(string(data))
 		}
 	}
 	if res.StructuredContent != nil {
 		data, err := json.Marshal(res.StructuredContent)
 		if err == nil {
-			texts = append(texts, string(data))
-			parts = append(parts, &openresponses.InputText{Text: string(data)})
+			addText(string(data))
 		}
 	}
 	text := strings.Join(texts, "\n")
@@ -1362,6 +1378,87 @@ func ResultOf(res *sdk.CallToolResult) (agenttool.Result, error) {
 		out.Output.Parts = parts
 	}
 	return out, nil
+}
+
+// forModel reports whether a content block may reach the model: it
+// states no audience, or one that includes the assistant. A block for
+// the user alone, a notice that a page was opened in their browser, is
+// left out, since a model that read it would repeat it as its own.
+func forModel(c sdk.Content) bool {
+	var a *sdk.Annotations
+	switch v := c.(type) {
+	case *sdk.TextContent:
+		a = v.Annotations
+	case *sdk.ImageContent:
+		a = v.Annotations
+	case *sdk.AudioContent:
+		a = v.Annotations
+	case *sdk.EmbeddedResource:
+		a = v.Annotations
+	case *sdk.ResourceLink:
+		a = v.Annotations
+	}
+	if a == nil || len(a.Audience) == 0 {
+		return true
+	}
+	for _, r := range a.Audience {
+		if r == "assistant" {
+			return true
+		}
+	}
+	return false
+}
+
+// blobPart maps an embedded blob: an input_image when its media type is
+// an image, an input_file otherwise, named by the resource's URI. The
+// data is a data URL of the media type when the server gave one, and
+// bare base64 when it did not, which a reader types by the name.
+func blobPart(r *sdk.ResourceContents) openresponses.Content {
+	if r.MIMEType == "" {
+		return &openresponses.InputFile{Filename: r.URI, FileData: base64.StdEncoding.EncodeToString(r.Blob)}
+	}
+	if isMediaType(r.MIMEType, "image") {
+		return &openresponses.InputImage{ImageURL: dataURL(r.MIMEType, r.Blob)}
+	}
+	return &openresponses.InputFile{Filename: r.URI, FileData: dataURL(r.MIMEType, r.Blob)}
+}
+
+// isMediaType reports whether mediaType is of the top-level type top,
+// "image" for "image/png; x=y", ignoring case.
+func isMediaType(mediaType, top string) bool {
+	t, _, ok := strings.Cut(mediaType, "/")
+	return ok && strings.EqualFold(strings.TrimSpace(t), top)
+}
+
+// resourceText renders an embedded text resource: the line
+// "resource <uri> (<mimeType>)", without the parenthesis when the
+// server gave no type, then the text.
+func resourceText(r *sdk.ResourceContents) string {
+	head := "resource " + r.URI
+	if r.MIMEType != "" {
+		head += " (" + r.MIMEType + ")"
+	}
+	return head + "\n" + r.Text
+}
+
+// linkText renders a resource link as the line
+// "resource_link <uri>: <name>, <description>, <mimeType>, <size> bytes",
+// leaving out each member the server did not give, and the colon with
+// them when it gave none.
+func linkText(l *sdk.ResourceLink) string {
+	var members []string
+	for _, m := range []string{l.Name, l.Description, l.MIMEType} {
+		if m != "" {
+			members = append(members, m)
+		}
+	}
+	if l.Size != nil {
+		members = append(members, strconv.FormatInt(*l.Size, 10)+" bytes")
+	}
+	if len(members) == 0 {
+		return "resource_link " + l.URI
+	}
+	return "resource_link " + l.URI + ": " + strings.Join(members, ", ")
 }
 
 // audioExt maps the audio media types MCP servers commonly send to a

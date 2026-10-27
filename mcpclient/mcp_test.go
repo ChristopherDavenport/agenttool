@@ -280,13 +280,13 @@ func TestExecuteMapsResults(t *testing.T) {
 			if len(r.Output.Parts) != 3 {
 				t.Fatalf("parts = %+v", r.Output.Parts)
 			}
-			if txt, ok := r.Output.Parts[0].(*openresponses.InputText); !ok || txt.Text != "text resource" {
+			if txt, ok := r.Output.Parts[0].(*openresponses.InputText); !ok || txt.Text != "resource file:///a.txt\ntext resource" {
 				t.Errorf("part 0 = %+v", r.Output.Parts[0])
 			}
 			if f, ok := r.Output.Parts[1].(*openresponses.InputFile); !ok || f.Filename != "file:///b.bin" || f.FileData != "CQ==" {
 				t.Errorf("part 1 = %+v", r.Output.Parts[1])
 			}
-			if txt, ok := r.Output.Parts[2].(*openresponses.InputText); !ok || txt.Text != "resource: file:///c" {
+			if txt, ok := r.Output.Parts[2].(*openresponses.InputText); !ok || txt.Text != "resource_link file:///c" {
 				t.Errorf("part 2 = %+v", r.Output.Parts[2])
 			}
 		}},
@@ -623,6 +623,74 @@ func TestResultPartTypes(t *testing.T) {
 			t.Errorf("part %d is %q, which a function call output does not take: %s", i, head.Type, data)
 		}
 	}
+}
+
+// TestResultOfResources: a resource keeps what it says about itself on
+// the way to the model, its URI, type, name, description and size, and
+// a block for the user alone does not reach the model (#93).
+func TestResultOfResources(t *testing.T) {
+	size := int64(4096)
+	user := &sdk.Annotations{Audience: []sdk.Role{"user"}}
+	res, err := ResultOf(&sdk.CallToolResult{Content: []sdk.Content{
+		&sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: "file:///notes.md", MIMEType: "text/markdown", Text: "# notes"}},
+		&sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: "file:///plain", Text: "plain"}},
+		&sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: "db://report", MIMEType: "application/pdf", Blob: []byte{1, 2, 3}}},
+		&sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: "screenshot://page/1", MIMEType: "image/png", Blob: []byte{1, 2, 3}}},
+		&sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: "file:///b.bin", Blob: []byte{9}}},
+		&sdk.ResourceLink{URI: "file:///big.log", Name: "big.log", Description: "the server log", MIMEType: "text/plain", Size: &size},
+		&sdk.ResourceLink{URI: "file:///other.log", Name: "other.log"},
+		&sdk.TextContent{Text: "Opened the dashboard in your browser.", Annotations: user},
+		&sdk.TextContent{Text: "for both", Annotations: &sdk.Annotations{Audience: []sdk.Role{"user", "assistant"}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		`{"type":"input_text","text":"resource file:///notes.md (text/markdown)\n# notes"}`,
+		`{"type":"input_text","text":"resource file:///plain\nplain"}`,
+		`{"type":"input_file","file_data":"data:application/pdf;base64,AQID","filename":"db://report"}`,
+		`{"type":"input_image","image_url":"data:image/png;base64,AQID","detail":"auto"}`,
+		`{"type":"input_file","file_data":"CQ==","filename":"file:///b.bin"}`,
+		`{"type":"input_text","text":"resource_link file:///big.log: big.log, the server log, text/plain, 4096 bytes"}`,
+		`{"type":"input_text","text":"resource_link file:///other.log: other.log"}`,
+		`{"type":"input_text","text":"for both"}`,
+	}
+	if len(res.Output.Parts) != len(want) {
+		t.Fatalf("parts = %d, want %d: %+v", len(res.Output.Parts), len(want), res.Output.Parts)
+	}
+	for i, p := range res.Output.Parts {
+		got, err := json.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if normal(t, got) != normal(t, []byte(want[i])) {
+			t.Errorf("part %d = %s, want %s", i, got, want[i])
+		}
+	}
+	if _, ok := res.Details.(*sdk.CallToolResult); !ok {
+		t.Errorf("details = %T, want the SDK result, which keeps the user's block", res.Details)
+	}
+
+	// A result whose every block is for the user has empty text output,
+	// and an error so made says only that the call failed.
+	res, err = ResultOf(&sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "only you", Annotations: user}}})
+	if err != nil || res.Output.Parts != nil || res.Output.Text != "" {
+		t.Errorf("user-only result = %+v, %v; want empty text", res.Output, err)
+	}
+	if _, err := ResultOf(&sdk.CallToolResult{IsError: true, Content: []sdk.Content{&sdk.TextContent{Text: "only you", Annotations: user}}}); err == nil || err.Error() != "tool call failed" {
+		t.Errorf("user-only error = %v", err)
+	}
+}
+
+// normal re-encodes JSON so two spellings of one value compare equal.
+func normal(t *testing.T, raw []byte) string {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatalf("bad JSON %s: %v", raw, err)
+	}
+	out, _ := json.Marshal(v)
+	return string(out)
 }
 
 func TestResultEdgeCases(t *testing.T) {

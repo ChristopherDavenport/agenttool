@@ -25,6 +25,19 @@ versions may break the API.
   rule under "A result": a binding builds no other part type, and a
   reader takes `text` and `output_text` as `input_text`, as mcpserver
   and the command line still do. `Parts`'s doc names the four types.
+- Fixed: mcpclient's `ResultOf` keeps what a resource says about itself
+  (#93). An embedded blob with a media type is sent as a data URL of
+  that type, an `input_image` when the type is an image, so a
+  screenshot returned as `screenshot://page/1` is no longer refused by
+  an adapter that types a file by its name's extension; the
+  `input_file` keeps the URI as its name. An embedded text resource is
+  preceded by the line `resource <uri> (<mimeType>)`, and a resource
+  link is the line `resource_link <uri>: <name>, <description>,
+  <mimeType>, <size> bytes` where it was `resource: <uri>`, so the model
+  can tell which file a block is and what a link points at. A content
+  block whose audience leaves out the assistant is left out of the
+  output; the SDK result in `Details` keeps it. RFC 0001's MCP output
+  row becomes a Content table stating every rendering both ways.
 - Dependencies: every module requires `openresponses` v0.0.17, up from
   v0.0.13. Its `Text` no longer documents itself for function call
   outputs, which take `input_text`, and its types keep members they do
