@@ -116,6 +116,12 @@ type link struct {
 	listChanged bool
 	// ended is closed when the session ends.
 	ended chan struct{}
+
+	// closing makes the session's close happen once, whoever asks for
+	// it first, a restart releasing a session that ended or
+	// [Remote.Close], and closeErr is that close's error.
+	closing  sync.Once
+	closeErr error
 }
 
 // newLink wraps a session the client just connected, and watches it.
@@ -142,6 +148,13 @@ func (l *link) isEnded() bool {
 	default:
 		return false
 	}
+}
+
+// close closes the session once. Every caller gets that close's error,
+// and one that comes while it is in flight waits for it.
+func (l *link) close() error {
+	l.closing.Do(func() { l.closeErr = l.session.Close() })
+	return l.closeErr
 }
 
 // endedWithin reports whether the session ends within d.
@@ -277,7 +290,7 @@ func (s *Remote) redial(ctx context.Context, old *link, a *attempt) {
 	})
 	// What is left of the old session is released, without waiting on
 	// it.
-	go func() { _ = old.session.Close() }()
+	go func() { _ = old.close() }()
 	l, info, err := s.reconnect(ctx, old)
 	timeout.Stop()
 	if err != nil {

@@ -30,6 +30,35 @@ type restarter struct {
 	dials atomic.Int32  // calls of dial
 	fail  atomic.Int32  // dials still to fail
 	gate  chan struct{} // when set, dial waits for it to close
+
+	// closeErr, when set, is what closing the client's end of each
+	// session returns, as the transport of a server whose host is gone
+	// reports when its process is closed.
+	closeErr error
+}
+
+// failingClose is a transport whose connection closes with err.
+type failingClose struct {
+	sdk.Transport
+	err error
+}
+
+func (f failingClose) Connect(ctx context.Context) (sdk.Connection, error) {
+	c, err := f.Transport.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return failingConn{c, f.err}, nil
+}
+
+type failingConn struct {
+	sdk.Connection
+	err error
+}
+
+func (c failingConn) Close() error {
+	_ = c.Connection.Close()
+	return c.err
 }
 
 // open starts the next server and returns the client's transport to it.
@@ -42,7 +71,11 @@ func (r *restarter) open(ctx context.Context) (sdk.Transport, error) {
 	if _, err := r.serve(n).Connect(ctx, &sdk.IOTransport{Reader: sv, Writer: sv}, nil); err != nil {
 		return nil, err
 	}
-	return &sdk.IOTransport{Reader: c, Writer: c}, nil
+	var tr sdk.Transport = &sdk.IOTransport{Reader: c, Writer: c}
+	if r.closeErr != nil {
+		tr = failingClose{tr, r.closeErr}
+	}
+	return tr, nil
 }
 
 // dial is the remote's WithReconnect.
@@ -483,6 +516,51 @@ func TestReconnectClose(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 		if len(h.got()) != 0 {
 			t.Error("the hook fired for an attempt Close stopped")
+		}
+	})
+}
+
+// Close returns nil for a session that ended and could not be
+// restarted, every time, though closing its transport fails: the
+// failed restart was reported, and the restart's release of the old
+// session and Close's close of it are one close (#88). Close of a live
+// session still returns its error.
+func TestReconnectCloseAfterAFailedRestart(t *testing.T) {
+	gone := errors.New("dial tcp: connection refused")
+	t.Run("ended", func(t *testing.T) {
+		for i := range 20 {
+			r := &restarter{t: t, serve: func(int) *sdk.Server { return newServer(t) }, closeErr: gone}
+			var h hooked
+			s := r.connect(false, h.option())
+			r.drop(s)
+			r.fail.Store(1)
+			if _, err := execute(lookup(t, s, "upper"), `{"text":"x"}`); !errors.Is(err, ErrSessionEnded) {
+				t.Fatalf("run %d: the call after the drop: %v; want ErrSessionEnded", i, err)
+			}
+			if infos := h.got(); len(infos) != 1 || infos[0].Err == nil {
+				t.Fatalf("run %d: hook got %+v; want the one failed attempt", i, infos)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatalf("run %d: Close after the failed restart: %v; want nil", i, err)
+			}
+		}
+	})
+	t.Run("ended, nothing restarted", func(t *testing.T) {
+		r := &restarter{t: t, serve: func(int) *sdk.Server { return newServer(t) }, closeErr: gone}
+		s := r.connect(false)
+		r.drop(s)
+		if err := s.Close(); err != nil {
+			t.Errorf("Close after the drop: %v; want nil", err)
+		}
+		if n := r.dials.Load(); n != 0 {
+			t.Errorf("dialed %d times", n)
+		}
+	})
+	t.Run("live", func(t *testing.T) {
+		r := &restarter{t: t, serve: func(int) *sdk.Server { return newServer(t) }, closeErr: gone}
+		s := r.connect(false)
+		if err := s.Close(); !errors.Is(err, gone) {
+			t.Errorf("Close of a live session: %v; want its close error %v", err, gone)
 		}
 	})
 }
