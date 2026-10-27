@@ -30,6 +30,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -440,12 +441,12 @@ func validate(resolved *jsonschema.Resolved, raw json.RawMessage) error {
 	return nil
 }
 
-// ContentOf maps a function call output to MCP content. Text becomes one
-// text block. Parts map by type: textual parts to text blocks, an
-// input_image with a data URL to an image block and one with a plain URL
-// to a resource link, an input_file with data to an embedded blob
-// resource and one with a URL to a resource link. Anything else is
-// emitted as its JSON.
+// ContentOf maps a function call output to MCP content, as RFC 0001's
+// MCP content mapping states. Text becomes one text block. Parts map by
+// type: textual parts to text blocks, an input_image with a data URL to
+// an image block and one with a plain URL to a resource link, an
+// input_file with data to audio or an embedded blob resource and one
+// with a URL to a resource link. Anything else is emitted as its JSON.
 func ContentOf(out openresponses.FunctionCallOutputData) []sdk.Content {
 	if out.Parts == nil {
 		return []sdk.Content{&sdk.TextContent{Text: out.Text}}
@@ -478,27 +479,88 @@ func ContentOf(out openresponses.FunctionCallOutputData) []sdk.Content {
 	return content
 }
 
-// fileContent maps an input_file part: data to an embedded blob
-// resource whose URI is the file URL or a file URI built from the name,
-// a URL alone to a resource link, and a bare name to text. Data that is
-// not base64 is passed through as text rather than dropped.
+// fileContent maps an input_file part. Its media type decides what its
+// data becomes: a data URL of an audio type is audio content of that
+// type, which is how mcpclient sends audio it consumed, and any other
+// data URL an embedded blob resource of its type. Bare base64 is a blob
+// typed by the filename's extension under [extTypes], or untyped. A
+// blob's URI is the file URL when there is one, the filename when that
+// is already an absolute URI, so a resource mcpclient consumed from
+// db://report is served back under it, and a file URI built from the
+// filename otherwise. A URL alone becomes a resource link and a bare
+// name text. Data that is neither a data URL nor base64 is passed
+// through as text rather than dropped.
 func fileContent(p *openresponses.InputFile) sdk.Content {
 	switch {
 	case p.FileData != "":
-		data, err := base64.StdEncoding.DecodeString(p.FileData)
-		if err != nil {
-			return &sdk.TextContent{Text: p.FileData}
+		mime, data, ok := parseDataURL(p.FileData)
+		if !ok {
+			var err error
+			if data, err = base64.StdEncoding.DecodeString(p.FileData); err != nil {
+				return &sdk.TextContent{Text: p.FileData}
+			}
+			mime = extTypes[strings.ToLower(path.Ext(p.Filename))]
 		}
-		uri := p.FileURL
-		if uri == "" {
-			uri = "file:///" + strings.TrimPrefix(p.Filename, "/")
+		if t, _, ok := strings.Cut(mime, "/"); ok && strings.EqualFold(t, "audio") {
+			return &sdk.AudioContent{MIMEType: mime, Data: data}
 		}
-		return &sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: uri, Blob: data}}
+		return &sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: fileURI(p), MIMEType: mime, Blob: data}}
 	case p.FileURL != "":
 		return &sdk.ResourceLink{URI: p.FileURL, Name: p.Filename}
 	default:
 		return &sdk.TextContent{Text: p.Filename}
 	}
+}
+
+// fileURI is the URI a file part's blob is served under: its file URL,
+// its filename when that is an absolute URI, or a file URI built from
+// the filename.
+func fileURI(p *openresponses.InputFile) string {
+	switch {
+	case p.FileURL != "":
+		return p.FileURL
+	case hasScheme(p.Filename):
+		return p.Filename
+	}
+	return "file:///" + strings.TrimPrefix(p.Filename, "/")
+}
+
+// hasScheme reports whether s begins with an RFC 3986 scheme and a
+// colon: a letter, then letters, digits, "+", "-" or ".". A scheme of
+// one letter is not taken for one, so a Windows path, C:\notes.txt,
+// stays a filename.
+func hasScheme(s string) bool {
+	scheme, _, ok := strings.Cut(s, ":")
+	if !ok || len(scheme) < 2 {
+		return false
+	}
+	for i, r := range scheme {
+		switch {
+		case 'a' <= r && r <= 'z', 'A' <= r && r <= 'Z':
+		case i > 0 && ('0' <= r && r <= '9' || r == '+' || r == '-' || r == '.'):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// extTypes types a file part sent as bare base64 by its filename's
+// extension. It is RFC 0001's fixed table, not the host's MIME table, so
+// a part is typed the same everywhere; an extension not in it is
+// untyped.
+var extTypes = map[string]string{
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+	".pdf":  "application/pdf",
+	".json": "application/json",
+	".txt":  "text/plain",
+	".md":   "text/markdown",
+	".csv":  "text/csv",
+	".html": "text/html",
 }
 
 // parseDataURL splits a base64 data URL into its media type and bytes.

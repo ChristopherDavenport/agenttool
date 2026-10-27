@@ -692,9 +692,9 @@ differently send different requests and record different sessions.
 | --- | --- | --- |
 | text | `input_text` with its text | `input_text`; `text` and `output_text`, read as `input_text` |
 | image | `input_image` whose `image_url` is a data URL of its `mimeType`, `application/octet-stream` when it has none | `input_image` whose `image_url` is a base64 data URL; one with any other URL is served as a resource link |
-| audio | `input_file` named `audio.<ext>` after its `mimeType`, with its bytes as bare base64 | not served: an `input_file` is served as a blob resource |
+| audio | `input_file` whose `file_data` is a data URL of its `mimeType`; the `filename`, `audio.<ext>` after the type in the reference binding, is informational | `input_file` whose `file_data` is a data URL of an `audio/*` type, as audio of that type; the media type decides, never the filename |
 | embedded text resource | `input_text`: the line `resource <uri> (<mimeType>)`, without ` (<mimeType>)` when it has none, a newline, then its text | not served: an `input_text` is served as text |
-| embedded blob resource | with an `image/*` `mimeType`, `input_image` whose `image_url` is a data URL of that type; with another `mimeType`, `input_file` whose `filename` is the URI and whose `file_data` is a data URL of that type; with none, `input_file` whose `filename` is the URI and whose `file_data` is bare base64, which a reader types by the filename's extension | `input_file` with `file_data`, untyped, its URI `file_url` when set and `file:///` followed by `filename` otherwise; `file_data` that is not base64 is served as text |
+| embedded blob resource | with an `image/*` `mimeType`, `input_image` whose `image_url` is a data URL of that type; with another `mimeType`, `input_file` whose `filename` is the URI and whose `file_data` is a data URL of that type; with none, `input_file` whose `filename` is the URI and whose `file_data` is bare base64, which a reader types by the filename's extension | `input_file` with `file_data`, other than audio: a data URL is a blob of its type, and bare base64 a blob typed by the `filename`'s extension under the table below, untyped when the extension is not in it; its URI is the [file URI](#content) below; `file_data` that is neither is served as text |
 | resource link | `input_text`: `resource_link <uri>: <name>, <description>, <mimeType>, <size> bytes`, each member the link leaves out left out with its comma, and `resource_link <uri>` when it leaves out all four | `input_image` with a URL that is not a data URL; `input_file` with `file_url` and no `file_data`, named by `filename` |
 | any other block | `input_text` holding the block's JSON | a part of any other type, as its JSON in a text block |
 
@@ -711,6 +711,26 @@ differently send different requests and record different sessions.
   holding its JSON, after the blocks.
 - **An error result** is consumed as an error whose message is the
   text the result would have had.
+- **A served blob's URI** is the part's `file_url` when it has one;
+  otherwise its `filename` when that is an absolute URI, a scheme of two
+  or more characters as RFC 3986 spells one, a letter then letters,
+  digits, `+`, `-` or `.`, followed by `:`, so a resource consumed from
+  `db://report` is served back under it and a Windows drive letter is
+  not a scheme; otherwise `file:///` followed by the `filename` without
+  a leading `/`.
+- **Extensions.** Bare base64 is typed by the `filename`'s extension,
+  compared without case, under this fixed table and no other, so a part
+  is typed the same by every implementation: `.png` `image/png`, `.jpg`
+  and `.jpeg` `image/jpeg`, `.gif` `image/gif`, `.webp` `image/webp`,
+  `.pdf` `application/pdf`, `.json` `application/json`, `.txt`
+  `text/plain`, `.md` `text/markdown`, `.csv` `text/csv`, `.html`
+  `text/html`.
+
+The two columns are inverses for what a proxy carries: content
+consumed and served again is the content the origin sent, audio as
+audio and a blob under its URI and type, except that an image blob
+returns as an image, a text resource or link as text, and a block for
+the user alone not at all.
 
 ### Open Responses
 
@@ -1013,6 +1033,10 @@ module and is listed in the changelog as one.
   text resource is preceded by a line naming it and a link is a line
   naming it. A block whose audience leaves out the assistant is not
   in the output (#93).
+- Audio is consumed as an `input_file` with a data URL of its type and
+  served back as audio by that type, not by its filename; a served
+  blob carries its type, and its URI is the filename when that is
+  already a URI, rather than `file:///` put in front of it (#97).
 
 ## Changes since 0.6
 

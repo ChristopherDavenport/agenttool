@@ -1288,7 +1288,9 @@ func (s *Remote) onProgress(p *sdk.ProgressNotificationParams) {
 // audio and blob content becomes Output.Parts with the matching
 // openresponses content types, and the text beside it input_text parts,
 // the one text part a function call output takes; structured content is
-// appended as JSON text.
+// appended as JSON text. Audio is an input_file whose data is a data URL
+// of its media type, which is what mcpserver serves back as audio; its
+// name, "audio.wav" for audio/wav, is for a reader that goes by names.
 //
 // A blob with a media type is sent as a data URL of that type, an
 // input_image when the type is an image and an input_file named by its
@@ -1337,7 +1339,7 @@ func ResultOf(res *sdk.CallToolResult) (agenttool.Result, error) {
 			parts = append(parts, &openresponses.InputImage{ImageURL: dataURL(v.MIMEType, v.Data)})
 		case *sdk.AudioContent:
 			textOnly = false
-			parts = append(parts, &openresponses.InputFile{Filename: audioName(v.MIMEType), FileData: base64.StdEncoding.EncodeToString(v.Data)})
+			parts = append(parts, &openresponses.InputFile{Filename: audioName(v.MIMEType), FileData: dataURL(v.MIMEType, v.Data)})
 		case *sdk.EmbeddedResource:
 			if v.Resource == nil {
 				continue
@@ -1479,8 +1481,8 @@ var audioExt = map[string]string{
 }
 
 // audioName names an audio part after its media type, "audio.wav" for
-// audio/wav, so the type survives in a part that has no field for it.
-// An unknown or empty type gives "audio".
+// audio/wav, for a reader that types a file by its name. The type itself
+// is in the part's data URL. An unknown or empty type gives "audio".
 func audioName(mediaType string) string {
 	base, _, _ := strings.Cut(mediaType, ";")
 	return "audio" + audioExt[strings.ToLower(strings.TrimSpace(base))]

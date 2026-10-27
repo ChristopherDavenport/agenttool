@@ -38,6 +38,16 @@ versions may break the API.
   block whose audience leaves out the assistant is left out of the
   output; the SDK result in `Details` keeps it. RFC 0001's MCP output
   row becomes a Content table stating every rendering both ways.
+- Fixed: content mcpclient consumed and mcpserver serves again is the
+  content the origin sent (#97). mcpclient sends audio as an
+  `input_file` whose `file_data` is a data URL of its media type, where
+  it was bare base64, and mcpserver's `ContentOf` serves an `input_file`
+  with a data URL of an `audio/*` type as audio; a file named
+  `audio.wav` is not taken for audio. Any other `input_file` with data
+  is a blob resource with a `mimeType`: the data URL's, or for bare
+  base64 the one RFC 0001's fixed extension table gives. A blob's URI is
+  the filename when that is already a URI, so `db://report` no longer
+  comes back as `file:///db://report`.
 - Dependencies: every module requires `openresponses` v0.0.17, up from
   v0.0.13. Its `Text` no longer documents itself for function call
   outputs, which take `input_text`, and its types keep members they do

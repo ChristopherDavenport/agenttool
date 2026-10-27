@@ -584,7 +584,7 @@ func TestAudioName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f, ok := res.Output.Parts[0].(*openresponses.InputFile); !ok || f.Filename != "audio.wav" || f.FileData != "AQ==" {
+	if f, ok := res.Output.Parts[0].(*openresponses.InputFile); !ok || f.Filename != "audio.wav" || f.FileData != "data:audio/wav;base64,AQ==" {
 		t.Errorf("audio part = %+v", res.Output.Parts[0])
 	}
 }

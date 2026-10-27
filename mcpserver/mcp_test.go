@@ -306,6 +306,18 @@ func TestContentOf(t *testing.T) {
 			`[{"type":"text","text":"n"}]`},
 		{"bad base64 falls back to text", openresponses.FunctionCallOutputData{Parts: openresponses.Contents{&openresponses.InputFile{FileData: "!!"}}},
 			`[{"type":"text","text":"!!"}]`},
+		{"audio data url is audio", openresponses.FunctionCallOutputData{Parts: openresponses.Contents{&openresponses.InputFile{Filename: "audio.wav", FileData: "data:audio/wav;base64,AQ=="}}},
+			`[{"type":"audio","mimeType":"audio/wav","data":"AQ=="}]`},
+		{"a file named audio.wav is not audio", openresponses.FunctionCallOutputData{Parts: openresponses.Contents{&openresponses.InputFile{Filename: "audio.wav", FileData: "AQ=="}}},
+			`[{"type":"resource","resource":{"uri":"file:///audio.wav","blob":"AQ=="}}]`},
+		{"typed data url keeps its type and URI", openresponses.FunctionCallOutputData{Parts: openresponses.Contents{&openresponses.InputFile{Filename: "db://report", FileData: "data:application/pdf;base64,AQ=="}}},
+			`[{"type":"resource","resource":{"uri":"db://report","mimeType":"application/pdf","blob":"AQ=="}}]`},
+		{"bare base64 typed by extension", openresponses.FunctionCallOutputData{Parts: openresponses.Contents{&openresponses.InputFile{Filename: "/tmp/Report.PDF", FileData: "AQ=="}}},
+			`[{"type":"resource","resource":{"uri":"file:///tmp/Report.PDF","mimeType":"application/pdf","blob":"AQ=="}}]`},
+		{"file url wins as the URI", openresponses.FunctionCallOutputData{Parts: openresponses.Contents{&openresponses.InputFile{Filename: "n.bin", FileURL: "https://x/n", FileData: "AQ=="}}},
+			`[{"type":"resource","resource":{"uri":"https://x/n","blob":"AQ=="}}]`},
+		{"a drive letter is not a scheme", openresponses.FunctionCallOutputData{Parts: openresponses.Contents{&openresponses.InputFile{Filename: "C:notes.bin", FileData: "AQ=="}}},
+			`[{"type":"resource","resource":{"uri":"file:///C:notes.bin","blob":"AQ=="}}]`},
 		{"unknown part as JSON", openresponses.FunctionCallOutputData{Parts: openresponses.Contents{&openresponses.Refusal{Refusal: "no"}}},
 			`[{"type":"text","text":"{\"type\":\"refusal\",\"refusal\":\"no\"}"}]`},
 	}
@@ -319,6 +331,34 @@ func TestContentOf(t *testing.T) {
 				t.Errorf("content = %s\n want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestProxiedContent: content mcpclient consumed and this package
+// serves again is the content the origin sent, audio as audio and a
+// resource under its own URI and type, which is what a proxy such as an
+// executor relies on (#97).
+func TestProxiedContent(t *testing.T) {
+	sent := []sdk.Content{
+		&sdk.AudioContent{MIMEType: "audio/wav", Data: []byte{1, 2}},
+		&sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: "db://report", MIMEType: "application/pdf", Blob: []byte{3}}},
+		&sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: "file:///notes.bin", Blob: []byte{4}}},
+		&sdk.ImageContent{MIMEType: "image/png", Data: []byte{5}},
+	}
+	res, err := mcpclient.ResultOf(&sdk.CallToolResult{Content: sent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := json.Marshal(ContentOf(res.Output))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := json.Marshal(sent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("served back = %s\n       sent = %s", got, want)
 	}
 }
 
