@@ -122,3 +122,37 @@ func TestCheckAnswerAgainstTheForm(t *testing.T) {
 		})
 	}
 }
+
+// TestCheckReadsALooseForm: a form is read member by member and keyword
+// by keyword, so one part this cannot decode, a bound written 1.0 or a
+// member schema of true, does not turn the form into a confirmation that
+// refuses every accept.
+func TestCheckReadsALooseForm(t *testing.T) {
+	cases := []struct {
+		name, schema, content, wantErr string
+	}{
+		{"a bound written 1.0", `{"type":"object","properties":{"a":{"type":"string","minLength":1.0}}}`, `{"a":"x"}`, ""},
+		{"a bound written 1.0 still holds", `{"type":"object","properties":{"a":{"type":"string","minLength":2.0}}}`, `{"a":"x"}`, `"a"`},
+		{"a member schema of true", `{"type":"object","properties":{"a":{"type":"string"},"b":true}}`, `{"a":"x","b":[1,{}]}`, ""},
+		{"a member schema of false", `{"type":"object","properties":{"b":false}}`, `{"b":1}`, `"b"`},
+		{"an undecodable keyword is skipped", `{"type":"object","properties":{"a":{"type":"string","maxLength":"ten"}}}`, `{"a":"xxxxxxxxxxxxxxxx"}`, ""},
+		{"a fractional bound is skipped", `{"type":"object","properties":{"a":{"type":"string","minLength":1.5}}}`, `{"a":""}`, ""},
+		{"an undecodable required is skipped", `{"type":"object","properties":{"a":{"type":"string"}},"required":"a"}`, `{}`, ""},
+		{"enumNames beside an enum", `{"type":"object","properties":{"c":{"type":"string","enum":["r","g"],"enumNames":["Red","Green"]}}}`, `{"c":"r"}`, ""},
+		{"an integer written 2.0", `{"type":"object","properties":{"n":{"type":"integer"}}}`, `{"n":2.0}`, ""},
+		{"a null in a type union", `{"type":"object","properties":{"a":{"type":["string","null"]}},"required":["a"]}`, `{"a":null}`, ""},
+		{"date-time with a lowercase t and z", `{"type":"object","properties":{"d":{"type":"string","format":"date-time"}}}`, `{"d":"2026-10-27t10:00:00z"}`, ""},
+		{"date-time with a space", `{"type":"object","properties":{"d":{"type":"string","format":"date-time"}}}`, `{"d":"2026-10-27 10:00:00Z"}`, `"d"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := Elicitation{Schema: json.RawMessage(tc.schema)}.Check(Answer{Action: ActionAccept, Content: json.RawMessage(tc.content)})
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("Check = %v, want nil", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Errorf("Check = %v, want an error naming %s", err, tc.wantErr)
+			}
+		})
+	}
+}

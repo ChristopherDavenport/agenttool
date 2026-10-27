@@ -87,35 +87,103 @@ func (q Elicitation) Check(a Answer) error {
 // form is a question's schema as far as MCP's elicitation restricts
 // one: an object of flat members, some required.
 type form struct {
-	Properties map[string]*formField `json:"properties"`
-	Required   []string              `json:"required"`
+	Properties map[string]*formField
+	Required   []string
 }
 
 // formField is one member's schema: a primitive, or an array of choices.
+// A nil field is the schema true, which allows any value.
 type formField struct {
-	Type      json.RawMessage   `json:"type"`
-	Format    string            `json:"format"`
-	Enum      []json.RawMessage `json:"enum"`
-	Const     json.RawMessage   `json:"const"`
-	OneOf     []*formField      `json:"oneOf"`
-	AnyOf     []*formField      `json:"anyOf"`
-	MinLength *int              `json:"minLength"`
-	MaxLength *int              `json:"maxLength"`
-	Minimum   *float64          `json:"minimum"`
-	Maximum   *float64          `json:"maximum"`
-	Items     *formField        `json:"items"`
-	MinItems  *int              `json:"minItems"`
-	MaxItems  *int              `json:"maxItems"`
+	Type      json.RawMessage
+	Format    string
+	Enum      []json.RawMessage
+	Const     json.RawMessage
+	OneOf     []*formField
+	AnyOf     []*formField
+	MinLength *int
+	MaxLength *int
+	Minimum   *float64
+	Maximum   *float64
+	Items     *formField
+	MinItems  *int
+	MaxItems  *int
+	// never is the schema false, which allows no value.
+	never bool
 }
 
-// form returns q's form, empty for a question without one or with a
-// schema that does not decode as one.
+// form returns q's form, read member by member and keyword by keyword,
+// so a part that does not decode is skipped rather than losing the rest.
+// A question without one, or whose schema is not an object, has an
+// empty form.
 func (q Elicitation) form() form {
-	var f form
-	if len(q.Schema) > 0 && json.Unmarshal(q.Schema, &f) == nil {
-		return f
+	var top map[string]json.RawMessage
+	if len(q.Schema) == 0 || json.Unmarshal(q.Schema, &top) != nil {
+		return form{}
 	}
-	return form{}
+	var f form
+	var props map[string]json.RawMessage
+	if json.Unmarshal(top["properties"], &props) == nil {
+		f.Properties = make(map[string]*formField, len(props))
+		for name, raw := range props {
+			f.Properties[name] = fieldOf(raw)
+		}
+	}
+	_ = json.Unmarshal(top["required"], &f.Required)
+	return f
+}
+
+// fieldOf reads one schema, keyword by keyword: true is nil, any value;
+// false allows nothing; a keyword absent or not of its type is skipped,
+// and a count written as an integral number, 1.0, is that integer.
+func fieldOf(raw json.RawMessage) *formField {
+	var b bool
+	if json.Unmarshal(raw, &b) == nil {
+		if b {
+			return nil
+		}
+		return &formField{never: true}
+	}
+	var kw map[string]json.RawMessage
+	if json.Unmarshal(raw, &kw) != nil {
+		return nil
+	}
+	f := &formField{Type: kw["type"], Const: kw["const"]}
+	_ = json.Unmarshal(kw["format"], &f.Format)
+	_ = json.Unmarshal(kw["enum"], &f.Enum)
+	count := func(k string) *int {
+		var n float64
+		if json.Unmarshal(kw[k], &n) != nil || n != math.Trunc(n) || n < 0 || n > math.MaxInt32 {
+			return nil
+		}
+		i := int(n)
+		return &i
+	}
+	bound := func(k string) *float64 {
+		var n float64
+		if json.Unmarshal(kw[k], &n) != nil {
+			return nil
+		}
+		return &n
+	}
+	choices := func(k string) []*formField {
+		var list []json.RawMessage
+		if json.Unmarshal(kw[k], &list) != nil {
+			return nil
+		}
+		out := make([]*formField, len(list))
+		for i, c := range list {
+			out[i] = fieldOf(c)
+		}
+		return out
+	}
+	f.MinLength, f.MaxLength = count("minLength"), count("maxLength")
+	f.MinItems, f.MaxItems = count("minItems"), count("maxItems")
+	f.Minimum, f.Maximum = bound("minimum"), bound("maximum")
+	f.OneOf, f.AnyOf = choices("oneOf"), choices("anyOf")
+	if items, ok := kw["items"]; ok {
+		f.Items = fieldOf(items)
+	}
+	return f
 }
 
 // types returns the types the field allows, none when it names none.
@@ -133,6 +201,9 @@ func (f *formField) types() []string {
 func (f *formField) check(raw json.RawMessage) error {
 	if f == nil {
 		return nil
+	}
+	if f.never {
+		return errors.New("the form allows no value here")
 	}
 	var v any
 	if err := json.Unmarshal(raw, &v); err != nil {
@@ -187,7 +258,7 @@ func (f *formField) checkChoice(v any, raw json.RawMessage) error {
 		return fmt.Errorf("%s is not %s", raw, f.Const)
 	}
 	for _, choices := range [][]*formField{f.OneOf, f.AnyOf} {
-		if len(choices) > 0 && !slices.ContainsFunc(choices, func(c *formField) bool { return c != nil && c.check(raw) == nil }) {
+		if len(choices) > 0 && !slices.ContainsFunc(choices, func(c *formField) bool { return c.check(raw) == nil }) {
 			return fmt.Errorf("%s is not one of the choices offered", raw)
 		}
 	}
@@ -246,7 +317,15 @@ func checkFormat(format, s string) error {
 	case "date":
 		_, err = time.Parse(time.DateOnly, s)
 	case "date-time":
-		_, err = time.Parse(time.RFC3339, s)
+		// RFC 3339 allows t and z in lower case, section 5.6; Go's layout
+		// takes them in upper case alone. A space in place of T is not in
+		// its grammar, and stays refused.
+		_, err = time.Parse(time.RFC3339, strings.Map(func(r rune) rune {
+			if r == 't' || r == 'z' {
+				return r - 'a' + 'A'
+			}
+			return r
+		}, s))
 	default:
 		return nil
 	}
