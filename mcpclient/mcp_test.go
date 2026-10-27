@@ -268,7 +268,7 @@ func TestExecuteMapsResults(t *testing.T) {
 			if r.Output.Text != "" || len(r.Output.Parts) != 2 {
 				t.Fatalf("output = %+v", r.Output)
 			}
-			if txt, ok := r.Output.Parts[0].(*openresponses.Text); !ok || txt.Text != "here" {
+			if txt, ok := r.Output.Parts[0].(*openresponses.InputText); !ok || txt.Text != "here" {
 				t.Errorf("part 0 = %+v", r.Output.Parts[0])
 			}
 			img, ok := r.Output.Parts[1].(*openresponses.InputImage)
@@ -280,13 +280,13 @@ func TestExecuteMapsResults(t *testing.T) {
 			if len(r.Output.Parts) != 3 {
 				t.Fatalf("parts = %+v", r.Output.Parts)
 			}
-			if txt, ok := r.Output.Parts[0].(*openresponses.Text); !ok || txt.Text != "text resource" {
+			if txt, ok := r.Output.Parts[0].(*openresponses.InputText); !ok || txt.Text != "text resource" {
 				t.Errorf("part 0 = %+v", r.Output.Parts[0])
 			}
 			if f, ok := r.Output.Parts[1].(*openresponses.InputFile); !ok || f.Filename != "file:///b.bin" || f.FileData != "CQ==" {
 				t.Errorf("part 1 = %+v", r.Output.Parts[1])
 			}
-			if txt, ok := r.Output.Parts[2].(*openresponses.Text); !ok || txt.Text != "resource: file:///c" {
+			if txt, ok := r.Output.Parts[2].(*openresponses.InputText); !ok || txt.Text != "resource: file:///c" {
 				t.Errorf("part 2 = %+v", r.Output.Parts[2])
 			}
 		}},
@@ -586,6 +586,42 @@ func TestAudioName(t *testing.T) {
 	}
 	if f, ok := res.Output.Parts[0].(*openresponses.InputFile); !ok || f.Filename != "audio.wav" || f.FileData != "AQ==" {
 		t.Errorf("audio part = %+v", res.Output.Parts[0])
+	}
+}
+
+// TestResultPartTypes: whatever a server returns, every part ResultOf
+// builds is one a function call output takes, so no request it lands
+// in is refused for an unknown content type (#100).
+func TestResultPartTypes(t *testing.T) {
+	res, err := ResultOf(&sdk.CallToolResult{
+		Content: []sdk.Content{
+			&sdk.TextContent{Text: "here"},
+			&sdk.ImageContent{MIMEType: "image/png", Data: []byte{1}},
+			&sdk.AudioContent{MIMEType: "audio/wav", Data: []byte{1}},
+			&sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: "file:///a.md", MIMEType: "text/markdown", Text: "# a"}},
+			&sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: "db://report", MIMEType: "application/pdf", Blob: []byte{1}}},
+			&sdk.ResourceLink{URI: "file:///big.log", Name: "big.log"},
+		},
+		StructuredContent: map[string]any{"n": 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := map[string]bool{"input_text": true, "input_image": true, "input_file": true, "input_video": true}
+	for i, p := range res.Output.Parts {
+		var head struct {
+			Type string `json:"type"`
+		}
+		data, err := json.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(data, &head); err != nil {
+			t.Fatal(err)
+		}
+		if !allowed[head.Type] {
+			t.Errorf("part %d is %q, which a function call output does not take: %s", i, head.Type, data)
+		}
 	}
 }
 

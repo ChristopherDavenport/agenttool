@@ -15,6 +15,16 @@ versions may break the API.
   RFC 0001 draft 0.8 states the mapping: the contract has no field for
   them, the serving host gives them and the consuming host decides
   whether the model reads them.
+- Fixed: mcpclient's `ResultOf` builds the text of a result with an
+  image, audio or resource in it as `input_text` parts, not `text`
+  (#100). A `function_call_output` takes `input_text`, `input_image`,
+  `input_file` and `input_video` parts only, and Ollama refused the
+  whole request at a browser server's first screenshot with `unknown
+  content type: text`. Embedded text resources, resource links and
+  structured content go out as `input_text` too. RFC 0001 states the
+  rule under "A result": a binding builds no other part type, and a
+  reader takes `text` and `output_text` as `input_text`, as mcpserver
+  and the command line still do. `Parts`'s doc names the four types.
 - Dependencies: every module requires `openresponses` v0.0.17, up from
   v0.0.13. Its `Text` no longer documents itself for function call
   outputs, which take `input_text`, and its types keep members they do

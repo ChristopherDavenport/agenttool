@@ -356,7 +356,13 @@ A result is an output, details and a terminate hint.
 
 - The **output** is what the model sees: text, or a list of content
   parts, which is what an image-returning tool sends. It becomes the
-  `output` of the function call output item.
+  `output` of the function call output item. Each part is one the
+  Open Responses `function_call_output` takes: `input_text`,
+  `input_image`, `input_file` or `input_video`. A binding MUST NOT
+  build another part type, since a server may refuse the request it
+  lands in; a reader SHOULD accept `text` and `output_text` and read
+  them as `input_text`, so an output written before this rule still
+  reads.
 - **Details** are for the harness alone and MUST NOT reach the model:
   the raw result of a remote call, a live handle, the numbers behind a
   progress update. A details value that is meant to outlive the run is
@@ -665,7 +671,7 @@ set on the local side by the host and does not cross.
 | idempotency key | no field; a consumed call's key is not sent, and a served call has none | — |
 | closer | not a closer: the remote session is closed through `mcpclient.Remote.Close` | consume |
 | arguments | `arguments`; the server validates against `inputSchema` with a general validator | both |
-| output | text, image and resource content ↔ output parts; text alone ↔ text; audio content consumed becomes an input file part, and is served back as an embedded blob rather than audio | both |
+| output | text, image and resource content ↔ output parts, text content ↔ `input_text`; text alone ↔ text; audio content consumed becomes an input file part, and is served back as an embedded blob rather than audio | both |
 | error | `isError` with the message as text; the consuming side returns it as an error and the harness applies `Error:` once | both |
 | progress | `notifications/progress` when the request carries a token; `progress`, `total`, `message` ↔ progress info | both |
 | details | the consuming side sets the raw `CallToolResult` as details | consume |
@@ -680,7 +686,9 @@ set on the local side by the host and does not cross.
 The definition is the `function` tool of the request's `tools`. A call
 is a `function_call` item: `call_id`, `name`, and `arguments` as a
 string. A result is a `function_call_output` item: the same `call_id`,
-and `output` as a string or a list of content parts. The error
+and `output` as a string or a list of content parts, each `input_text`,
+`input_image`, `input_file` or `input_video`, as
+[A result](#a-result) says. The error
 convention is a `function_call_output` whose `output` is the `Error:`
 text; nothing in the item says it was an error, which is why the
 convention is the model's only signal and why a tool never writes one
@@ -962,6 +970,11 @@ module and is listed in the changelog as one.
 - The MCP binding gains instructions, which the contract has no field
   for: the serving host gives them, and the consuming host decides
   whether the model reads them (#98).
+- A result's output parts are the ones a `function_call_output` takes,
+  `input_text`, `input_image`, `input_file` and `input_video`; a
+  binding builds no other, and a reader takes `text` and `output_text`
+  as `input_text` (#100). The Open Responses binding and the MCP
+  output row follow.
 
 ## Changes since 0.6
 

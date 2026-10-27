@@ -1285,8 +1285,9 @@ func (s *Remote) onProgress(p *sdk.ProgressNotificationParams) {
 
 // ResultOf maps an MCP call result to a tool result. Text-only content
 // becomes Output.Text; image, audio and resource content becomes
-// Output.Parts with the matching openresponses content types; structured
-// content is appended as JSON text. An isError result becomes an error
+// Output.Parts with the matching openresponses content types, and the
+// text beside it input_text parts, the one text part a function call
+// output takes; structured content is appended as JSON text. An isError result becomes an error
 // whose message is the text content, so the loop produces the error
 // output the model sees. Details carries the SDK result verbatim, or,
 // when the server put a record under [RecordMetaKey], a [RemoteRecord]
@@ -1309,7 +1310,7 @@ func ResultOf(res *sdk.CallToolResult) (agenttool.Result, error) {
 		switch v := c.(type) {
 		case *sdk.TextContent:
 			texts = append(texts, v.Text)
-			parts = append(parts, &openresponses.Text{Text: v.Text})
+			parts = append(parts, &openresponses.InputText{Text: v.Text})
 		case *sdk.ImageContent:
 			textOnly = false
 			parts = append(parts, &openresponses.InputImage{ImageURL: dataURL(v.MIMEType, v.Data)})
@@ -1326,25 +1327,25 @@ func ResultOf(res *sdk.CallToolResult) (agenttool.Result, error) {
 				continue
 			}
 			texts = append(texts, v.Resource.Text)
-			parts = append(parts, &openresponses.Text{Text: v.Resource.Text})
+			parts = append(parts, &openresponses.InputText{Text: v.Resource.Text})
 		case *sdk.ResourceLink:
 			line := "resource: " + v.URI
 			texts = append(texts, line)
-			parts = append(parts, &openresponses.Text{Text: line})
+			parts = append(parts, &openresponses.InputText{Text: line})
 		default:
 			data, err := json.Marshal(c)
 			if err != nil {
 				continue
 			}
 			texts = append(texts, string(data))
-			parts = append(parts, &openresponses.Text{Text: string(data)})
+			parts = append(parts, &openresponses.InputText{Text: string(data)})
 		}
 	}
 	if res.StructuredContent != nil {
 		data, err := json.Marshal(res.StructuredContent)
 		if err == nil {
 			texts = append(texts, string(data))
-			parts = append(parts, &openresponses.Text{Text: string(data)})
+			parts = append(parts, &openresponses.InputText{Text: string(data)})
 		}
 	}
 	text := strings.Join(texts, "\n")

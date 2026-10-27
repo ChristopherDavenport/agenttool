@@ -216,7 +216,11 @@ func Text(s string) Result {
 	return Result{Output: openresponses.FunctionCallOutputData{Text: s}}
 }
 
-// Parts builds a result whose output is a list of content parts.
+// Parts builds a result whose output is a list of content parts. Each
+// is one a function call output takes: [openresponses.InputText],
+// [openresponses.InputImage], [openresponses.InputFile] or
+// [openresponses.InputVideo]. A text part, [openresponses.Text], is
+// off the specification there, and a server may refuse the request.
 func Parts(parts ...openresponses.Content) Result {
 	return Result{Output: openresponses.FunctionCallOutputData{Parts: openresponses.Contents(parts)}}
 }

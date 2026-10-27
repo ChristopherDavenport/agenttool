@@ -142,7 +142,9 @@ func TestRoundTripExecute(t *testing.T) {
 			if len(r.Output.Parts) != 3 {
 				t.Fatalf("parts = %+v", r.Output.Parts)
 			}
-			if p, ok := r.Output.Parts[0].(*openresponses.Text); !ok || p.Text != "caption" {
+			// The tool built a text part; it comes back as input_text,
+			// the text part a function call output takes.
+			if p, ok := r.Output.Parts[0].(*openresponses.InputText); !ok || p.Text != "caption" {
 				t.Errorf("part 0 = %+v", r.Output.Parts[0])
 			}
 			if p, ok := r.Output.Parts[1].(*openresponses.InputImage); !ok || p.ImageURL != "data:image/png;base64,AQID" {
