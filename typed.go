@@ -30,6 +30,7 @@ type options struct {
 	confined     func(ctx context.Context, args json.RawMessage) (bool, string)
 	replay       func(ctx context.Context, args json.RawMessage) Replay
 	facts        func(ctx context.Context, args json.RawMessage) (Facts, error)
+	flow         *Flow
 }
 
 // WithStrict sets the strict flag on the function tool, and has [New]
@@ -166,6 +167,7 @@ func New[Args, Out any](name, description string, fn func(context.Context, Args)
 		confined:    o.confined,
 		replay:      o.replay,
 		facts:       o.facts,
+		flow:        o.flow,
 		fn:          fn,
 	}
 	if o.closer != nil {
@@ -188,6 +190,7 @@ type typed[Args, Out any] struct {
 	confined    func(ctx context.Context, args json.RawMessage) (bool, string)
 	replay      func(ctx context.Context, args json.RawMessage) Replay
 	facts       func(ctx context.Context, args json.RawMessage) (Facts, error)
+	flow        *Flow
 	fn          func(context.Context, Args) (Out, error)
 }
 
@@ -243,6 +246,9 @@ func (t *typed[Args, Out]) Facts(ctx context.Context, args json.RawMessage) (Fac
 }
 
 func (t *typed[Args, Out]) factsDeclared() bool { return t.facts != nil }
+
+// Flow reports the tool's flow, as [WithFlow] set.
+func (t *typed[Args, Out]) Flow() (Flow, bool) { return flowBy(t.flow) }
 
 // confinedBy, replayBy and factsBy answer for a tool built with an
 // optional function: the function's answer, or the reader's default

@@ -142,7 +142,9 @@ func TestRoundTripExecute(t *testing.T) {
 			if len(r.Output.Parts) != 3 {
 				t.Fatalf("parts = %+v", r.Output.Parts)
 			}
-			if p, ok := r.Output.Parts[0].(*openresponses.Text); !ok || p.Text != "caption" {
+			// The tool built a text part; it comes back as input_text,
+			// the text part a function call output takes.
+			if p, ok := r.Output.Parts[0].(*openresponses.InputText); !ok || p.Text != "caption" {
 				t.Errorf("part 0 = %+v", r.Output.Parts[0])
 			}
 			if p, ok := r.Output.Parts[1].(*openresponses.InputImage); !ok || p.ImageURL != "data:image/png;base64,AQID" {
@@ -304,6 +306,18 @@ func TestContentOf(t *testing.T) {
 			`[{"type":"text","text":"n"}]`},
 		{"bad base64 falls back to text", openresponses.FunctionCallOutputData{Parts: openresponses.Contents{&openresponses.InputFile{FileData: "!!"}}},
 			`[{"type":"text","text":"!!"}]`},
+		{"audio data url is audio", openresponses.FunctionCallOutputData{Parts: openresponses.Contents{&openresponses.InputFile{Filename: "audio.wav", FileData: "data:audio/wav;base64,AQ=="}}},
+			`[{"type":"audio","mimeType":"audio/wav","data":"AQ=="}]`},
+		{"a file named audio.wav is not audio", openresponses.FunctionCallOutputData{Parts: openresponses.Contents{&openresponses.InputFile{Filename: "audio.wav", FileData: "AQ=="}}},
+			`[{"type":"resource","resource":{"uri":"file:///audio.wav","blob":"AQ=="}}]`},
+		{"typed data url keeps its type and URI", openresponses.FunctionCallOutputData{Parts: openresponses.Contents{&openresponses.InputFile{Filename: "db://report", FileData: "data:application/pdf;base64,AQ=="}}},
+			`[{"type":"resource","resource":{"uri":"db://report","mimeType":"application/pdf","blob":"AQ=="}}]`},
+		{"bare base64 typed by extension", openresponses.FunctionCallOutputData{Parts: openresponses.Contents{&openresponses.InputFile{Filename: "/tmp/Report.PDF", FileData: "AQ=="}}},
+			`[{"type":"resource","resource":{"uri":"file:///tmp/Report.PDF","mimeType":"application/pdf","blob":"AQ=="}}]`},
+		{"file url wins as the URI", openresponses.FunctionCallOutputData{Parts: openresponses.Contents{&openresponses.InputFile{Filename: "n.bin", FileURL: "https://x/n", FileData: "AQ=="}}},
+			`[{"type":"resource","resource":{"uri":"https://x/n","blob":"AQ=="}}]`},
+		{"a drive letter is not a scheme", openresponses.FunctionCallOutputData{Parts: openresponses.Contents{&openresponses.InputFile{Filename: "C:notes.bin", FileData: "AQ=="}}},
+			`[{"type":"resource","resource":{"uri":"file:///C:notes.bin","blob":"AQ=="}}]`},
 		{"unknown part as JSON", openresponses.FunctionCallOutputData{Parts: openresponses.Contents{&openresponses.Refusal{Refusal: "no"}}},
 			`[{"type":"text","text":"{\"type\":\"refusal\",\"refusal\":\"no\"}"}]`},
 	}
@@ -317,6 +331,34 @@ func TestContentOf(t *testing.T) {
 				t.Errorf("content = %s\n want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestProxiedContent: content mcpclient consumed and this package
+// serves again is the content the origin sent, audio as audio and a
+// resource under its own URI and type, which is what a proxy such as an
+// executor relies on (#97).
+func TestProxiedContent(t *testing.T) {
+	sent := []sdk.Content{
+		&sdk.AudioContent{MIMEType: "audio/wav", Data: []byte{1, 2}},
+		&sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: "db://report", MIMEType: "application/pdf", Blob: []byte{3}}},
+		&sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: "file:///notes.bin", Blob: []byte{4}}},
+		&sdk.ImageContent{MIMEType: "image/png", Data: []byte{5}},
+	}
+	res, err := mcpclient.ResultOf(&sdk.CallToolResult{Content: sent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := json.Marshal(ContentOf(res.Output))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := json.Marshal(sent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("served back = %s\n       sent = %s", got, want)
 	}
 }
 
@@ -659,5 +701,57 @@ func TestRecordMetaKeyMatchesClient(t *testing.T) {
 	}
 	if RecordMetaKey != theirs {
 		t.Errorf("mcpserver key %q != mcpclient key %q", RecordMetaKey, theirs)
+	}
+}
+
+// TestInstructions: the instructions a host gives NewServer reach the
+// client at initialize, and a server given none gives none (#98).
+func TestInstructions(t *testing.T) {
+	server, err := Options{Instructions: "Read before you write."}.NewServer("files", "1", fixtures[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := roundTrip(t, server).Instructions(); got != "Read before you write." {
+		t.Errorf("Instructions = %q", got)
+	}
+	if got := roundTrip(t, newServer(t, "plain", fixtures[0])).Instructions(); got != "" {
+		t.Errorf("Instructions of a server given none = %q", got)
+	}
+}
+
+// TestServedFlow: a tool's flow crosses in its _meta, and its open-world
+// hint is served true whenever the flow reads untrusted content or
+// sends, whatever its annotations say, so a client that reads only MCP
+// is never looser (#92).
+func TestServedFlow(t *testing.T) {
+	fn := func(context.Context, agenttool.Call) (agenttool.Result, error) { return agenttool.Text("ok"), nil }
+	mail := agenttool.Flow{Reads: []agenttool.Label{agenttool.LabelPrivate}, Sends: true, To: []string{"to"}, Carries: []string{"body"}}
+	send := agenttool.NewFunc("send_email", "", nil, fn, agenttool.WithFlow(mail), agenttool.WithAnnotations(agenttool.Annotations{Destructive: true}))
+	notes := agenttool.NewFunc("notes", "", nil, fn, agenttool.WithFlow(agenttool.Flow{Reads: []agenttool.Label{agenttool.LabelPrivate}}), agenttool.WithAnnotations(agenttool.Annotations{ReadOnly: true}))
+	plain := agenttool.NewFunc("plain", "", nil, fn, agenttool.WithAnnotations(agenttool.Annotations{ReadOnly: true}))
+
+	if a := Definition(send).Annotations; a == nil || a.OpenWorldHint == nil || !*a.OpenWorldHint {
+		t.Errorf("send_email openWorldHint = %+v, want true for a tool that sends", a)
+	}
+	if a := Definition(notes).Annotations; a == nil || a.OpenWorldHint == nil || *a.OpenWorldHint {
+		t.Errorf("notes openWorldHint = %+v, want the tool's own false", a)
+	}
+
+	server := newServer(t, "mail", send, notes, plain)
+	trusted := roundTrip(t, server, mcpclient.WithClaims())
+	for name, want := range map[string]agenttool.Flow{"send_email": mail, "notes": {Reads: []agenttool.Label{agenttool.LabelPrivate}}} {
+		tl, _ := agenttool.Set(trusted.Tools()).Lookup(name)
+		if got, ok := agenttool.FlowOf(tl); !ok || fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("%s under claims: flow = %+v, %v; want %+v", name, got, ok, want)
+		}
+	}
+	tl, _ := agenttool.Set(trusted.Tools()).Lookup("plain")
+	if f, ok := agenttool.FlowOf(tl); ok {
+		t.Errorf("plain: flow = %+v, want unstated, as its closed-world hint says nothing", f)
+	}
+	untrusted := roundTrip(t, server)
+	tl, _ = agenttool.Set(untrusted.Tools()).Lookup("send_email")
+	if got, ok := agenttool.FlowOf(tl); !ok || !got.Sends || len(got.To) != 0 || !got.ReadsLabel(agenttool.LabelUntrusted) || !got.ReadsLabel(agenttool.LabelPrivate) {
+		t.Errorf("send_email untrusted: flow = %+v, %v; want the strict reading", got, ok)
 	}
 }

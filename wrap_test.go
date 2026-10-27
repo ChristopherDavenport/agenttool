@@ -51,6 +51,9 @@ func (*everythingTool) Facts(_ context.Context, args json.RawMessage) (Facts, er
 	}
 	return Facts{}, nil
 }
+func (*everythingTool) Flow() (Flow, bool) {
+	return Flow{Reads: []Label{LabelUntrusted, "novel"}, Sends: true, To: []string{"url"}}, true
+}
 func (e *everythingTool) Close() error { e.closed++; return nil }
 
 // readers is every way a harness asks a tool about itself. A wrapper is
@@ -59,7 +62,10 @@ func readers(ctx context.Context, t Tool) map[string]any {
 	confined, by := ConfinedBy(ctx, t, json.RawMessage(`{"sandbox":true}`))
 	_, closer := t.(io.Closer)
 	facts, claims, factsErr := FactsOf(ctx, t, json.RawMessage(`{"sandbox":true}`))
+	flow, flowing := FlowOf(t)
 	return map[string]any{
+		"flow":        flow,
+		"flowing":     flowing,
 		"factual":     IsFactual(t),
 		"facts":       facts,
 		"claims":      claims,

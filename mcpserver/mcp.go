@@ -16,7 +16,7 @@
 // who wants a policy applies it to the tools before serving them. What
 // a policy decides on crosses, though: a tool's facts and replay claims
 // are answered by [FactsMethod], and what MCP has no field for, those
-// claims' presence, read-only, sequential, barrier and resource, is in each
+// claims' presence, read-only, sequential, barrier, resource and flow, is in each
 // definition's _meta under [ToolMetaKey].
 //
 // One server serves many clients and one Tool value serves them all, so
@@ -29,7 +29,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
+	"path"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -74,6 +77,21 @@ type Options struct {
 	// once rather than sent to a client that would give up on the call
 	// instead of answering.
 	MaxRequests int
+
+	// Instructions is the server's guidance for whoever uses it, given
+	// to the client at initialize: what the server is for and how its
+	// tools go together. The contract has no field for it, since a tool
+	// set has no description, so it is the host's to give when it builds
+	// the server; the client's host decides whether the model reads it.
+	// [Options.NewServer] serves it; a host that builds its own
+	// [sdk.Server] sets it in the server's options instead.
+	Instructions string
+
+	// Logger is told of a tool whose arguments go unvalidated, because
+	// its schema names a dialect the validator does not handle, and is
+	// the SDK server's logger under [Options.NewServer]. Nil is
+	// [slog.Default].
+	Logger *slog.Logger
 }
 
 // NewServer builds an SDK server named name that serves tools. It fails
@@ -84,7 +102,11 @@ func NewServer(name, version string, tools ...agenttool.Tool) (*sdk.Server, erro
 
 // NewServer is [NewServer] with o.
 func (o Options) NewServer(name, version string, tools ...agenttool.Tool) (*sdk.Server, error) {
-	s := sdk.NewServer(&sdk.Implementation{Name: name, Version: version}, nil)
+	var opts *sdk.ServerOptions
+	if o.Instructions != "" || o.Logger != nil {
+		opts = &sdk.ServerOptions{Instructions: o.Instructions, Logger: o.Logger}
+	}
+	s := sdk.NewServer(&sdk.Implementation{Name: name, Version: version}, opts)
 	if err := o.AddTools(s, tools...); err != nil {
 		return nil, err
 	}
@@ -99,7 +121,10 @@ func (o Options) NewServer(name, version string, tools ...agenttool.Tool) (*sdk.
 // tool runs. A schema the validator cannot parse or resolve is a
 // registration error, "mcpserver: tool NAME: schema: ...", reported
 // before any tool is added, as [agenttool.New] panics for the same
-// mistake; the validator handles JSON Schema draft-07 and 2020-12. The
+// mistake; the validator handles JSON Schema draft-07 and 2020-12,
+// however the $schema URI is spelt. A schema of another dialect is not
+// refused, since it may be sound: the tool is served without the check,
+// and [Options.Logger] is told. The
 // handler then runs Execute with the raw arguments and maps the result
 // with [ContentOf]; a returned error, a validation failure included,
 // sets isError with the message as text so the calling model can see it
@@ -209,10 +234,13 @@ func (o Options) AddTools(s *sdk.Server, tools ...agenttool.Tool) error {
 // [agenttool.Annotations] serves them as MCP tool annotations, each
 // hint stated rather than left to MCP's defaults, so a tool consumed by
 // mcpclient and served again here keeps the hints it arrived with. A
-// tool that carries none serves none.
+// tool that carries none serves none, which MCP reads as open-world. A
+// tool whose [agenttool.Flow] reads untrusted content or sends is served
+// open-world whatever its annotations say, so a client that reads only
+// MCP's hints is never looser than one that reads the flow.
 //
 // The tool's properties MCP has no field for, whether it makes the
-// facts and replay claims, read-only, sequential, barrier and resource, go in
+// facts and replay claims, read-only, sequential, barrier, resource and flow, go in
 // the definition's _meta under [ToolMetaKey], so that a client reads
 // them as the server's statement about the tool rather than as hints,
 // and asks [FactsMethod] only about the tools that claim. A tool with
@@ -227,6 +255,11 @@ func Definition(tl agenttool.Tool) *sdk.Tool {
 	def := &sdk.Tool{Name: tl.Name(), Description: tl.Description(), InputSchema: schema}
 	if a := agenttool.AnnotationsOf(tl); a != (agenttool.Annotations{}) {
 		destructive, openWorld := a.Destructive, a.OpenWorld
+		if f, ok := agenttool.FlowOf(tl); ok && (f.Sends || f.ReadsLabel(agenttool.LabelUntrusted)) {
+			// A client that reads only MCP takes a closed world as safe;
+			// a tool that reads untrusted content or sends is not.
+			openWorld = true
+		}
 		def.Title = a.Title
 		def.Annotations = &sdk.ToolAnnotations{
 			Title:           a.Title,
@@ -288,7 +321,17 @@ func Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
 // Handler is [Handler] with o.
 func (o Options) Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
 	resolved, err := resolveSchema(tl.Parameters())
-	if err != nil {
+	switch {
+	case errors.Is(err, errDialect):
+		// The schema may be sound; the validator cannot read it. The tool
+		// is served unvalidated, as one whose schema is its author's and
+		// guards itself, and the host is told.
+		log := o.Logger
+		if log == nil {
+			log = slog.Default()
+		}
+		log.Warn("mcpserver: tool arguments not validated", "tool", tl.Name(), "err", err)
+	case err != nil:
 		return nil, fmt.Errorf("mcpserver: tool %q: schema: %w", tl.Name(), err)
 	}
 	waiting := parked{abandonAfter: o.AbandonAfter, maxRequests: o.MaxRequests}
@@ -406,17 +449,48 @@ func resolveSchema(raw json.RawMessage) (*jsonschema.Resolved, error) {
 	if err := json.Unmarshal(raw, &schema); err != nil {
 		return nil, err
 	}
-	switch schema.Schema {
-	case "", "http://json-schema.org/draft-07/schema#", "https://json-schema.org/draft-07/schema#", "https://json-schema.org/draft/2020-12/schema":
-	default:
-		return nil, fmt.Errorf("unsupported $schema %q: the validator handles draft-07 and 2020-12", schema.Schema)
+	if schema.Schema != "" {
+		d, ok := dialect(schema.Schema)
+		if !ok {
+			return nil, fmt.Errorf("%w %q: the validator handles draft-07 and 2020-12", errDialect, schema.Schema)
+		}
+		schema.Schema = d
 	}
 	return schema.Resolve(nil)
+}
+
+// errDialect is a schema whose $schema names a dialect the validator
+// does not handle.
+var errDialect = errors.New("unsupported $schema")
+
+// dialect returns the spelling of the $schema the validator takes for
+// uri, when uri names draft-07 or 2020-12 however it is spelt: over
+// http or https, with or without the empty fragment. jsonschema-go
+// compares the string itself, so the schema is given its spelling.
+func dialect(uri string) (string, bool) {
+	uri = strings.TrimSuffix(uri, "#")
+	if rest, ok := strings.CutPrefix(uri, "https://"); ok {
+		uri = rest
+	} else if rest, ok := strings.CutPrefix(uri, "http://"); ok {
+		uri = rest
+	} else {
+		return "", false
+	}
+	switch uri {
+	case "json-schema.org/draft-07/schema":
+		return "http://json-schema.org/draft-07/schema#", true
+	case "json-schema.org/draft/2020-12/schema":
+		return "https://json-schema.org/draft/2020-12/schema", true
+	}
+	return "", false
 }
 
 // validate checks raw arguments against a resolved schema. The error is
 // phrased like the tool package's own decode errors.
 func validate(resolved *jsonschema.Resolved, raw json.RawMessage) error {
+	if resolved == nil {
+		return nil
+	}
 	var instance any
 	if err := json.Unmarshal(raw, &instance); err != nil {
 		return fmt.Errorf("invalid arguments: %w", err)
@@ -427,12 +501,12 @@ func validate(resolved *jsonschema.Resolved, raw json.RawMessage) error {
 	return nil
 }
 
-// ContentOf maps a function call output to MCP content. Text becomes one
-// text block. Parts map by type: textual parts to text blocks, an
-// input_image with a data URL to an image block and one with a plain URL
-// to a resource link, an input_file with data to an embedded blob
-// resource and one with a URL to a resource link. Anything else is
-// emitted as its JSON.
+// ContentOf maps a function call output to MCP content, as RFC 0001's
+// MCP content mapping states. Text becomes one text block. Parts map by
+// type: textual parts to text blocks, an input_image with a data URL to
+// an image block and one with a plain URL to a resource link, an
+// input_file with data to audio or an embedded blob resource and one
+// with a URL to a resource link. Anything else is emitted as its JSON.
 func ContentOf(out openresponses.FunctionCallOutputData) []sdk.Content {
 	if out.Parts == nil {
 		return []sdk.Content{&sdk.TextContent{Text: out.Text}}
@@ -465,27 +539,88 @@ func ContentOf(out openresponses.FunctionCallOutputData) []sdk.Content {
 	return content
 }
 
-// fileContent maps an input_file part: data to an embedded blob
-// resource whose URI is the file URL or a file URI built from the name,
-// a URL alone to a resource link, and a bare name to text. Data that is
-// not base64 is passed through as text rather than dropped.
+// fileContent maps an input_file part. Its media type decides what its
+// data becomes: a data URL of an audio type is audio content of that
+// type, which is how mcpclient sends audio it consumed, and any other
+// data URL an embedded blob resource of its type. Bare base64 is a blob
+// typed by the filename's extension under [extTypes], or untyped. A
+// blob's URI is the file URL when there is one, the filename when that
+// is already an absolute URI, so a resource mcpclient consumed from
+// db://report is served back under it, and a file URI built from the
+// filename otherwise. A URL alone becomes a resource link and a bare
+// name text. Data that is neither a data URL nor base64 is passed
+// through as text rather than dropped.
 func fileContent(p *openresponses.InputFile) sdk.Content {
 	switch {
 	case p.FileData != "":
-		data, err := base64.StdEncoding.DecodeString(p.FileData)
-		if err != nil {
-			return &sdk.TextContent{Text: p.FileData}
+		mime, data, ok := parseDataURL(p.FileData)
+		if !ok {
+			var err error
+			if data, err = base64.StdEncoding.DecodeString(p.FileData); err != nil {
+				return &sdk.TextContent{Text: p.FileData}
+			}
+			mime = extTypes[strings.ToLower(path.Ext(p.Filename))]
 		}
-		uri := p.FileURL
-		if uri == "" {
-			uri = "file:///" + strings.TrimPrefix(p.Filename, "/")
+		if t, _, ok := strings.Cut(mime, "/"); ok && strings.EqualFold(t, "audio") {
+			return &sdk.AudioContent{MIMEType: mime, Data: data}
 		}
-		return &sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: uri, Blob: data}}
+		return &sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: fileURI(p), MIMEType: mime, Blob: data}}
 	case p.FileURL != "":
 		return &sdk.ResourceLink{URI: p.FileURL, Name: p.Filename}
 	default:
 		return &sdk.TextContent{Text: p.Filename}
 	}
+}
+
+// fileURI is the URI a file part's blob is served under: its file URL,
+// its filename when that is an absolute URI, or a file URI built from
+// the filename.
+func fileURI(p *openresponses.InputFile) string {
+	switch {
+	case p.FileURL != "":
+		return p.FileURL
+	case hasScheme(p.Filename):
+		return p.Filename
+	}
+	return "file:///" + strings.TrimPrefix(p.Filename, "/")
+}
+
+// hasScheme reports whether s begins with an RFC 3986 scheme and a
+// colon: a letter, then letters, digits, "+", "-" or ".". A scheme of
+// one letter is not taken for one, so a Windows path, C:\notes.txt,
+// stays a filename.
+func hasScheme(s string) bool {
+	scheme, _, ok := strings.Cut(s, ":")
+	if !ok || len(scheme) < 2 {
+		return false
+	}
+	for i, r := range scheme {
+		switch {
+		case 'a' <= r && r <= 'z', 'A' <= r && r <= 'Z':
+		case i > 0 && ('0' <= r && r <= '9' || r == '+' || r == '-' || r == '.'):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// extTypes types a file part sent as bare base64 by its filename's
+// extension. It is RFC 0001's fixed table, not the host's MIME table, so
+// a part is typed the same everywhere; an extension not in it is
+// untyped.
+var extTypes = map[string]string{
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+	".pdf":  "application/pdf",
+	".json": "application/json",
+	".txt":  "text/plain",
+	".md":   "text/markdown",
+	".csv":  "text/csv",
+	".html": "text/html",
 }
 
 // parseDataURL splits a base64 data URL into its media type and bytes.

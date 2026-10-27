@@ -57,6 +57,8 @@ func roundTrips(session *sdk.ServerSession) bool {
 type question struct {
 	params *sdk.ElicitParams
 	schema *jsonschema.Resolved
+	// asked is the tool's question, which the answer is checked against.
+	asked agenttool.Elicitation
 }
 
 // noFields is the schema of a form that asks for nothing.
@@ -69,7 +71,7 @@ func questionOf(q agenttool.Elicitation) (question, error) {
 	if q.URL != "" {
 		p.Mode, p.URL = "url", q.URL
 		p.ElicitationID = randomID()
-		return question{params: p}, nil
+		return question{params: p, asked: q}, nil
 	}
 	p.Mode = "form"
 	if len(q.Schema) == 0 {
@@ -77,7 +79,7 @@ func questionOf(q agenttool.Elicitation) (question, error) {
 		// a form with none. The schema is required in form mode, and a
 		// client may refuse a form without one: Claude Code does.
 		p.RequestedSchema = noFields
-		return question{params: p}, nil
+		return question{params: p, asked: q}, nil
 	}
 	var schema jsonschema.Schema
 	if err := json.Unmarshal(q.Schema, &schema); err != nil {
@@ -88,7 +90,7 @@ func questionOf(q agenttool.Elicitation) (question, error) {
 		return question{}, fmt.Errorf("mcpserver: elicitation schema: %w", err)
 	}
 	p.RequestedSchema = q.Schema
-	return question{params: p, schema: resolved}, nil
+	return question{params: p, schema: resolved, asked: q}, nil
 }
 
 // offered reports whether the client takes a question of this mode. A
@@ -100,31 +102,36 @@ func offered(caps *sdk.ElicitationCapabilities, mode string) bool {
 	return caps.Form != nil || caps.URL == nil
 }
 
-// answerOf maps the client's answer back, checking a form's content
-// against the schema it was asked with: the client is meant to, and
-// the tool should not have to trust that it did.
+// answerOf maps the client's answer back, checked as RFC 0001's
+// Questions rule says, content only on accept and only of the members
+// the question's form defines, and a form's content against the schema
+// it was asked with: the client is meant to, and the tool should not
+// have to trust that it did. An answer that fails is the elicitor's
+// error, which the tool sees, and never an accept.
 func answerOf(q question, res *sdk.ElicitResult) (agenttool.Answer, error) {
 	ans := agenttool.Answer{Action: agenttool.Action(res.Action)}
-	switch ans.Action {
-	case agenttool.ActionAccept:
-	case agenttool.ActionDecline, agenttool.ActionCancel:
-		return ans, nil
-	default:
-		return agenttool.Answer{}, fmt.Errorf("mcpserver: elicitation answer: unknown action %q", res.Action)
+	if res.Content != nil {
+		content, err := json.Marshal(res.Content)
+		if err != nil {
+			return agenttool.Answer{}, fmt.Errorf("mcpserver: elicitation answer: %w", err)
+		}
+		ans.Content = content
 	}
-	if res.Content == nil {
-		return ans, nil
+	if err := q.asked.Check(ans); err != nil {
+		return agenttool.Answer{}, fmt.Errorf("mcpserver: elicitation answer: %w", err)
+	}
+	if ans.Action != agenttool.ActionAccept || ans.Content == nil {
+		return agenttool.Answer{Action: ans.Action}, nil
 	}
 	if q.schema != nil {
 		if err := q.schema.Validate(res.Content); err != nil {
 			return agenttool.Answer{}, fmt.Errorf("mcpserver: elicitation answer: %w", err)
 		}
 	}
-	content, err := json.Marshal(res.Content)
-	if err != nil {
-		return agenttool.Answer{}, fmt.Errorf("mcpserver: elicitation answer: %w", err)
+	if len(q.asked.Schema) == 0 {
+		// A confirmation's answer has no content; {} said nothing.
+		ans.Content = nil
 	}
-	ans.Content = content
 	return ans, nil
 }
 
@@ -144,7 +151,7 @@ func askDirectly(session *sdk.ServerSession, caps *sdk.ElicitationCapabilities) 
 		if err != nil {
 			return agenttool.Answer{}, fmt.Errorf("mcpserver: elicitation: %w", err)
 		}
-		return answerOf(question{params: mq.params}, res)
+		return answerOf(question{params: mq.params, asked: q}, res)
 	}
 }
 

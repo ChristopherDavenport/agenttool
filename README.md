@@ -82,10 +82,13 @@ permission preset can ask about the calls that leave one without
 knowing a product's own argument for leaving it; `Strict` marks the
 schema strict; `Replayable` says whether a call may run again;
 `Factual` says what a call would touch, as the calls it amounts to and
-the arguments it would run with; and `io.Closer` releases what the
-tool owns. `WithSequential()`, `WithBarrier()`, `WithResource()`, `WithAnnotations()`,
-`WithStrict()`, `WithConfined()`, `WithReplay()`, `WithFacts()` and
-`WithCloser()` set them on a tool from `New` or `NewFunc`. Embedding such a tool in a struct to add a
+the arguments it would run with; `Flowing` says whether its output is
+untrusted or private and whether a call sends data out, and through
+which arguments, which is what a defence against prompt injection
+decides on; and `io.Closer` releases what the tool owns.
+`WithSequential()`, `WithBarrier()`, `WithResource()`, `WithAnnotations()`,
+`WithStrict()`, `WithConfined()`, `WithReplay()`, `WithFacts()`,
+`WithFlow()` and `WithCloser()` set them on a tool from `New` or `NewFunc`. Embedding such a tool in a struct to add a
 method compiles and silently drops the rest, so a tool built here gains
 a property through its option.
 
@@ -377,7 +380,9 @@ what a permission layer keys on instead of a per-server name list;
 `AnnotationsOf` reads them from any tool and `mcpserver` serves the
 ones a Go tool carries, so they survive a round trip. They are the
 server's word, so a policy may use them to be stricter and may not use
-them alone to allow a call. The refresh is a round trip: `Await` blocks until
+them alone to allow a call. An open-world hint, true or absent, is
+also the tool's flow: it reads untrusted content and sends, unless a
+server whose claims the host takes says otherwise. The refresh is a round trip: `Await` blocks until
 it has landed, and a call that returns after the notification arrived
 waits for it. A server need not notify before it answers, and the
 reference Go SDK arms the notification on a 10 ms timer, so a call
@@ -393,6 +398,32 @@ connects, so the call's context carries the session it arrived on:
 `mcpserver.SessionFrom(ctx)` is what a tool holding a working
 directory, a container or a shell keys that state on, and two editor
 windows then get two shells instead of one.
+
+A tool set has no description in the contract, but a server has
+instructions: what it is for and how its tools go together.
+`mcpserver.Options{Instructions: …}.NewServer` serves them at
+initialize, and `mcpclient.Remote.Instructions` reads them; the host
+decides whether the model does.
+
+Roots and logging are the host's too, and `mcpclient` offers neither
+unless the host takes part: `WithRoots` offers the directories a server
+may work in, a workspace's root, and without it no roots are offered;
+`WithLogging(level, fn)` asks for the server's log messages and hands
+each to `fn`, with the call on its context when it can tell which, and
+never to the model.
+
+A call waits as long as its caller lets it unless the host bounds it:
+`WithCallTimeout(30*time.Second, 10*time.Minute)` stops a call that
+sends no progress for half a minute or runs past ten, cancelling its
+request, and returns a `*TimeoutError` that says the call may or may
+not have taken effect. Names after the two limits set one tool's
+limits; the user's wait on a question the call asked is not counted.
+
+A tool may answer with a `resource_link` rather than the content, and
+the model needs a tool to follow it. `remote.ResourceTools()` returns
+`list_resources` and `read_resource` for a server that advertises
+resources, read-only and under the remote's prefix; a host that wants
+them appends them to `Tools()`. A server tool of the same name wins.
 
 A record crosses too. The tool that most wants one, a shell inside a
 sandbox recording which container served the call, is the tool most
@@ -439,9 +470,13 @@ answers, err := remote.Facts(ctx,
 // ReplayOf report for that call; a tool that claims nothing is not sent.
 ```
 
-Without the option, or on a server that does not advertise the
-method, the server is never asked and its tools make no claim, as
-before. Sequential and resource come from the listing either way,
+A host that does not trust a server can still hold its calls to the
+host's rules: `mcpclient.WithFactsHints()` takes its facts as hints,
+marked `Facts.Hint`, which a policy reads only to make a decision
+stricter and never alone, without their rewrite, and leaves the
+server's replay unknown. Without either option, or on a server that
+does not advertise the method, the server is never asked and its tools
+make no claim, as before. Sequential and resource come from the listing either way,
 since they can only make calls run one after another, so a host no
 longer names them for an `mcpserver` tool. A `WithResource` the host
 gives still wins, since the host sees every server it composes.
@@ -596,9 +631,15 @@ nobody to ask answers. The tool does what it does with that, and the
 call ends with status 3. Stdout then holds the question as JSON,
 together with the tool's output or error. The model asks the user and
 runs the command again with `--answer`. The second run is a second
-call, so this suits a tool that asks before it acts. A program that
-knows a person is at the terminal sets `Ask: cli.Prompt(os.Stdin,
-os.Stderr)` instead. `--record` appends the call's records to a file
+call, so this suits a tool that asks before it acts. An answer is an
+action, the form's fields as a JSON object, or `{"action": "decline",
+"note": "not before Friday"}` to pass on what the user said with it.
+The question's `schema` is `null` when it asks only yes or no, and an
+answer is checked against it: fields the form does not define are
+refused rather than counted as yes, the tool is told, and the run ends
+with status 4 and the tool's outcome, since it has run. A program that knows a
+person is at the terminal sets `Ask: cli.Prompt(os.Stdin, os.Stderr)`
+instead, or `cli.PromptNotes` to ask for a note with each answer. `--record` appends the call's records to a file
 as JSON lines.
 
 `cli.Markdown` renders how to call each command, from the same

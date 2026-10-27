@@ -578,3 +578,47 @@ func TestFactsConstantsMatchClient(t *testing.T) {
 		}
 	}
 }
+
+// TestFactsAsHints: a host that does not trust a server may take its
+// facts as hints, marked so a policy reads them only to be stricter,
+// without their rewrite, and without the server's replay, which stays
+// unknown. Under WithClaims they are claims, and a hint a server passes
+// on from a server it does not trust stays a hint (#84).
+func TestFactsAsHints(t *testing.T) {
+	c := &claimer{t: t}
+	server := newServer(t, "claims", c.tools()...)
+	ctx := context.Background()
+	args := json.RawMessage(`{"command":"cat .env > out/x"}`)
+
+	hints := roundTrip(t, server, mcpclient.WithFactsHints())
+	f, claims, err := claimsOf(t, hints, "sh", string(args))
+	if err != nil || !claims || !f.Hint || f.Rewrite != nil || len(f.Calls) != 3 {
+		t.Errorf("sh as hints: %+v, claims %v, err %v; want hints, the calls and no rewrite", f, claims, err)
+	}
+	sh, _ := agenttool.Set(hints.Tools()).Lookup("sh")
+	if r := agenttool.ReplayOf(ctx, sh, args); r != agenttool.ReplayUnknown {
+		t.Errorf("sh as hints: replay %v, want unknown: replay from a server the host does not trust is not taken", r)
+	}
+	answers, err := hints.Facts(ctx, mcpclient.FactsCall{Name: "sh", Args: args})
+	if err != nil || !answers[0].Claimed || !answers[0].Facts.Hint || answers[0].Facts.Rewrite != nil || answers[0].Replay != agenttool.ReplayUnknown {
+		t.Errorf("Facts as hints = %+v, %v", answers, err)
+	}
+
+	claimed := roundTrip(t, server, mcpclient.WithClaims(), mcpclient.WithFactsHints())
+	f, _, err = claimsOf(t, claimed, "sh", string(args))
+	if err != nil || f.Hint || f.Rewrite == nil {
+		t.Errorf("sh under claims: %+v, %v; want a claim with its rewrite", f, err)
+	}
+
+	// A server that serves the hints it took on passes the mark on, and
+	// a client that trusts it still reads them as hints.
+	proxy := newServer(t, "proxy", hints.Tools()...)
+	through := roundTrip(t, proxy, mcpclient.WithClaims())
+	f, claims, err = claimsOf(t, through, "sh", string(args))
+	if err != nil || !claims || !f.Hint || f.Rewrite != nil {
+		t.Errorf("sh through a proxy: %+v, claims %v, err %v; want still a hint", f, claims, err)
+	}
+	if c.executed.Load() != 0 {
+		t.Error("asking for facts ran a tool")
+	}
+}

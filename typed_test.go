@@ -225,6 +225,7 @@ func everythingOptions(closed *int) []Option {
 		WithConfined(e.Confined),
 		WithReplay(e.Replay),
 		WithFacts(e.Facts),
+		WithFlow(func() Flow { f, _ := e.Flow(); return f }()),
 		WithCloser(func() error { *closed++; return nil }),
 	}
 }

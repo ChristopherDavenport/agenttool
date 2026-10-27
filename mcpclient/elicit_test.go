@@ -201,6 +201,36 @@ func TestElicitationAnswerErrors(t *testing.T) {
 	}
 }
 
+// TestElicitationAnswerChecked: an answer the question did not ask for,
+// a member its form does not define or content on a decline, is refused
+// before it is sent, as RFC 0001's Questions rule says: the server is
+// told the elicitation failed and never sees it as an accept, and the
+// call returns the reason (#85).
+func TestElicitationAnswerChecked(t *testing.T) {
+	for name, tc := range map[string]struct {
+		ans  agenttool.Answer
+		want string
+	}{
+		"a member the form lacks":   {agenttool.Answer{Action: agenttool.ActionAccept, Content: json.RawMessage(`{"confirm":true,"force":true}`)}, `"force"`},
+		"content on decline":        {agenttool.Answer{Action: agenttool.ActionDecline, Content: json.RawMessage(`{"confirm":false}`)}, "only on accept"},
+		"a value of the wrong type": {agenttool.Answer{Action: agenttool.ActionAccept, Content: json.RawMessage(`{"confirm":"yes"}`)}, `"confirm"`},
+		"a required member missing": {agenttool.Answer{Action: agenttool.ActionAccept, Content: json.RawMessage(`{}`)}, `"confirm"`},
+	} {
+		for proto, opts := range map[string][]Option{"current": {WithElicitation()}, "older": {WithElicitation(), older}} {
+			t.Run(name+"/"+proto, func(t *testing.T) {
+				s := connect(t, eliciting(nil), opts...)
+				ctx := agenttool.ContextWithElicitor(context.Background(), func(context.Context, agenttool.Elicitation) (agenttool.Answer, error) {
+					return tc.ans, nil
+				})
+				res, err := lookup(t, s, "ask").Execute(ctx, agenttool.Call{ID: "c", Args: json.RawMessage(`{}`)})
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Errorf("res = %q, err = %v; want the refusal, naming %s", res.Output.Text, err, tc.want)
+				}
+			})
+		}
+	}
+}
+
 func TestElicitationHandlerFromClientOptionsWins(t *testing.T) {
 	s := connect(t, eliciting(nil), WithElicitation(), WithClientOptions(sdk.ClientOptions{
 		ElicitationHandler: func(context.Context, *sdk.ElicitRequest) (*sdk.ElicitResult, error) {

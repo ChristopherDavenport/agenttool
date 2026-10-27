@@ -29,10 +29,21 @@ func Prompt(in io.Reader, out io.Writer) agenttool.Elicitor {
 	return p.ask
 }
 
+// PromptNotes is [Prompt] with a line after each answer for what the
+// user wants to say with it, why they declined or what to bear in mind,
+// which becomes the answer's [agenttool.Answer.Note]. An empty line, or
+// the end of input, says nothing, and an answer nobody gave asks for no
+// note.
+func PromptNotes(in io.Reader, out io.Writer) agenttool.Elicitor {
+	p := &prompt{in: bufio.NewReader(in), out: out, notes: true}
+	return p.ask
+}
+
 type prompt struct {
-	mu  sync.Mutex
-	in  *bufio.Reader
-	out io.Writer
+	mu    sync.Mutex
+	in    *bufio.Reader
+	out   io.Writer
+	notes bool
 	// reading is the line being read, when an earlier question stopped
 	// waiting for it; the next question takes it rather than starting a
 	// second read of in.
@@ -47,6 +58,21 @@ type read struct {
 func (p *prompt) ask(ctx context.Context, q agenttool.Elicitation) (agenttool.Answer, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	a, err := p.answer(ctx, q)
+	if err != nil || !p.notes || a.Action == agenttool.ActionCancel {
+		return a, err
+	}
+	fmt.Fprint(p.out, "Anything to add? (Enter for nothing) ")
+	note, _, err := p.line(ctx)
+	if err != nil {
+		return agenttool.Answer{}, err
+	}
+	a.Note = note
+	return a, nil
+}
+
+// answer asks q and reads the answer.
+func (p *prompt) answer(ctx context.Context, q agenttool.Elicitation) (agenttool.Answer, error) {
 	if msg := strings.TrimSpace(q.Message); msg != "" {
 		fmt.Fprintln(p.out, msg)
 	}

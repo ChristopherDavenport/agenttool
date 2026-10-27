@@ -10,7 +10,7 @@ import (
 // Wrap returns a tool that runs exec in place of t.Execute and is t in
 // every other way: its name, description and parameters, and every
 // property t declares, strict, sequential, barrier, resource, annotations,
-// confined, replay, facts and closer, reported exactly as t reports
+// confined, replay, facts, flow and closer, reported exactly as t reports
 // them. It is how a policy that grants on use, a decorator that
 // records, or a proxy that audits stands in for a tool without changing
 // what the executor and a policy layer learn about it.
@@ -116,6 +116,16 @@ func (w *wrapped) Facts(ctx context.Context, args json.RawMessage) (Facts, error
 
 func (w *wrapped) factsDeclared() bool { return IsFactual(w.Tool) }
 
+// Flow forwards what the tool states, presence included, rather than
+// [FlowOf]'s reading of it, as Resource does.
+func (w *wrapped) Flow() (Flow, bool) {
+	f, ok := w.Tool.(Flowing)
+	if !ok {
+		return Flow{}, false
+	}
+	return f.Flow()
+}
+
 // wrappedCloser is the wrapper around a tool that is an [io.Closer], so
 // that closing the wrapper closes the tool and a wrapper around a tool
 // that owns nothing is not a closer.
@@ -136,6 +146,7 @@ var (
 	_ Confined   = (*wrapped)(nil)
 	_ Replayable = (*wrapped)(nil)
 	_ Factual    = (*wrapped)(nil)
+	_ Flowing    = (*wrapped)(nil)
 	_ Tool       = (*wrappedCloser)(nil)
 	_ io.Closer  = (*wrappedCloser)(nil)
 )

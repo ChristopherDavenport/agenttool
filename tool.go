@@ -216,7 +216,11 @@ func Text(s string) Result {
 	return Result{Output: openresponses.FunctionCallOutputData{Text: s}}
 }
 
-// Parts builds a result whose output is a list of content parts.
+// Parts builds a result whose output is a list of content parts. Each
+// is one a function call output takes: [openresponses.InputText],
+// [openresponses.InputImage], [openresponses.InputFile] or
+// [openresponses.InputVideo]. A text part, [openresponses.Text], is
+// off the specification there, and a server may refuse the request.
 func Parts(parts ...openresponses.Content) Result {
 	return Result{Output: openresponses.FunctionCallOutputData{Parts: openresponses.Contents(parts)}}
 }
@@ -479,6 +483,15 @@ type Facts struct {
 	// forged taken off. It is part of the claim because only the tool can
 	// make it, when the stamp's key never leaves the tool. Nil is none.
 	Rewrite json.RawMessage
+	// Hint says the facts come from a source the host does not trust, a
+	// server whose claims it does not take: a reader may use their Calls
+	// to make a decision stricter, must not decide the call on them
+	// alone, so it decides the call on its own arguments as well, and
+	// ignores Rewrite, which [FactsOf] returns as nil. False, the zero
+	// value, is a claim, which is what a tool the host built makes. The
+	// mark is on the facts so that it travels with them to whatever
+	// reads them, through [Wrap] and over MCP.
+	Hint bool
 }
 
 // Factual is implemented by a tool that can say what a call would touch,
@@ -526,12 +539,16 @@ func IsFactual(t Tool) bool {
 // makes the claim at all. A tool that does not reports false with the
 // zero Facts and no error, which a reader takes as the call itself, its
 // arguments as given. A tool that does is asked, and its answer and its
-// error are returned as they are.
+// error are returned as they are, except that a hint's Rewrite is nil:
+// see [Facts.Hint].
 func FactsOf(ctx context.Context, t Tool, args json.RawMessage) (Facts, bool, error) {
 	if !IsFactual(t) {
 		return Facts{}, false, nil
 	}
 	f, err := t.(Factual).Facts(ctx, args)
+	if f.Hint {
+		f.Rewrite = nil
+	}
 	return f, true, err
 }
 
@@ -710,7 +727,7 @@ func (s Set) Validate() error {
 // comes from elsewhere, such as a remote server. parameters is served
 // verbatim and never validated; nil means the tool takes no arguments.
 // [WithStrict], [WithSequential], [WithBarrier], [WithResource], [WithAnnotations],
-// [WithConfined], [WithReplay], [WithFacts] and [WithCloser] apply; the
+// [WithConfined], [WithReplay], [WithFacts], [WithFlow] and [WithCloser] apply; the
 // options that shape a reflected schema do not. A nil fn panics here,
 // like a bad schema in [New].
 func NewFunc(name, description string, parameters json.RawMessage, fn func(ctx context.Context, call Call) (Result, error), opts ...Option) Tool {
@@ -721,7 +738,7 @@ func NewFunc(name, description string, parameters json.RawMessage, fn func(ctx c
 	for _, opt := range opts {
 		opt(&o)
 	}
-	f := &funcTool{name: name, description: description, schema: parameters, fn: fn, strict: o.strict, sequential: o.sequential, barrier: o.barrier, resource: o.resource, annotations: o.annotations, confined: o.confined, replay: o.replay, facts: o.facts}
+	f := &funcTool{name: name, description: description, schema: parameters, fn: fn, strict: o.strict, sequential: o.sequential, barrier: o.barrier, resource: o.resource, annotations: o.annotations, confined: o.confined, replay: o.replay, facts: o.facts, flow: o.flow}
 	if o.closer != nil {
 		return &funcToolCloser{funcTool: f, close: o.closer}
 	}
@@ -741,6 +758,7 @@ type funcTool struct {
 	confined    func(ctx context.Context, args json.RawMessage) (bool, string)
 	replay      func(ctx context.Context, args json.RawMessage) Replay
 	facts       func(ctx context.Context, args json.RawMessage) (Facts, error)
+	flow        *Flow
 }
 
 func (f *funcTool) Name() string                { return f.name }
@@ -765,6 +783,8 @@ func (f *funcTool) Facts(ctx context.Context, args json.RawMessage) (Facts, erro
 }
 
 func (f *funcTool) factsDeclared() bool { return f.facts != nil }
+
+func (f *funcTool) Flow() (Flow, bool) { return flowBy(f.flow) }
 
 func (f *funcTool) Execute(ctx context.Context, call Call) (Result, error) {
 	return f.fn(ctx, call)

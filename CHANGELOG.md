@@ -5,6 +5,193 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Added: `mcpserver.Options.Instructions`, served by `Options.NewServer`
+  as the server's instructions at initialize (#98). A server built with
+  mcpserver gave none, so a client such as Claude Code, which reads them
+  to decide when to look for a server's tools, found the tools by their
+  names alone. mcpclient already reads them with `Remote.Instructions`.
+  RFC 0001 draft 0.8 states the mapping: the contract has no field for
+  them, the serving host gives them and the consuming host decides
+  whether the model reads them.
+- Fixed: mcpclient's `ResultOf` builds the text of a result with an
+  image, audio or resource in it as `input_text` parts, not `text`
+  (#100). A `function_call_output` takes `input_text`, `input_image`,
+  `input_file` and `input_video` parts only, and Ollama refused the
+  whole request at a browser server's first screenshot with `unknown
+  content type: text`. Embedded text resources, resource links and
+  structured content go out as `input_text` too. RFC 0001 states the
+  rule under "A result": a binding builds no other part type, and a
+  reader takes `text` and `output_text` as `input_text`, as mcpserver
+  and the command line still do. `Parts`'s doc names the four types.
+- Fixed: mcpclient's `ResultOf` keeps what a resource says about itself
+  (#93). An embedded blob with a media type is sent as a data URL of
+  that type, an `input_image` when the type is PNG, JPEG, GIF or WebP
+  and an `input_file` for any other image type, an SVG or a TIFF, which
+  a provider would refuse as an image; image content follows the same
+  rule, and one of no stated type is a file too. So a
+  screenshot returned as `screenshot://page/1` is no longer refused by
+  an adapter that types a file by its name's extension; the
+  `input_file` keeps the URI as its name. An embedded text resource is
+  preceded by the line `resource <uri> (<mimeType>)`, and a resource
+  link is the line `resource_link <uri>: <name>, <description>,
+  <mimeType>, <size> bytes` where it was `resource: <uri>`, so the model
+  can tell which file a block is and what a link points at. A content
+  block whose audience leaves out the assistant is left out of the
+  output; the SDK result in `Details` keeps it. RFC 0001's MCP output
+  row becomes a Content table stating every rendering both ways.
+- Fixed: content mcpclient consumed and mcpserver serves again is the
+  content the origin sent (#97). mcpclient sends audio as an
+  `input_file` whose `file_data` is a data URL of its media type, where
+  it was bare base64, and mcpserver's `ContentOf` serves an `input_file`
+  with a data URL of an `audio/*` type as audio; a file named
+  `audio.wav` is not taken for audio. Any other `input_file` with data
+  is a blob resource with a `mimeType`: the data URL's, or for bare
+  base64 the one RFC 0001's fixed extension table gives. A blob's URI is
+  the filename when that is already a URI, so `db://report` no longer
+  comes back as `file:///db://report`.
+- Fixed: mcpclient sends a result's structured content to the model
+  once (#95). MCP asks a server to send it as text too, and `ResultOf`
+  appended it whatever the text held, so a spec-following server's
+  result reached the model twice. It is now appended only when no text
+  block parses to a value equal to it under RFC 8785.
+- Added: mcpclient validates a consumed tool's structured content
+  against the `outputSchema` it lists, with the validator mcpserver uses
+  for arguments (#95). A result that fails it, or has no structured
+  content, is an error beginning `invalid result: the call ran, but`,
+  so the model does not trust it and does not read it as a call that
+  failed and may be made again. A `$schema` naming draft-07 or 2020-12
+  is read over `http` or `https`, with or without a trailing `#`, and
+  given to the validator in the spelling it takes; a
+  schema the validator cannot read leaves the tool unchecked and is
+  reported through the SDK logger from `WithClientOptions`. mcpclient
+  now requires
+  `github.com/google/jsonschema-go` directly. An output schema on
+  `agenttool.Tool`, served by mcpserver, is a follow-up.
+- Fixed: mcpclient no longer offers roots it never fills (#99). It kept
+  the SDK's default capability `roots: {listChanged: true}` and gave
+  none, so a server that scopes itself to its client's roots asked,
+  got an empty list and refused every path. Added: `WithRoots(roots…)`
+  offers the host's roots and answers `roots/list` with them; without it
+  the client offers no roots. A capability set through
+  `WithClientOptions` still wins.
+- Added: `mcpclient.WithLogging(level, fn)` takes a server's log
+  messages and hands each to the host's `fn`, with the call on the
+  context when the message belongs to one the client can name (#99).
+  The level goes in each call's `_meta` under
+  `io.modelcontextprotocol/logLevel`, without which a 2026-07-28 server
+  sends nothing, and an older server that advertises logging is sent
+  `logging/setLevel` when its session starts, a restarted one included.
+  A log message never reaches a call's output or the model.
+- Added: `mcpclient.WithCallTimeout(idle, max, names…)` bounds a call
+  by an idle time, which each progress notification for the call
+  restarts, and a maximum time that holds whatever progress says, for
+  every tool of the server or for the named ones (#96). On expiry the
+  request is cancelled, which sends the server `notifications/cancelled`,
+  and the call returns a `*TimeoutError` naming the limit and saying the
+  call may or may not have taken effect; it is not sent again. Time a
+  question of the call waits on the user counts toward neither limit. A
+  call under an idle limit asks for progress whether or not its caller
+  takes updates. A call used to wait as long as its caller's context, so
+  a hung server held a headless run until the harness killed it. RFC
+  0001 states the rule for any harness under "Stopping a call", and the
+  context of a call now lists the elicitor.
+- Added: `mcpclient.Remote.ResourceTools()`, two read-only tools for a
+  server that advertises resources, `list_resources` and
+  `read_resource` under the remote's prefix (#94). The model can list
+  the resources a page at a time, with the URI templates, and read one
+  by its URI, so a `resource_link` a tool returned can be followed. A
+  host offers them by appending them to `Tools()`. A server tool of the
+  same name wins, and a server without resources has none. RFC 0001
+  states their definitions word for word, since a definition is hashed,
+  with their outputs, and states the consumed-tool naming rule,
+  `<prefix>__<name>`. `list_resources` lists every page of
+  URI templates on its first page, and fails rather than return a
+  listing cut short: on a repeated cursor, past 100 pages, on a later
+  page refused or at the end of the call; a server that refuses the
+  first page has none. `WithCallTimeout` bounds both tools as it bounds
+  the server's own.
+- Fixed: `agenttool/cli` no longer takes a JSON `--answer` to a
+  question that asked for no fields as consent (#85). Any object was
+  accept with itself as content, so `--answer '{"note":"not before
+  Friday"}'` to "Delete the note?" deleted it. Each `--answer` is now
+  checked against its question: content only on accept, and only of
+  the members the question's form defines. One that fails is not given:
+  the tool is told, and the run ends with the new status 4,
+  `ExitAnswerRefused`, printing the question with `refused` and what
+  the tool returned, since the tool has run. An `--answer` malformed
+  before the call runs is still status 2.
+- Added: `--answer '{"action": "decline", "note": "…"}'`, the object
+  form that gives an action with `Answer.Note`, and `content` for a
+  form on accept (#85). The question on stdout always carries
+  `schema`, `null` for a confirmation, and the usage text describes the
+  form. `cli.PromptNotes` is `Prompt` with a line for a note after each
+  answer.
+- Added: `Elicitation.Check(answer)`, the rules RFC 0001's new
+  Questions section states for an answer, for a harness to apply
+  before it gives one (#85): content only on accept, an empty object
+  the same as none with any action, and on accept the form's required
+  members present and each member of its type, bounds, format and
+  choices, within the schema MCP's elicitation allows. The command
+  line, mcpclient and mcpserver all apply it. RFC 0001 gains a Command line binding.
+- Added: `Flow`, a tool property read by `FlowOf` and set by
+  `WithFlow` (#92). It labels a tool's output `LabelUntrusted`, content
+  an outside party wrote, or `LabelPrivate`, content that must not leave
+  the session, and says whether a call sends data out (`Sends`) and
+  through which arguments (`To`, `Carries`). It has presence, so a tool
+  that said nothing is told apart from one that declared it reads and
+  sends nothing, and `FlowOf` reads a label it does not know as
+  untrusted. `Wrap` forwards it. A policy and a recorder read it in
+  place of a product's map of tool names.
+- Added: the MCP binding carries flow (#92). mcpclient reads a tool's
+  `openWorldHint`, true or absent, with or without an annotations
+  block, as reading untrusted content and sending, and a hint of false
+  as saying nothing. A server's own flow, which mcpserver serves in the
+  tool's `_meta` under `ToolMetaKey`, is taken as stated under
+  `WithClaims`; otherwise it can only add labels to the open-world
+  reading, and never makes a tool read nothing or take a label away. mcpserver
+  serves `openWorldHint: true` for a tool whose flow reads untrusted
+  content or sends, whatever its annotations say.
+- Added: `Facts.Hint`, the mark on facts from a source the host does
+  not trust (#84). A reader may use a hint's calls to make a decision
+  stricter, must not decide a call on them alone, and ignores its
+  rewrite, which `FactsOf` returns as nil. The zero value is a claim, as
+  a tool built in process makes, so existing tools read as before.
+- Added: `mcpclient.WithFactsHints()` takes the facts of a server the
+  host does not trust as hints, and leaves its replay unknown (#84).
+  `WithClaims` took a server's facts and replay together, so a host
+  that wanted a marketplace server's writes held to its edit rules also
+  let a cut-off call of that server's deploy run again on its word.
+  `WithClaims` still takes both, and wins. mcpserver marks an answer
+  whose facts are hints `hint: true`, so a server that serves tools it
+  consumed from an untrusted one passes the mark on.
+- Fixed: mcpserver reads a draft-07 or 2020-12 `$schema` however its
+  URI is spelt, over `http` or `https`, with or without a trailing `#`,
+  and validates against it in the spelling the validator takes, where
+  it refused a tool whose schema lacked the `#`. A schema of
+  another dialect is served without argument validation and reported to
+  the new `Options.Logger`, `slog.Default()` when nil, rather than
+  refused; a malformed or unresolvable schema is still refused when the
+  tool is added.
+- Fixed: both MCP adapters check an answer against its question, as
+  `Elicitation.Check` does (#85). mcpclient refused nothing its
+  elicitor gave and sent content a confirmation never asked for as
+  accept; it now answers the server with an error, and the call returns
+  the reason. mcpserver accepted members a form does not define, and
+  any content for a confirmation; the tool's elicitor now returns such
+  an answer as an error, never as accept.
+- Added: `mcpclient.WithFlow(flow, names…)`, the host's declaration
+  of a consumed tool's flow, which wins over the server's open-world
+  hint and its `_meta` flow, with or without `WithClaims` (#92). Names
+  match before and after the prefix, the last option wins, and
+  `ResourceTools` are matched too; without a declaration they read as
+  open-world, reading untrusted content and sending.
+- Dependencies: every module requires `openresponses` v0.0.17, up from
+  v0.0.13. Its `Text` no longer documents itself for function call
+  outputs, which take `input_text`, and its types keep members they do
+  not define at every depth.
+
 ## v0.0.26 - 2026-10-26
 
 - Fixed: under `WithReconnect`, mcpclient's request cut because the

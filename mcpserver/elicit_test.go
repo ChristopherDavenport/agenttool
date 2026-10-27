@@ -306,6 +306,7 @@ func only(res *sdk.CallToolResult) string {
 func TestElicitationAnswers(t *testing.T) {
 	cases := []struct {
 		name    string
+		q       *agenttool.Elicitation
 		answer  sdk.InputResponse
 		want    string
 		wantErr string
@@ -314,10 +315,21 @@ func TestElicitationAnswers(t *testing.T) {
 		{name: "left out", want: "cancel "},
 		{name: "off the schema", answer: &sdk.ElicitResult{Action: "accept", Content: map[string]any{"confirm": "yes"}}, wantErr: "elicitation answer"},
 		{name: "unknown action", answer: &sdk.ElicitResult{Action: "maybe"}, wantErr: `unknown action "maybe"`},
+		// #85: content the question did not ask for is refused, not
+		// taken as accept.
+		{name: "a member the form lacks", answer: &sdk.ElicitResult{Action: "accept", Content: map[string]any{"confirm": true, "force": true}}, wantErr: `"force"`},
+		{name: "content on decline", answer: &sdk.ElicitResult{Action: "decline", Content: map[string]any{"confirm": false}}, wantErr: "only on accept"},
+		{name: "a decline's empty content", answer: &sdk.ElicitResult{Action: "decline", Content: map[string]any{}}, want: "decline "},
+		{name: "a required member missing", answer: &sdk.ElicitResult{Action: "accept", Content: map[string]any{}}, wantErr: `"confirm"`},
+		{name: "content for a confirmation", q: &agenttool.Elicitation{Message: "delete it?"}, answer: &sdk.ElicitResult{Action: "accept", Content: map[string]any{"note": "not before Friday"}}, wantErr: `"note"`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cs, first := manual(t, asker(confirm))
+			q := confirm
+			if tc.q != nil {
+				q = *tc.q
+			}
+			cs, first := manual(t, asker(q))
 			responses := sdk.InputResponseMap{}
 			if tc.answer != nil {
 				responses[only(first)] = tc.answer

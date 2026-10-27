@@ -49,6 +49,10 @@ type ToolMeta struct {
 	Barrier bool
 	// Resource names the shared state the tool touches, "" for none.
 	Resource string
+	// Flow is the tool's flow ([agenttool.Flow]), nil when the server
+	// states none. It is taken as stated only under [WithClaims]; see
+	// [Remote.Tools] for how it is read otherwise.
+	Flow *agenttool.Flow
 }
 
 // ToolMetaOf reads a listed tool's [ToolMeta], reporting false when it
@@ -64,12 +68,78 @@ func ToolMetaOf(t *sdk.Tool) (ToolMeta, bool) {
 	}
 	flag := func(k string) bool { b, _ := m[k].(bool); return b }
 	res, _ := m["resource"].(string)
-	meta := ToolMeta{Facts: flag("facts"), Replay: flag("replay"), ReadOnly: flag("readOnly"), Sequential: flag("sequential"), Barrier: flag("barrier"), Resource: res}
+	meta := ToolMeta{Facts: flag("facts"), Replay: flag("replay"), ReadOnly: flag("readOnly"), Sequential: flag("sequential"), Barrier: flag("barrier"), Resource: res, Flow: flowMeta(m["flow"])}
 	if meta.Barrier {
 		// sequential beside barrier is for clients that predate barriers.
 		meta.Sequential = false
 	}
 	return meta, true
+}
+
+// flowMeta reads a flow from a tool's _meta, nil when there is none or
+// it is not an object. A member of the wrong type reads as unset, and a
+// label that is not a string as one this package does not know, which
+// [agenttool.FlowOf] reads as untrusted.
+func flowMeta(v any) *agenttool.Flow {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	strs := func(k string) []string {
+		list, _ := m[k].([]any)
+		var out []string
+		for _, e := range list {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	f := &agenttool.Flow{To: strs("to"), Carries: strs("carries")}
+	f.Sends, _ = m["sends"].(bool)
+	list, _ := m["reads"].([]any)
+	for _, e := range list {
+		s, _ := e.(string)
+		f.Reads = append(f.Reads, agenttool.Label(s))
+	}
+	return f
+}
+
+// flowOf is a listed tool's flow as this side reads it. MCP's open-world
+// hint, true or absent, as MCP defaults it whether or not the tool
+// carries an annotations block, is untrusted content and a call that
+// sends; a hint of false says nothing, since a closed world is a
+// loosening claim. The server's own flow is taken as stated when the
+// host takes its claims. Otherwise it can only add: a flow that says a
+// tool reads a label or sends makes the tool's flow the open-world
+// reading with those labels added, whatever its hint said, and one that
+// adds nothing leaves the tool as its hint left it. An untrusted server
+// can so never state less than the open-world reading, make an unstated
+// flow a stated one that reads nothing, or take a label away.
+func flowOf(t *sdk.Tool, meta ToolMeta, trusted bool) (agenttool.Flow, bool) {
+	openWorld := agenttool.Flow{Reads: []agenttool.Label{agenttool.LabelUntrusted}, Sends: true}
+	stated := t.Annotations == nil || t.Annotations.OpenWorldHint == nil || *t.Annotations.OpenWorldHint
+	switch {
+	case meta.Flow == nil:
+		if stated {
+			return openWorld, true
+		}
+		return agenttool.Flow{}, false
+	case trusted:
+		return *meta.Flow, true
+	case len(meta.Flow.Reads) == 0 && !meta.Flow.Sends:
+		if stated {
+			return openWorld, true
+		}
+		return agenttool.Flow{}, false
+	}
+	flow := openWorld
+	for _, l := range meta.Flow.Reads {
+		if !flow.ReadsLabel(l) {
+			flow.Reads = append(flow.Reads, l)
+		}
+	}
+	return flow, true
 }
 
 // FactsCall is one call [Remote.Facts] is asked about: a tool of the
@@ -122,6 +192,7 @@ type factsClaim struct {
 
 type factsAnswer struct {
 	Facts  *factsClaim `json:"facts,omitempty"`
+	Hint   bool        `json:"hint,omitempty"`
 	Error  string      `json:"error,omitempty"`
 	Replay string      `json:"replay"`
 }
@@ -132,15 +203,20 @@ type factsResult struct {
 }
 
 // claim reads one answer as the claim a tool makes, its presence
-// included: facts or an error is a claim, neither is none.
-func (a factsAnswer) claim() (agenttool.Facts, bool, error) {
+// included: facts or an error is a claim, neither is none. Facts are
+// hints when the server marked them so, or when hint says the host does
+// not take the server's claims, and a hint has no rewrite.
+func (a factsAnswer) claim(hint bool) (agenttool.Facts, bool, error) {
 	switch {
 	case a.Error != "":
 		return agenttool.Facts{}, true, errors.New(a.Error)
 	case a.Facts == nil:
 		return agenttool.Facts{}, false, nil
 	}
-	f := agenttool.Facts{Rewrite: rawOrNil(a.Facts.Rewrite)}
+	f := agenttool.Facts{Hint: hint || a.Hint}
+	if !f.Hint {
+		f.Rewrite = rawOrNil(a.Facts.Rewrite)
+	}
 	if a.Facts.Calls != nil {
 		f.Calls = make([]agenttool.FactCall, len(a.Facts.Calls))
 		for i, c := range a.Facts.Calls {
@@ -211,7 +287,7 @@ func (s *Remote) facts(ctx context.Context, calls []FactsCall, first bool) (_ []
 			out[i] = FactsAnswer{Claimed: true, Err: fmt.Errorf("mcp: no tool %q", c.Name)}
 			continue
 		}
-		if !s.claimsOn(l) || (!e.meta.Facts && !e.meta.Replay) {
+		if !s.factsOn(l) || (!e.meta.Facts && !(e.meta.Replay && s.claimsOn(l))) {
 			continue
 		}
 		ask = append(ask, factsCall{Name: e.remote, Arguments: c.Args})
@@ -226,19 +302,20 @@ func (s *Remote) facts(ctx context.Context, calls []FactsCall, first bool) (_ []
 		return nil, first && s.resend(ctx, l, err), err
 	}
 	for j, i := range at {
-		out[i] = answerFor(got[j], metas[j])
+		out[i] = answerFor(got[j], metas[j], s.claimsOn(l))
 	}
 	return out, false, nil
 }
 
 // answerFor reads a server's answer as what the local tool, built from
-// meta, reports: a claim it does not make reads as none.
-func answerFor(a factsAnswer, meta ToolMeta) FactsAnswer {
+// meta, reports: a claim it does not make reads as none. Without
+// trusted the facts are hints and the replay is not taken.
+func answerFor(a factsAnswer, meta ToolMeta, trusted bool) FactsAnswer {
 	var ans FactsAnswer
 	if meta.Facts {
-		ans.Facts, ans.Claimed, ans.Err = a.claim()
+		ans.Facts, ans.Claimed, ans.Err = a.claim(!trusted)
 	}
-	if meta.Replay {
+	if meta.Replay && trusted {
 		ans.Replay = a.replay()
 	}
 	return ans
@@ -248,6 +325,11 @@ func answerFor(a factsAnswer, meta ToolMeta) FactsAnswer {
 // claims: the host passed [WithClaims] and the server advertises
 // [FactsCapability].
 func (s *Remote) claimsOn(l *link) bool { return s.opts.claims && l.factsCap }
+
+// factsOn reports whether the tools listed on l carry the server's
+// facts, as claims under [WithClaims] or as hints under
+// [WithFactsHints], on a server that advertises [FactsCapability].
+func (s *Remote) factsOn(l *link) bool { return (s.opts.claims || s.opts.hints) && l.factsCap }
 
 // askOne asks the server about one call of the tool ref. With
 // [WithReconnect] it is asked on the restarted server only when that
@@ -313,9 +395,10 @@ func (s *Remote) askFacts(ctx context.Context, l *link, calls []factsCall) ([]fa
 // claimOptions are the options that give the tool ref, listed on l, the
 // server's claims, as meta marks them, when the remote carries them.
 func (s *Remote) claimOptions(l *link, ref toolRef, meta ToolMeta) []agenttool.Option {
-	if !s.claimsOn(l) {
+	if !s.factsOn(l) {
 		return nil
 	}
+	trusted := s.claimsOn(l)
 	var opts []agenttool.Option
 	if meta.Facts {
 		opts = append(opts, agenttool.WithFacts(func(ctx context.Context, args json.RawMessage) (agenttool.Facts, error) {
@@ -323,11 +406,11 @@ func (s *Remote) claimOptions(l *link, ref toolRef, meta ToolMeta) []agenttool.O
 			if err != nil {
 				return agenttool.Facts{}, err
 			}
-			f, _, err := a.claim()
+			f, _, err := a.claim(!trusted)
 			return f, err
 		}))
 	}
-	if meta.Replay {
+	if meta.Replay && trusted {
 		opts = append(opts, agenttool.WithReplay(func(ctx context.Context, args json.RawMessage) agenttool.Replay {
 			a, err := s.askOne(ctx, ref, args)
 			if err != nil {

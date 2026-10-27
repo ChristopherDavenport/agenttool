@@ -15,7 +15,9 @@
 // A remote tool's annotations, the read-only and destructive hints MCP
 // carries, reach the local tool through [agenttool.AnnotationsOf]; they
 // are the server's word, so a policy may read them and must not trust
-// them alone. A record a served tool returned with its result, under
+// them alone. Its open-world hint, true or absent, is also its
+// [agenttool.Flow]: untrusted content, and a call that sends, which only
+// a server whose claims the host takes can say otherwise. A record a served tool returned with its result, under
 // [RecordMetaKey] in the result's _meta, becomes the local Details as a
 // [RemoteRecord], so [agenttool.RecordOf] reads it here as it would in
 // process.
@@ -33,7 +35,9 @@
 // the server with [FactsMethod] under the caller's context;
 // [Remote.Facts] asks about a model response's calls in one request.
 // Without either, the server is never asked and its tools make no
-// claim, as before.
+// claim, as before. [WithFactsHints] takes the facts of a server the
+// host does not trust as hints, which a policy reads only to be
+// stricter, and leaves its replay unknown.
 //
 // Tools returns a snapshot. The remote subscribes to the server's
 // tool-list-changed notification and refreshes it, so a loop that reads
@@ -117,6 +121,7 @@ type options struct {
 	barrier    map[string]bool
 	resources  map[string]claim[string]
 	confined   map[string]claim[func(context.Context, json.RawMessage) (bool, string)]
+	flows      map[string]claim[agenttool.Flow]
 	// seq numbers the claims in the order their options were given, so
 	// the later of a claim on a tool's remote name and one on its
 	// prefixed name wins, whichever spelling each used.
@@ -128,8 +133,16 @@ type options struct {
 	onRefreshError func(error)
 	elicitation    bool
 	claims         bool
-	dial           func(context.Context) (sdk.Transport, error)
-	onReconnect    func(ReconnectInfo)
+	hints          bool
+	// host is the roots and log messages the host takes part in; see
+	// [WithRoots] and [WithLogging].
+	host hostOptions
+	// timeout is every call's limits, and timeouts a tool's own; see
+	// [WithCallTimeout].
+	timeout     callTimeout
+	timeouts    map[string]claim[callTimeout]
+	dial        func(context.Context) (sdk.Transport, error)
+	onReconnect func(ReconnectInfo)
 	// protocolVersion is the version the session offers, the SDK's
 	// latest when empty; tests set it to reach an older server's path.
 	protocolVersion string
@@ -317,6 +330,25 @@ func WithConfinedFunc(fn func(ctx context.Context, args json.RawMessage) (bool, 
 	return func(o *options) { claimOn(o, &o.confined, fn, names) }
 }
 
+// WithFlow declares the named tools' [agenttool.Flow], which wins over
+// what the server says of them: its open-world hint and the flow in its
+// _meta, with or without [WithClaims]. The host knows what a server's
+// tools reach, an inbox it connected or a sandbox with no network, and
+// the server is only its own word. Names are matched before and after
+// prefixing, as [WithResource]'s are, and the last option naming a tool
+// wins, whichever form of its name each used; the names of
+// [Remote.ResourceTools] are matched too.
+//
+//	mcpclient.WithFlow(agenttool.Flow{Reads: []agenttool.Label{agenttool.LabelPrivate}}, "read_email")
+//	mcpclient.WithFlow(agenttool.Flow{Sends: true, To: []string{"to"}}, "send_email")
+//
+// A declaration that loosens what the server's hints say, a tool that
+// reads nothing untrusted or sends nothing, is the host's to make, as
+// [WithConfined]'s is.
+func WithFlow(flow agenttool.Flow, names ...string) Option {
+	return func(o *options) { claimOn(o, &o.flows, flow, names) }
+}
+
 // WithNotificationGrace bounds how long a call waits, after its result
 // has arrived, for a tool-list-changed notification the server may not
 // have sent yet, before returning. The default is
@@ -434,6 +466,12 @@ func WithRefreshError(fn func(error)) Option {
 // server asks a question fails, since there is nobody to ask. An
 // ElicitationHandler set through [WithClientOptions] takes precedence
 // and this option then does nothing.
+//
+// An answer is checked against its question before it is sent, with
+// [agenttool.Elicitation.Check]: content the question did not ask for,
+// a member its form does not define or content with a decline, is
+// refused rather than sent, the server is answered with an error, and
+// the call returns the reason.
 func WithElicitation() Option {
 	return func(o *options) { o.elicitation = true }
 }
@@ -452,9 +490,28 @@ func WithElicitation() Option {
 // never asked either way.
 //
 // What the listing says of sequential, barrier and resource applies without it,
-// since it can only make calls run one after another.
+// since it can only make calls run one after another. A host that does
+// not trust a server and still wants its facts, to hold its calls to
+// stricter rules, takes them as hints with [WithFactsHints].
 func WithClaims() Option {
 	return func(o *options) { o.claims = true }
+}
+
+// WithFactsHints takes the server's facts claims as hints, for a server
+// the host does not trust, such as one from a marketplace: a tool the
+// server marks as claiming, on a server that advertises
+// [FactsCapability], answers [agenttool.FactsOf] with facts marked
+// [agenttool.Facts.Hint] and without their rewrite. A policy may read a
+// hint's calls to make a decision stricter, holding a server's writes to
+// the host's edit rules, and must not decide a call on them alone. The
+// server's replay claim is not taken: a call of its tools reads as
+// [agenttool.ReplayUnknown], since running a call twice is an allow.
+//
+// [WithClaims] wins: under it the facts are claims, except those the
+// server itself marks as hints, which it took from a server it does not
+// trust.
+func WithFactsHints() Option {
+	return func(o *options) { o.hints = true }
 }
 
 // Remote is one connected MCP server: its session and the tools it
@@ -538,11 +595,22 @@ type claimEntry struct {
 	def    string
 }
 
-// runningCall is a call in flight: its context, and the stop that ends
-// it with a cause.
+// runningCall is a call in flight: its context, the stop that ends it
+// with a cause, and the limiter that stops it on a timeout, nil without
+// one.
 type runningCall struct {
 	ctx  context.Context
 	stop context.CancelCauseFunc
+	lim  *limiter
+}
+
+// callPlan is what a listed tool's calls are made under: whether the
+// tool is read-only, the output schema its results are checked against,
+// and its time limits.
+type callPlan struct {
+	readOnly bool
+	out      *outputCheck
+	limit    callTimeout
 }
 
 // Connect opens one session over t, lists its tools and returns the
@@ -577,26 +645,25 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 			}
 		}()
 	}
+	// The capabilities are always stated, since the SDK's default offers
+	// roots, which this client offers only when the host gives them.
+	caps := &sdk.ClientCapabilities{}
+	if clientOpts.Capabilities != nil {
+		c := *clientOpts.Capabilities
+		caps = &c
+	}
 	if o.elicitation && clientOpts.ElicitationHandler == nil {
 		clientOpts.ElicitationHandler = s.elicit
 		// The SDK offers form elicitation alone for a handler, and a
 		// server then refuses to ask by URL, which is how a tool asks for
-		// a credential it must not see. Offer both, over the SDK's own
-		// default capabilities or the caller's, unless the caller has
+		// a credential it must not see. Offer both, unless the caller has
 		// said which elicitation it takes.
-		// The SDK's default when none are set, reproduced so that
-		// offering URL elicitation does not also stop offering roots.
-		//lint:ignore SA1019 roots are deprecated, and still what the SDK offers by default
-		caps := &sdk.ClientCapabilities{RootsV2: &sdk.RootCapabilities{ListChanged: true}}
-		if clientOpts.Capabilities != nil {
-			c := *clientOpts.Capabilities
-			caps = &c
-		}
 		if caps.Elicitation == nil {
 			caps.Elicitation = &sdk.ElicitationCapabilities{Form: &sdk.FormElicitationCapabilities{}, URL: &sdk.URLElicitationCapabilities{}}
 		}
-		clientOpts.Capabilities = caps
 	}
+	clientOpts.Capabilities = caps
+	s.offerHost(caps, &clientOpts)
 	userProgress := clientOpts.ProgressNotificationHandler
 	clientOpts.ProgressNotificationHandler = func(ctx context.Context, req *sdk.ProgressNotificationClientRequest) {
 		if userProgress != nil {
@@ -606,6 +673,7 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 	}
 
 	client := sdk.NewClient(&o.client, &clientOpts)
+	o.host.addRoots(client)
 	for _, setup := range o.setups {
 		if err := setup(client); err != nil {
 			return nil, fmt.Errorf("mcp: client setup: %w", err)
@@ -675,6 +743,16 @@ func (s *Remote) Tools() []agenttool.Tool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return append([]agenttool.Tool(nil), s.tools...)
+}
+
+// outputUnchecked tells the host that a tool's results go unchecked,
+// because the validator cannot read its output schema, through the SDK
+// logger from [WithClientOptions] when one is set. The tool is listed
+// and called as one with no schema is.
+func (s *Remote) outputUnchecked(name string, err error) {
+	if l := s.opts.clientOpts.Logger; l != nil {
+		l.Warn("mcpclient: tool results not checked against its output schema", "tool", name, "err", err)
+	}
 }
 
 // refreshFailed reports a failed automatic refresh.
@@ -759,7 +837,7 @@ func (s *Remote) list(ctx context.Context, l *link) ([]agenttool.Tool, map[strin
 		if err != nil {
 			return nil, nil, fmt.Errorf("mcp: list tools: %w", err)
 		}
-		def, err := definition(t, s.claimsOn(l))
+		def, err := definition(t, s.factsOn(l))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -914,8 +992,21 @@ func (s *Remote) wrap(l *link, t *sdk.Tool, def string) (agenttool.Tool, error) 
 	if a, ok := AnnotationsOf(t); ok {
 		opts = append(opts, agenttool.WithAnnotations(a))
 	}
+	if flow, ok := latest(s.opts.flows, remote, name); ok {
+		opts = append(opts, agenttool.WithFlow(flow))
+	} else if flow, ok := flowOf(t, meta, s.opts.claims); ok {
+		opts = append(opts, agenttool.WithFlow(flow))
+	}
+	out, err := outputCheckOf(t)
+	if err != nil {
+		s.outputUnchecked(name, err)
+	}
+	plan := callPlan{readOnly: readOnly, out: out, limit: s.opts.timeout}
+	if lim, ok := latest(s.opts.timeouts, remote, name); ok {
+		plan.limit = lim
+	}
 	return agenttool.NewFunc(name, t.Description, schema, func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
-		return s.call(ctx, ref, readOnly, call)
+		return s.call(ctx, ref, plan, call)
 	}, opts...), nil
 }
 
@@ -963,18 +1054,49 @@ func AnnotationsOf(t *sdk.Tool) (agenttool.Annotations, bool) {
 // With [WithReconnect] the call restarts an ended session before it is
 // sent, is not sent when its tool changed with the restart, and is never
 // sent twice; see [Remote.sendOn].
-func (s *Remote) call(ctx context.Context, ref toolRef, readOnly bool, call agenttool.Call) (agenttool.Result, error) {
+//
+// A tool that lists an output schema has a successful result's
+// structured content validated against it, a missing one included, and
+// a violation returned as an error beginning "invalid result:" that says
+// the call ran; see [outputCheck.check].
+//
+// With [WithCallTimeout] the call is stopped when a limit runs out, its
+// request cancelled, and returns a [*TimeoutError].
+func (s *Remote) call(ctx context.Context, ref toolRef, plan callPlan, call agenttool.Call) (agenttool.Result, error) {
 	remote := ref.remote
 	args := call.Args
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
 	}
 	params := &sdk.CallToolParams{Name: remote, Arguments: args}
-	if call.OnUpdate != nil {
+	params.Meta = s.opts.host.callMeta()
+	if _, ok := agenttool.CallFrom(ctx); !ok {
+		ctx = agenttool.WithCall(ctx, call)
+	}
+	// Every call is tracked, whatever the options, so Close can end it
+	// through stop, which is released when the call returns. A limit
+	// ends it through the same stop.
+	ctx, stop := context.WithCancelCause(ctx)
+	defer stop(nil)
+	lim := startLimiter(ref.name, plan.limit, stop)
+	defer lim.end()
+	if call.OnUpdate != nil || plan.limit.idle > 0 {
+		// A progress notification restarts the idle clock, so a call
+		// under an idle limit asks for them whether or not its caller
+		// takes updates.
 		token := "agenttool-" + strconv.FormatInt(s.token.Add(1), 10)
-		params.Meta = sdk.Meta{"progressToken": token}
+		if params.Meta == nil {
+			params.Meta = sdk.Meta{}
+		}
+		params.Meta["progressToken"] = token
+		onUpdate := func(r agenttool.Result) {
+			lim.progress()
+			if call.OnUpdate != nil {
+				call.OnUpdate(r)
+			}
+		}
 		s.mu.Lock()
-		s.progress[token] = call.OnUpdate
+		s.progress[token] = onUpdate
 		s.mu.Unlock()
 		// Notifications are dispatched asynchronously and can trail the
 		// result, so the token outlives the call briefly.
@@ -984,20 +1106,13 @@ func (s *Remote) call(ctx context.Context, ref toolRef, readOnly bool, call agen
 			s.mu.Unlock()
 		})
 	}
-	if _, ok := agenttool.CallFrom(ctx); !ok {
-		ctx = agenttool.WithCall(ctx, call)
-	}
-	// Every call is tracked, whatever the options, so Close can end it
-	// through stop, which is released when the call returns.
-	ctx, stop := context.WithCancelCause(ctx)
-	defer stop(nil)
 	id := s.callSeq.Add(1)
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return agenttool.Result{}, fmt.Errorf("mcp: call %q: %w", remote, ErrClosed)
 	}
-	s.running[id] = runningCall{ctx: ctx, stop: stop}
+	s.running[id] = runningCall{ctx: ctx, stop: stop, lim: lim}
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
@@ -1008,7 +1123,7 @@ func (s *Remote) call(ctx context.Context, ref toolRef, readOnly bool, call agen
 	// for a restart too.
 	l, err := s.sendOn(ctx, ref)
 	if err != nil {
-		if cause := context.Cause(ctx); errors.Is(cause, ErrClosed) {
+		if cause := context.Cause(ctx); stoppedBy(cause) {
 			err = cause
 		}
 		return agenttool.Result{}, fmt.Errorf("mcp: call %q: %w", remote, err)
@@ -1024,7 +1139,7 @@ func (s *Remote) call(ctx context.Context, ref toolRef, readOnly bool, call agen
 	// its open questions cancel, so they run detached, and are
 	// cancelled with the call when there are none, which without
 	// elicitation is always.
-	c := &ownCall{remote: s, ctx: ctx}
+	c := &ownCall{remote: s, ctx: ctx, lim: lim}
 	send, cancel := context.WithCancel(context.WithValue(context.WithoutCancel(ctx), ownCallKey{}, c))
 	defer context.AfterFunc(ctx, func() {
 		if c.answeringCancel() {
@@ -1049,7 +1164,7 @@ func (s *Remote) call(ctx context.Context, ref toolRef, readOnly bool, call agen
 		// input, not an outcome: read as one, it is an empty success.
 		return agenttool.Result{}, fmt.Errorf("mcp: call %q: the server needs input the client did not give; multi round-trip handling is off", remote)
 	}
-	if s.seen.Load() == before && !readOnly {
+	if s.seen.Load() == before && !plan.readOnly {
 		// The server may notify after it answers, and the reference
 		// implementation does, so give the notification a moment to
 		// arrive before deciding the list is unchanged.
@@ -1063,7 +1178,15 @@ func (s *Remote) call(ctx context.Context, ref toolRef, readOnly bool, call agen
 		// that outlives ctx is reflected after the next Await.
 		_ = s.Await(ctx)
 	}
-	return ResultOf(res)
+	r, err := ResultOf(res)
+	if err == nil && plan.out != nil {
+		if err := plan.out.check(res); err != nil {
+			// Unprefixed, as an isError result's message is: it is phrased
+			// for the model, and the rule is that it begins so.
+			return agenttool.Result{Details: r.Details}, err
+		}
+	}
+	return r, err
 }
 
 // callTool makes the call on send and returns its outcome, or the end
@@ -1091,17 +1214,25 @@ func (s *Remote) callTool(ctx, send context.Context, cancel context.CancelFunc, 
 		// its cancellation before ctx's end is selected; the call still
 		// ended because the remote closed, and says so.
 		if o.err != nil {
-			if cause := context.Cause(ctx); errors.Is(cause, ErrClosed) {
+			if cause := context.Cause(ctx); stoppedBy(cause) {
 				return nil, cause
 			}
 		}
 		return o.res, o.err
 	case <-ctx.Done():
-		if err := context.Cause(ctx); errors.Is(err, ErrClosed) {
+		if err := context.Cause(ctx); stoppedBy(err) {
 			return nil, err
 		}
 		return nil, ctx.Err()
 	}
+}
+
+// stoppedBy reports whether a call's context ended because this remote
+// stopped it, closed or out of time, rather than because its caller
+// cancelled: the cause is then what the call returns.
+func stoppedBy(cause error) bool {
+	var timeout *TimeoutError
+	return errors.Is(cause, ErrClosed) || errors.As(cause, &timeout)
 }
 
 // ownCallKey marks the requests of a call this remote made, with its
@@ -1117,6 +1248,7 @@ type ownCallKey struct{}
 type ownCall struct {
 	remote *Remote
 	ctx    context.Context
+	lim    *limiter
 
 	mu        sync.Mutex
 	asking    int  // questions with the elicitor
@@ -1163,17 +1295,19 @@ func (s *Remote) elicit(ctx context.Context, req *sdk.ElicitRequest) (*sdk.Elici
 		return nobody, nil
 	}
 	var callCtx context.Context
+	var lim *limiter
 	own, _ := ctx.Value(ownCallKey{}).(*ownCall)
 	if own != nil && own.remote == s {
-		callCtx = own.ctx
+		callCtx, lim = own.ctx, own.lim
 	} else {
 		// Sent by the server on its own, before 2026-07-28: no call is
 		// named, so only an unambiguous one is asked.
 		own = nil
-		var ok bool
-		if callCtx, ok = s.soleCall(); !ok {
+		c, ok := s.soleCall()
+		if !ok {
 			return nobody, nil
 		}
+		callCtx, lim = c.ctx, c.lim
 	}
 	ask, ok := agenttool.ElicitorFrom(callCtx)
 	if !ok {
@@ -1193,7 +1327,11 @@ func (s *Remote) elicit(ctx context.Context, req *sdk.ElicitRequest) (*sdk.Elici
 	if own != nil && !own.ask() {
 		return nobody, nil
 	}
+	// The wait for the user's answer is not the server's, so the call's
+	// time limits do not run while it lasts.
+	answered := lim.ask()
 	ans, err := ask(askCtx, q)
+	answered()
 	if own != nil {
 		// Ended by the call rather than by the server's question: nobody
 		// chose, and the server is told so on the call's next request.
@@ -1205,6 +1343,13 @@ func (s *Remote) elicit(ctx context.Context, req *sdk.ElicitRequest) (*sdk.Elici
 	}
 	if err != nil {
 		return nil, fmt.Errorf("mcp: elicitation: %w", err)
+	}
+	// An answer the question did not ask for is refused, not sent: a
+	// server that read it would take content it never asked for as the
+	// user's consent. The server is told the elicitation failed, and the
+	// call returns the reason.
+	if err := q.Check(ans); err != nil {
+		return nil, fmt.Errorf("mcp: elicitation answer refused: %w", err)
 	}
 	res := &sdk.ElicitResult{Action: string(ans.Action)}
 	switch ans.Action {
@@ -1221,18 +1366,17 @@ func (s *Remote) elicit(ctx context.Context, req *sdk.ElicitRequest) (*sdk.Elici
 	return res, nil
 }
 
-// soleCall returns the context of the call in flight when there is
-// exactly one.
-func (s *Remote) soleCall() (context.Context, bool) {
+// soleCall returns the call in flight when there is exactly one.
+func (s *Remote) soleCall() (runningCall, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if len(s.running) != 1 {
-		return nil, false
+		return runningCall{}, false
 	}
 	for _, c := range s.running {
-		return c.ctx, true
+		return c, true
 	}
-	return nil, false
+	return runningCall{}, false
 }
 
 // awaitNotification waits up to the grace for a tool-list-changed
@@ -1283,17 +1427,38 @@ func (s *Remote) onProgress(p *sdk.ProgressNotificationParams) {
 	fn(r)
 }
 
-// ResultOf maps an MCP call result to a tool result. Text-only content
-// becomes Output.Text; image, audio and resource content becomes
-// Output.Parts with the matching openresponses content types; structured
-// content is appended as JSON text. An isError result becomes an error
-// whose message is the text content, so the loop produces the error
-// output the model sees. Details carries the SDK result verbatim, or,
-// when the server put a record under [RecordMetaKey], a [RemoteRecord]
-// holding it and the SDK result both, so [agenttool.RecordOf] on this
-// side gives the record the tool wrote on that side. An error result
-// keeps its record too, since a failed call is the one a reader most
-// wants to trace.
+// ResultOf maps an MCP call result to a tool result, as RFC 0001's MCP
+// content mapping states. Text-only content becomes Output.Text; image,
+// audio and blob content becomes Output.Parts with the matching
+// openresponses content types, and the text beside it input_text parts,
+// the one text part a function call output takes. Structured content is
+// appended as JSON text unless a text block already holds it, a value
+// equal to it under RFC 8785, as MCP asks a server to send it. Audio is an input_file whose data is a data URL
+// of its media type, which is what mcpserver serves back as audio; its
+// name, "audio.wav" for audio/wav, is for a reader that goes by names.
+//
+// A blob with a media type is sent as a data URL of that type, an
+// input_image when the type is a PNG, JPEG, GIF or WebP and an
+// input_file named by its URI otherwise, so an adapter can type it whatever the URI looks like;
+// a blob without one keeps its URI as the name and its bytes as bare
+// base64, which a reader types by the name's extension. An embedded
+// text resource is its text after a line naming it,
+// "resource <uri> (<mimeType>)", and a resource link is the line
+// "resource_link <uri>: <name>, <description>, <mimeType>, <size> bytes",
+// each without the members the server left out, so the model can tell
+// what it was given and where from. A content block whose audience is
+// stated and leaves out the assistant is for the user alone and is not
+// in the output; the SDK result in Details still holds it. Image
+// content takes the same rule as a blob: a PNG, JPEG, GIF or WebP is an
+// input_image, and any other type, or none, an input_file named "image".
+//
+// An isError result becomes an error whose message is the text content,
+// so the loop produces the error output the model sees. Details carries
+// the SDK result verbatim, or, when the server put a record under
+// [RecordMetaKey], a [RemoteRecord] holding it and the SDK result both,
+// so [agenttool.RecordOf] on this side gives the record the tool wrote
+// on that side. An error result keeps its record too, since a failed
+// call is the one a reader most wants to trace.
 func ResultOf(res *sdk.CallToolResult) (agenttool.Result, error) {
 	if res == nil {
 		return agenttool.Result{}, errors.New("mcp: empty result")
@@ -1303,48 +1468,56 @@ func ResultOf(res *sdk.CallToolResult) (agenttool.Result, error) {
 		details = rec
 	}
 	var parts openresponses.Contents
-	var texts []string
+	var texts, blocks []string
 	textOnly := true
+	addText := func(text string) {
+		texts = append(texts, text)
+		parts = append(parts, &openresponses.InputText{Text: text})
+	}
 	for _, c := range res.Content {
+		if !forModel(c) {
+			continue
+		}
 		switch v := c.(type) {
 		case *sdk.TextContent:
-			texts = append(texts, v.Text)
-			parts = append(parts, &openresponses.Text{Text: v.Text})
+			addText(v.Text)
+			blocks = append(blocks, v.Text)
 		case *sdk.ImageContent:
 			textOnly = false
-			parts = append(parts, &openresponses.InputImage{ImageURL: dataURL(v.MIMEType, v.Data)})
+			if modelImage(v.MIMEType) {
+				parts = append(parts, &openresponses.InputImage{ImageURL: dataURL(v.MIMEType, v.Data)})
+			} else {
+				// An image a model request cannot take, an SVG or one of no
+				// stated type, goes as a file of its type.
+				parts = append(parts, &openresponses.InputFile{Filename: "image", FileData: dataURL(v.MIMEType, v.Data)})
+			}
 		case *sdk.AudioContent:
 			textOnly = false
-			parts = append(parts, &openresponses.InputFile{Filename: audioName(v.MIMEType), FileData: base64.StdEncoding.EncodeToString(v.Data)})
+			parts = append(parts, &openresponses.InputFile{Filename: audioName(v.MIMEType), FileData: dataURL(v.MIMEType, v.Data)})
 		case *sdk.EmbeddedResource:
 			if v.Resource == nil {
 				continue
 			}
 			if len(v.Resource.Blob) > 0 {
 				textOnly = false
-				parts = append(parts, &openresponses.InputFile{Filename: v.Resource.URI, FileData: base64.StdEncoding.EncodeToString(v.Resource.Blob)})
+				parts = append(parts, blobPart(v.Resource))
 				continue
 			}
-			texts = append(texts, v.Resource.Text)
-			parts = append(parts, &openresponses.Text{Text: v.Resource.Text})
+			addText(resourceText(v.Resource))
 		case *sdk.ResourceLink:
-			line := "resource: " + v.URI
-			texts = append(texts, line)
-			parts = append(parts, &openresponses.Text{Text: line})
+			addText(linkText(v))
 		default:
 			data, err := json.Marshal(c)
 			if err != nil {
 				continue
 			}
-			texts = append(texts, string(data))
-			parts = append(parts, &openresponses.Text{Text: string(data)})
+			addText(string(data))
 		}
 	}
 	if res.StructuredContent != nil {
 		data, err := json.Marshal(res.StructuredContent)
-		if err == nil {
-			texts = append(texts, string(data))
-			parts = append(parts, &openresponses.Text{Text: string(data)})
+		if err == nil && !carries(blocks, data) {
+			addText(string(data))
 		}
 	}
 	text := strings.Join(texts, "\n")
@@ -1361,6 +1534,105 @@ func ResultOf(res *sdk.CallToolResult) (agenttool.Result, error) {
 		out.Output.Parts = parts
 	}
 	return out, nil
+}
+
+// forModel reports whether a content block may reach the model: it
+// states no audience, or one that includes the assistant. A block for
+// the user alone, a notice that a page was opened in their browser, is
+// left out, since a model that read it would repeat it as its own.
+func forModel(c sdk.Content) bool {
+	var a *sdk.Annotations
+	switch v := c.(type) {
+	case *sdk.TextContent:
+		a = v.Annotations
+	case *sdk.ImageContent:
+		a = v.Annotations
+	case *sdk.AudioContent:
+		a = v.Annotations
+	case *sdk.EmbeddedResource:
+		a = v.Annotations
+	case *sdk.ResourceLink:
+		a = v.Annotations
+	}
+	return forAssistant(a)
+}
+
+// forAssistant reports whether annotations state no audience, or one
+// that includes the assistant.
+func forAssistant(a *sdk.Annotations) bool {
+	if a == nil || len(a.Audience) == 0 {
+		return true
+	}
+	for _, r := range a.Audience {
+		if r == "assistant" {
+			return true
+		}
+	}
+	return false
+}
+
+// blobPart maps an embedded blob: an input_image when its media type is
+// one of [modelImages], an input_file otherwise, named by the resource's
+// URI. The data is a data URL of the media type when the server gave
+// one, and bare base64 when it did not, which a reader types by the
+// name.
+func blobPart(r *sdk.ResourceContents) openresponses.Content {
+	if r.MIMEType == "" {
+		return &openresponses.InputFile{Filename: r.URI, FileData: base64.StdEncoding.EncodeToString(r.Blob)}
+	}
+	if modelImage(r.MIMEType) {
+		return &openresponses.InputImage{ImageURL: dataURL(r.MIMEType, r.Blob)}
+	}
+	return &openresponses.InputFile{Filename: r.URI, FileData: dataURL(r.MIMEType, r.Blob)}
+}
+
+// modelImages are the image types a model request takes in an
+// input_image. Another image type, an SVG, a TIFF, a HEIC, is sent as a
+// file, since a provider refuses the whole request over an image it
+// cannot decode.
+var modelImages = map[string]bool{"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true}
+
+// modelImage reports whether mediaType, without its parameters and
+// compared without case, is one of [modelImages].
+func modelImage(mediaType string) bool {
+	base, _, _ := strings.Cut(mediaType, ";")
+	return modelImages[strings.ToLower(strings.TrimSpace(base))]
+}
+
+// resourceText renders an embedded text resource: the line
+// "resource <uri> (<mimeType>)", without the parenthesis when the
+// server gave no type, then the text.
+func resourceText(r *sdk.ResourceContents) string {
+	head := "resource " + r.URI
+	if r.MIMEType != "" {
+		head += " (" + r.MIMEType + ")"
+	}
+	return head + "\n" + r.Text
+}
+
+// linkText renders a resource link as the line
+// "resource_link <uri>: <name>, <description>, <mimeType>, <size> bytes".
+func linkText(l *sdk.ResourceLink) string {
+	return linkLine("resource_link", l.URI, l.Name, l.Description, l.MIMEType, l.Size)
+}
+
+// linkLine renders "<kind> <uri>: <name>, <description>, <mimeType>,
+// <size> bytes", leaving out each member the server did not give, and
+// the colon with them when it gave none.
+func linkLine(kind, uri, name, description, mediaType string, size *int64) string {
+	var members []string
+	for _, m := range []string{name, description, mediaType} {
+		if m != "" {
+			members = append(members, m)
+		}
+	}
+	if size != nil {
+		members = append(members, strconv.FormatInt(*size, 10)+" bytes")
+	}
+	if len(members) == 0 {
+		return kind + " " + uri
+	}
+	return kind + " " + uri + ": " + strings.Join(members, ", ")
 }
 
 // audioExt maps the audio media types MCP servers commonly send to a
@@ -1381,8 +1653,8 @@ var audioExt = map[string]string{
 }
 
 // audioName names an audio part after its media type, "audio.wav" for
-// audio/wav, so the type survives in a part that has no field for it.
-// An unknown or empty type gives "audio".
+// audio/wav, for a reader that types a file by its name. The type itself
+// is in the part's data URL. An unknown or empty type gives "audio".
 func audioName(mediaType string) string {
 	base, _, _ := strings.Cut(mediaType, ";")
 	return "audio" + audioExt[strings.ToLower(strings.TrimSpace(base))]

@@ -1,6 +1,6 @@
 # RFC 0001: Agent Tool Contract
 
-Status: draft 0.7
+Status: draft 0.8
 Author: Christopher Davenport
 Discussion: to be opened against this repository. The Go module at its
 root is the reference binding; agentturn is the reference harness.
@@ -92,8 +92,8 @@ RFC 2119.
   description, parameters and the strict flag.
 - **Property**: an optional, defaulted fact about a tool that a harness
   reads and the model does not: sequential, resource, annotations,
-  confinement, whether a call may run again, and whether the tool owns
-  something to close.
+  confinement, whether a call may run again, what a call touches, how
+  data flows through it, and whether the tool owns something to close.
 - **Harness**: whatever builds requests, hands calls to tools and
   returns their outputs: an agent loop, an MCP server serving Go
   tools, a test.
@@ -183,8 +183,9 @@ A property is a fact about a tool that a harness reads and the model
 does not. Each is optional and has a default, and a tool that declares
 none of them is a complete tool that runs in parallel with everything,
 claims no shared state, says nothing about its behaviour, claims no
-sandbox, never runs a call twice, is its own one fact and owns nothing
-that outlives a call.
+sandbox, never runs a call twice, is its own one fact, says nothing of
+where its data comes from or goes, and owns nothing that outlives a
+call.
 
 | Property | Type | Default | Read by |
 | --- | --- | --- | --- |
@@ -195,7 +196,8 @@ that outlives a call.
 | annotations | object | unstated | a policy layer |
 | confined | (ctx, args) → (boolean, string) | (false, `""`), unstated | a policy layer, per call |
 | replay | (ctx, args) → unknown, safe or keyed | unknown | a harness resuming or retrying, per call |
-| facts | (ctx, args) → (calls, rewrite) or error | absent: the call itself | a policy layer, per call |
+| facts | (ctx, args) → (calls, rewrite, hint) or error | absent: the call itself | a policy layer, per call |
+| flow | object: reads, sends, to, carries | unstated | a policy layer, a recorder |
 | closer | presence | absent, owns nothing | the host |
 
 - **strict** is the tool's claim that its parameters schema keeps the
@@ -262,6 +264,35 @@ that outlives a call.
   pay a round trip for facts skips the tool. Like confined, this is
   what a tool reports, never what it runs; a tool that rewrites checks
   when it runs that what it runs is what it claimed.
+
+  A claim has a **source** the reader trusts or does not: a tool the
+  host built or a server it trusts, or a server it does not. Facts from
+  an untrusted source are **hints**. A reader MAY use a hint's calls to
+  make a decision stricter, MUST NOT decide a call on them alone, so it
+  decides the call on its own arguments as well, and ignores a hint's
+  rewrite, which would change what runs and what is recorded on the
+  word of a source it does not trust. A binding MUST mark facts that
+  are hints, so the mark travels with the facts to whatever reads them,
+  and a reader that cannot tell takes them as hints. Replay from an
+  untrusted source is *unknown*, since running a call twice is an
+  allow.
+- **flow** says how data moves through a call of the tool. `reads` is
+  a set of labels on the tool's output: `untrusted`, content an outside
+  party wrote, a web page or an inbox; and `private`, content the user
+  would not have leave the session, an inbox or a vault. `sends` says a
+  call carries data out of the session. `to` names the arguments, by
+  their top-level member names, that say where it goes, and `carries`
+  the arguments whose values go there; absent, each is every argument.
+  The default is *unstated*, and a binding MUST let a reader tell a
+  tool that said nothing from one that declared `reads: []` and
+  `sends: false`, as facts has presence. A reader MUST read a label it
+  does not know as `untrusted`, so a label added later is the strict
+  mistake. Flow is the author's statement, as annotations are: a
+  declared label or `sends` MAY make a policy stricter, and a
+  declaration that a tool reads nothing untrusted or private, sends
+  nothing, or sends only through `to` and `carries`, is taken only from
+  a tool the host trusts. It is per tool: a tool whose calls differ
+  declares what its widest call does.
 - **closer** says the tool owns something that outlives a call, a
   container, a persistent shell, a pool, and how to release it. See
   [Lifecycle](#lifecycle).
@@ -340,7 +371,7 @@ progress channel.
   none. An update after the final result is dropped.
 
 The call reaches the tool on its **context**, and the context carries
-three things:
+four things:
 
 - **The call itself**, so a tool built without a typed wrapper, or a
   recorder installed for the batch, can name the call it is serving.
@@ -349,6 +380,10 @@ three things:
 - **The recorder**, when the harness has one; see [Records](#records).
 - **Cancellation**, which is the harness's interrupt; see
   [Stopping a call](#stopping-a-call).
+- **The elicitor**, when the harness has one: how a tool asks the user
+  a question mid-call and waits for the answer, so the question reaches
+  the harness as part of the call that asked; see
+  [Questions](#questions).
 
 ### A result
 
@@ -356,7 +391,13 @@ A result is an output, details and a terminate hint.
 
 - The **output** is what the model sees: text, or a list of content
   parts, which is what an image-returning tool sends. It becomes the
-  `output` of the function call output item.
+  `output` of the function call output item. Each part is one the
+  Open Responses `function_call_output` takes: `input_text`,
+  `input_image`, `input_file` or `input_video`. A binding MUST NOT
+  build another part type, since a server may refuse the request it
+  lands in; a reader SHOULD accept `text` and `output_text` and read
+  them as `input_text`, so an output written before this rule still
+  reads.
 - **Details** are for the harness alone and MUST NOT reach the model:
   the raw result of a remote call, a live handle, the numbers behind a
   progress update. A details value that is meant to outlive the run is
@@ -400,6 +441,52 @@ with no numbers sends text alone.
 Updates are delivered to the harness on the harness's own goroutine or
 thread, one at a time, in the order they were sent, and never after the
 call's final result.
+
+### Questions
+
+A tool that needs the user mid-call asks a **question** through the
+elicitor on its context and waits for the **answer**.
+
+- A question is a message, and at most one of a **form**, the JSON
+  Schema of an object of flat members the answer fills in, or a
+  **URL**, a page the user visits, which is how a tool asks for a
+  credential it must not see. A question with neither is a
+  **confirmation**: yes or no. A form that defines no members is a
+  confirmation too.
+- An answer is an **action**, `accept`, `decline` or `cancel`, with
+  **content** and a **note**. *Accept* is the user's yes, or the form
+  submitted; *decline* is an explicit no; *cancel* is no answer, the
+  user dismissed it or nobody was asked. A reader MUST treat an action
+  it does not know as an error, never as *accept*.
+- **Content** is present only on *accept*, and is a JSON object of
+  members the question's form defines; with any action an empty object
+  is the same as none. An answer to a confirmation has no content. On
+  *accept* every member the form requires is present, and each member
+  is what the form says of it, within the schema MCP's elicitation
+  allows: a string, within `minLength` and `maxLength`, of its
+  `format`, `email`, `uri`, `date` or `date-time`, and one of its
+  `enum` or of its titled choices, `oneOf` or `anyOf` of `const`; a
+  `number` or an `integer` within `minimum` and `maximum`; a
+  `boolean`; or an `array` of the choices its `items` offer, within
+  `minItems` and `maxItems`. A keyword outside those is not checked.
+- A harness MUST refuse an answer whose content has a member the form
+  does not define, leaves out a member it requires, gives a value it
+  refuses, or comes with another action, and MUST NOT take such content
+  as *accept*: content the question did not ask for is someone
+  answering a different question, and the action it would imply is the
+  one that runs a side effect. Every binding checks the same way: the
+  command line before it gives an `--answer`, the consuming side of MCP
+  before it sends an answer, and the serving side before its tool sees
+  one.
+- A **note** is the user's own words with any action, why they
+  declined or what to bear in mind, for the asker, which MAY pass it
+  on: a harness that asked whether a call may run tells the model. It
+  is not checked against the form.
+- A harness with nobody to ask, or a tool with no elicitor, answers
+  *cancel*, which says nobody chose, and never *decline*, which says
+  someone did. Failing to ask is an error from the elicitor, and is not
+  an answer.
+- A tool MAY ask several questions at once; the harness answers each.
 
 ### Records
 
@@ -535,6 +622,18 @@ right answer when the output so far is worth the model's while. What
 the tool value owns across calls, the shell, the container, is
 untouched, because the context belongs to the call and not to the tool.
 
+A harness MAY bound a call by a **maximum time** and by an **idle
+time** that each [progress](#progress) update resets. On expiry it
+stops the call as its interrupt does, and completes it with an error
+naming the limit. A call stopped so has an ambiguous outcome, since the
+tool may have acted before it stopped: running it again follows
+[Running a call again](#running-a-call-again). Time the call spends
+waiting on the user, a question it put to the elicitor, counts toward
+neither limit, since the wait is not the tool's. A tool that runs long
+and wants to stay under an idle limit sends progress. A harness that
+runs a call through an adapter, a remote tool, MAY leave the limits to
+the adapter, as the MCP binding does.
+
 There is deliberately no interrupt method. The reference agent that
 has one has it because its language has no cancellation to hand, and a
 second way to say "stop" would leave every tool guessing which one a
@@ -612,7 +711,8 @@ and everything else is optional.
 | annotations | `Annotated` interface and `Annotations` struct, read by `AnnotationsOf`, set by `WithAnnotations(a)` |
 | confined | `Confined` interface, read by `ConfinedBy(ctx, t, args)`, set by `WithConfined(fn)` |
 | replay | `Replayable` interface and `Replay` (`ReplayUnknown`, `ReplaySafe`, `ReplayKeyed`), read by `ReplayOf(ctx, t, args)`, which reads an unknown value as `ReplayUnknown`, set by `WithReplay(fn)` |
-| facts | `Factual` interface, `Facts{Calls, Rewrite}` and `FactCall{Tool, Args, Text}`, read by `FactsOf(ctx, t, args)`, which also reports whether the tool claims and returns its error as is, presence read by `IsFactual(t)`, set by `WithFacts(fn)`; a `New` or `NewFunc` tool built without it, and a `Wrap` of a tool that does not claim, has the method and reads as not claiming |
+| facts | `Factual` interface, `Facts{Calls, Rewrite, Hint}` and `FactCall{Tool, Args, Text}`, read by `FactsOf(ctx, t, args)`, which also reports whether the tool claims and returns its error as is, presence read by `IsFactual(t)`, set by `WithFacts(fn)`; a `New` or `NewFunc` tool built without it, and a `Wrap` of a tool that does not claim, has the method and reads as not claiming. `Hint` marks facts from an untrusted source, so the zero value is a claim, what a tool the host built in process makes; `FactsOf` returns a hint's `Rewrite` as nil |
+| flow | `Flowing` interface, `Flow{Reads, Sends, To, Carries}` and `Label` (`LabelUntrusted`, `LabelPrivate`), read by `FlowOf(t)`, which reports presence and reads an unknown label as `LabelUntrusted`, set by `WithFlow(f)` |
 | closer | `io.Closer`; `Set.Close()` closes a list in order and joins errors; `WithCloser(fn)` makes a `New` or `NewFunc` tool one, and without it the tool is not |
 | forwarding wrapper | `Wrap(t, exec)` forwards every property of `t` and closes it; `Unwrap(t)` returns it |
 | call | `Call{ID, Args, IdempotencyKey, OnUpdate}`; `Call.Update` sends progress |
@@ -623,7 +723,7 @@ and everything else is optional.
 | progress info | `ProgressInfo{Progress, Total, Message}`; `Progress(ctx, r)` sends from a typed tool |
 | record | `Recordable` (`RecordNS() string`), `Record{NS, Data}`, `RecordOf(details)` |
 | recorder on the context | `RecordFunc`, `ContextWithRecorder`, `RecorderFrom`, `WriteRecord`; `Executor.Recorder` installs it per batch |
-| elicitor on the context | `Elicitor` answers an `Elicitation{Message, Schema, URL}` with an `Answer{Action, Content}`, `ActionAccept`, `ActionDecline` or `ActionCancel`; `ContextWithElicitor`, `ElicitorFrom`; the harness installs it, and a tool with none has nobody to ask |
+| elicitor on the context | `Elicitor` answers an `Elicitation{Message, Schema, URL}` with an `Answer{Action, Content, Note}`, `ActionAccept`, `ActionDecline` or `ActionCancel`; `ContextWithElicitor`, `ElicitorFrom`; the harness installs it, and a tool with none has nobody to ask; `Elicitation.Check(answer)` applies the [Questions](#questions) rules to an answer before a harness gives it |
 | arguments validation | `New` validates a reflected schema with `Schema.ValidateJSON`; `ValidationError{Path, Msg}` |
 | executor | `Executor{MaxParallel, Sequential, Recorder, OnStart}`; `Execute` yields `Event{Index, Final, Result, Err}`; `Results` collects in job order |
 | a call starts | `Executor.OnStart(ctx, job) error`, on the job's goroutine, after the slot and the turn, with the call on `ctx`, before `Execute`; an error completes the job without running the tool |
@@ -652,19 +752,22 @@ set on the local side by the host and does not cross.
 
 | Contract | MCP | Direction |
 | --- | --- | --- |
-| name, description | `name`, `description` | both |
+| name, description | `name`, `description`; a consumed tool is named `<prefix>__<name>`, the prefix and two underscores before its name on the server, when the host gives a prefix, `mcpclient.WithPrefix`, and `<name>` otherwise, so two servers' tools of one name do not collide in a request | both |
+| instructions | no field in the contract: a tool set has no description. The serving host gives them when it builds the server, `mcpserver.Options.Instructions`; the consuming side exposes them to the host, `mcpclient.Remote.Instructions`, which decides whether the model reads them | both |
 | parameters | `inputSchema`; a nil schema is served as an empty object schema | both |
 | strict | no field; not carried | — |
 | sequential, barrier, resource | no field in MCP; the serving side puts them in the tool's `_meta` under `ToolMetaKey` (`sequential`, `barrier`, `resource`), and the consuming side declares them from there. A barrier is served with `sequential` beside it, so a consumer that predates barriers runs its batch one call at a time, stricter and never looser; a consumer that reads `barrier` takes the tool as a barrier alone. `mcpclient.WithSequential(names…)` adds sequential, `WithBarrier(names…)` adds barrier, and `WithResource(resource, names…)` names a remote tool's state and wins over the server's, an empty resource withdrawing it, since the host sees every server it composes and the server only itself | both |
 | annotations | `annotations`: `title`, `readOnlyHint`, `destructiveHint` (absent is true), `idempotentHint`, `openWorldHint` (absent is true); a tool with no block is unstated | both |
 | confined | no field; `mcpclient.WithConfined(by, names…)` says a remote tool runs confined, and `WithConfinedFunc(fn, names…)` answers per call; the claim is the host's, which placed the server, and the server's does not cross | consume |
-| replay | answered by `execution/facts` beside the call's facts, for a tool whose `_meta` marks `replay`, and taken by the consuming side only when the host opts in (`mcpclient.WithClaims`), as for facts; *keyed* is sent and read as *unknown*, since the idempotency key does not cross. A consumed tool not so taken is *unknown* whatever its `idempotentHint`, since MCP defines no deduplication and a call whose stream broke may or may not have run | both |
-| facts | `execution/facts`, a method of its own beside `tools/call`, so it cannot reach the model's tool list: its params are a response's calls together, `{name, arguments}`, and its result one answer per call in order, `facts` (`{calls: [{tool, args, text}], rewrite}`, calls `null` for the call itself and `[]` for nothing the tool can state), or `error` in its place, or neither for a tool that makes no claim, with the call's `replay`. Answering never runs a tool. The server advertises it as the experimental capability `FactsCapability`, and marks a claiming tool `facts` in its `_meta` under `ToolMetaKey`, which is the presence a reader sees without asking. The consuming side takes the claim only when the host opts in, `mcpclient.WithClaims()`, for a server it trusts: a claim is what a policy decides on, so a server that lied about what its calls touch could steer the policy into allowing them. With it, a consumed tool so marked on a server that advertises the method is factual and asks under the call's context; without it, or on a server that does not advertise it, the server is never asked and the tool makes no claim | both |
+| replay | answered by `execution/facts` beside the call's facts, for a tool whose `_meta` marks `replay`, and taken by the consuming side only when the host takes the server's claims (`mcpclient.WithClaims`), never with facts taken as hints; *keyed* is sent and read as *unknown*, since the idempotency key does not cross. A consumed tool not so taken is *unknown* whatever its `idempotentHint`, since MCP defines no deduplication and a call whose stream broke may or may not have run | both |
+| facts | `execution/facts`, a method of its own beside `tools/call`, so it cannot reach the model's tool list: its params are a response's calls together, `{name, arguments}`, and its result one answer per call in order, `facts` (`{calls: [{tool, args, text}], rewrite}`, calls `null` for the call itself and `[]` for nothing the tool can state), or `error` in its place, or neither for a tool that makes no claim, with the call's `replay`. Answering never runs a tool. The server advertises it as the experimental capability `FactsCapability`, and marks a claiming tool `facts` in its `_meta` under `ToolMetaKey`, which is the presence a reader sees without asking. An answer whose facts are hints carries `hint: true`, so a server that serves tools it consumed from an untrusted one passes the mark on. The consuming side takes the claim only when the host opts in, `mcpclient.WithClaims()`, for a server it trusts: a claim is what a policy decides on, so a server that lied about what its calls touch could steer the policy into allowing them. With it, a consumed tool so marked on a server that advertises the method is factual and asks under the call's context, and an answer marked `hint` is a hint. A host that does not trust the server MAY take its facts as hints, `mcpclient.WithFactsHints()`: every answer is then a hint, its rewrite dropped, and the server's replay is not taken. Without either, or on a server that does not advertise the method, the server is never asked and the tool makes no claim | both |
+| flow | consume: a tool whose `openWorldHint` is true or absent, with an annotations block or without one, as MCP defaults it, has flow `reads: [untrusted]`, `sends: true`, with no `to` or `carries`; a tool whose hint is false is *unstated*, not `reads: []`, since a closed-world hint is a loosening claim. The server's own flow, in the tool's `_meta` under `ToolMetaKey` as `flow`, `{reads, sends, to, carries}`, is taken as stated when the host takes the server's claims (`mcpclient.WithClaims`); otherwise it can only add: a server flow that reads a label or sends gives the tool the open-world reading, `reads: [untrusted]` and `sends: true` with no `to` or `carries`, with its labels added, whatever the hint said, and one that adds nothing leaves the tool as its hint left it. So an untrusted server never states less than the open-world reading, never makes an *unstated* flow one that reads nothing, and never takes a label away: its word that a tool reads nothing, sends nothing, or sends only through some arguments is a loosening claim. A flow the host declares for a consumed tool, `mcpclient.WithFlow(flow, names…)`, wins over all of these, the hint and the server's flow, whether or not the host takes the server's claims: the host placed the server and knows what its tools reach, and the declaration is the host's, as confined is. Serve: the serving side puts flow in `_meta` under `ToolMetaKey`, and serves `openWorldHint: true` whenever the flow reads `untrusted` or sends, whatever the annotations say, so a client that reads only MCP is never looser | both |
 | read-only | the tool's `_meta` under `ToolMetaKey` carries `readOnly`, the served tool's annotation, as the server's statement rather than a hint; the consuming side reads it with `ToolMetaOf` | both |
 | idempotency key | no field; a consumed call's key is not sent, and a served call has none | — |
 | closer | not a closer: the remote session is closed through `mcpclient.Remote.Close` | consume |
-| arguments | `arguments`; the server validates against `inputSchema` with a general validator | both |
-| output | text, image and resource content ↔ output parts; text alone ↔ text; audio content consumed becomes an input file part, and is served back as an embedded blob rather than audio | both |
+| arguments | `arguments`; the server validates against `inputSchema` with a general validator. A `$schema` naming draft-07 or 2020-12 is read however its URI is spelt, `http` or `https`, with or without a trailing `#`. A schema of a dialect the validator does not handle is served without the check, which the serving host is told of, as a tool whose schema came from elsewhere guards itself; a schema that is not one, or does not resolve, is refused when the tool is added | both |
+| output | content blocks ↔ the output, as [Content](#content) states | both |
+| output schema | no property in the contract, and not served. A consumed tool that lists an `outputSchema` has a successful result's `structuredContent` validated against it with a general validator, and a result with none fails it. A failure completes the call with an error beginning `invalid result:` that says the call ran, since it did and may have had its effect: the outcome is known, not [ambiguous](#running-a-call-again), and the model is not told the call failed. A `$schema` naming draft-07 or 2020-12 is read however its URI is spelt, `http` or `https`, with or without a trailing `#`. A schema the validator cannot read, another dialect or one that does not resolve, leaves the tool unchecked, as a tool with no schema is, and the consuming side tells the host why; it does not fail the tool's calls for a fault in its listing | consume |
 | error | `isError` with the message as text; the consuming side returns it as an error and the harness applies `Error:` once | both |
 | progress | `notifications/progress` when the request carries a token; `progress`, `total`, `message` ↔ progress info | both |
 | details | the consuming side sets the raw `CallToolResult` as details | consume |
@@ -672,18 +775,176 @@ set on the local side by the host and does not cross.
 | call on the context | the server installs it for every call, as the executor does | serve |
 | recorder on the context | the handler leaves one it finds; the go-sdk at v1.8.0 derives each call's context from the one the session was opened with, `Run` or `Connect` over stdio and in memory, the initialize request over streamable HTTP, which is observed behaviour a test pins and not a documented guarantee | serve |
 | client identity | the server puts the MCP session on the context: `mcpserver.SessionFrom` | serve |
-| elicitation | `elicitation/create` ↔ the elicitor on the call's context. The client offers it only with `mcpclient.WithElicitation`; from 2026-07-28 the question returns with its call and is that call's, and before it a question the server sends on its own is put to the one call in flight, and to nobody when there is none or several; nobody to ask answers `cancel`. The server installs an elicitor on a served call's context when the client offers elicitation: from 2026-07-28 a question goes back as the call's input request, the tool running on while the client asks, and before it as `elicitation/create`; a question of a mode the client does not take answers `cancel` | both |
+| timeout | the consuming side MAY bound a call by a host-set idle time and maximum time, per server or per tool, `mcpclient.WithCallTimeout`, as [Stopping a call](#stopping-a-call) says; a progress notification for the call resets the idle time, so the consuming side asks for progress under an idle limit whether or not its caller takes updates; expiry cancels the request, which sends `notifications/cancelled`, and the call is not sent again | consume |
+| roots | no field in the contract. The consuming side offers the roots capability only when the host supplies roots, `mcpclient.WithRoots`, and answers `roots/list` with them; without them it MUST NOT advertise roots, so a server that scopes itself to its client's roots is not told it has some and then given none | consume |
+| logging | no field in the contract. The consuming side asks for log messages only when the host takes them, `mcpclient.WithLogging`: from 2026-07-28 by the log level in each call's `_meta`, `io.modelcontextprotocol/logLevel`, and before it by `logging/setLevel` when the session starts. It hands each message to the host, with the call on the context when the message belongs to a call it can name, and a log message never reaches a call's output, its details or the model | consume |
+| elicitation | `elicitation/create` ↔ the elicitor on the call's context. The client offers it only with `mcpclient.WithElicitation`; from 2026-07-28 the question returns with its call and is that call's, and before it a question the server sends on its own is put to the one call in flight, and to nobody when there is none or several; nobody to ask answers `cancel`. A note does not cross, since MCP's elicitation result has no place for it. Each side checks an answer as [Questions](#questions) says before it takes it: the consuming side refuses an answer from its elicitor that does not fit the question and answers the server with an error, never the answer, and the call returns that reason; the serving side refuses a client's answer that does not fit, and the tool's elicitor returns it as an error, never as *accept*. The server installs an elicitor on a served call's context when the client offers elicitation: from 2026-07-28 a question goes back as the call's input request, the tool running on while the client asks, and before it as `elicitation/create`; a question of a mode the client does not take answers `cancel` | both |
+
+#### Content
+
+A result's content blocks map to the output's parts one by one, in
+order, and each rendering is stated exactly: it is what the model reads
+and what a session records, so two adapters that render one block
+differently send different requests and record different sessions.
+
+| MCP content | Consumed as | Served from |
+| --- | --- | --- |
+| text | `input_text` with its text | `input_text`; `text` and `output_text`, read as `input_text` |
+| image | with a `mimeType` of `image/png`, `image/jpeg`, `image/gif` or `image/webp`, `input_image` whose `image_url` is a data URL of that type; with another `mimeType`, or none, `input_file` named `image` whose `file_data` is a data URL of the type, `application/octet-stream` when it has none | `input_image` whose `image_url` is a base64 data URL; one with any other URL is served as a resource link |
+| audio | `input_file` whose `file_data` is a data URL of its `mimeType`; the `filename`, `audio.<ext>` after the type in the reference binding, is informational | `input_file` whose `file_data` is a data URL of an `audio/*` type, as audio of that type; the media type decides, never the filename |
+| embedded text resource | `input_text`: the line `resource <uri> (<mimeType>)`, without ` (<mimeType>)` when it has none, a newline, then its text | not served: an `input_text` is served as text |
+| embedded blob resource | with a `mimeType` of `image/png`, `image/jpeg`, `image/gif` or `image/webp`, the image types a model request takes, `input_image` whose `image_url` is a data URL of that type; with another `mimeType`, another image type included, `input_file` whose `filename` is the URI and whose `file_data` is a data URL of that type; with none, `input_file` whose `filename` is the URI and whose `file_data` is bare base64, which a reader types by the filename's extension | `input_file` with `file_data`, other than audio: a data URL is a blob of its type, and bare base64 a blob typed by the `filename`'s extension under the table below, untyped when the extension is not in it; its URI is as below; `file_data` that is neither is served as text |
+| resource link | `input_text`: `resource_link <uri>: <name>, <description>, <mimeType>, <size> bytes`, each member the link leaves out left out with its comma, and `resource_link <uri>` when it leaves out all four | `input_image` with a URL that is not a data URL; `input_file` with `file_url` and no `file_data`, named by `filename` |
+| any other block | `input_text` holding the block's JSON | a part of any other type, as its JSON in a text block |
+
+- **Audience.** A block whose `annotations.audience` is present and does
+  not include `assistant` is for the user alone, and the consuming side
+  leaves it out of the output; it stays in the details, with the rest
+  of the result. A result all of whose blocks are left out has empty
+  text output, and an error result so made has the message `tool call
+  failed`, as one with no text has.
+- **Text alone.** A result whose blocks all map to `input_text` is
+  consumed as text, the texts joined with a newline, and a text output
+  is served as one text block.
+- **Structured content** is consumed as one more `input_text` part
+  holding its JSON, after the blocks, only when no text block that
+  reaches the model parses, as a whole, to a JSON value equal to it
+  under RFC 8785, the form the [definition hash](#canonical-definition-and-definition-hash)
+  uses: MCP asks a server to send structured content as text too, and
+  the model reads it once. Equal under RFC 8785 means the same bytes
+  once canonicalised, so members in another order, `1.0` for `1` and
+  insignificant whitespace are equal, and a number a double cannot
+  hold equals nothing.
+- **An error result** is consumed as an error whose message is the
+  text the result would have had.
+- **A served blob's URI** is the part's `file_url` when it has one;
+  otherwise its `filename` when that is an absolute URI, a scheme of two
+  or more characters as RFC 3986 spells one, a letter then letters,
+  digits, `+`, `-` or `.`, followed by `:`, so a resource consumed from
+  `db://report` is served back under it and a Windows drive letter is
+  not a scheme; otherwise `file:///` followed by the `filename` without
+  a leading `/`.
+- **Extensions.** Bare base64 is typed by the `filename`'s extension,
+  compared without case, under this fixed table and no other, so a part
+  is typed the same by every implementation: `.png` `image/png`, `.jpg`
+  and `.jpeg` `image/jpeg`, `.gif` `image/gif`, `.webp` `image/webp`,
+  `.pdf` `application/pdf`, `.json` `application/json`, `.txt`
+  `text/plain`, `.md` `text/markdown`, `.csv` `text/csv`, `.html`
+  `text/html`.
+
+The two columns are inverses for what a proxy carries: content
+consumed and served again is the content the origin sent, audio as
+audio and a blob under its URI and type, except that an image blob
+returns as an image, a text resource or link as text, and a block for
+the user alone not at all.
+
+#### Resources
+
+A server's resources are not tools, and MCP leaves them to the client.
+For a server that advertises resources, the consuming side MAY offer
+two tools that reach them, so a model can follow a `resource_link` a
+tool returned; the reference binding offers them when the host asks,
+`mcpclient.Remote.ResourceTools`. They are named as consumed tools are,
+`list_resources` and `read_resource` under the host's prefix. A server
+tool of either name wins: the consuming side does not offer the one
+here, and refuses a call of one it offered before the server listed
+its own. A definition is hashed, so their definitions are these, word
+for word, with the name prefixed as above:
+
+```json
+{"type":"function","name":"list_resources","description":"List the resources this server offers, a page at a time, and the URI templates it reads others by. Read one with read_resource.","parameters":{"type":"object","properties":{"cursor":{"type":"string","description":"The cursor the previous page ended with, to list the page after it."}},"required":[]}}
+{"type":"function","name":"read_resource","description":"Read a resource this server offers, by the URI list_resources or a resource_link gives, or one a URI template from list_resources makes.","parameters":{"type":"object","properties":{"uri":{"type":"string","description":"The resource's URI."}},"required":["uri"]}}
+```
+
+Neither is strict. Both are annotated read-only, not destructive,
+idempotent and open-world, since what they read may come from outside
+the server, and so have the open-world flow, `reads: [untrusted]` and
+`sends: true`, unless the host declares one for them. Their outputs are text unless a read returns a blob:
+
+- **list_resources** sends `resources/list` with the `cursor` when one
+  is given, and its output is one line per resource, then, when no
+  cursor was given, one line per URI template from every page of
+  `resources/templates/list`, then the line `next_cursor <cursor>` when
+  the server has another page, joined by newlines. A resource's line is
+  rendered as a resource link is in [Content](#content), `resource_link
+  <uri>: <name>, <description>, <mimeType>, <size> bytes`, a size of
+  zero being absent, and a template's `resource_template
+  <uriTemplate>: <name>, <description>, <mimeType>` under the same rule
+  for absent members. A resource or template whose audience leaves out
+  the assistant is not listed. A server that refuses the first page of
+  the templates' listing, with an error response, has no templates and
+  lists none. Anything else that keeps the listing from finishing is
+  the call's error, and never a listing cut short: a later page
+  refused, a cursor the server already gave, more than 100 pages of
+  templates, or the end of the call. An output with no lines is `no
+  resources`.
+- **read_resource** sends `resources/read` with the `uri`, which it
+  requires, and renders each of the contents as an embedded resource
+  is rendered in [Content](#content): text alone is text, the contents
+  joined by newlines, and a blob among them makes the output parts.
+
+They are the server's tools for every rule that bounds a call: the
+[timeout](#mcp) the host sets for the server applies to them, and a
+limit set for a tool of either name applies to that one.
 
 ### Open Responses
 
 The definition is the `function` tool of the request's `tools`. A call
 is a `function_call` item: `call_id`, `name`, and `arguments` as a
 string. A result is a `function_call_output` item: the same `call_id`,
-and `output` as a string or a list of content parts. The error
+and `output` as a string or a list of content parts, each `input_text`,
+`input_image`, `input_file` or `input_video`, as
+[A result](#a-result) says. The error
 convention is a `function_call_output` whose `output` is the `Error:`
 text; nothing in the item says it was an error, which is why the
 convention is the model's only signal and why a tool never writes one
 as content.
+
+### Command line
+
+`agenttool/cli` makes a set of tools one program whose commands are
+the tools, for a host that gives the model a shell and no MCP server.
+One process runs one call, and the exit status carries the result:
+
+| Status | Meaning |
+| --- | --- |
+| 0 | the call succeeded, and its output is on stdout |
+| 1 | the call returned an error, on stderr as `Error: ` and the message, as the error convention renders it |
+| 2 | the command line was not understood, an `--answer` among them, and the call did not run |
+| 3 | the tool asked a question nobody answered, and was answered *cancel* |
+| 4 | an `--answer` did not answer the question it was given for; the call ran, and the tool was told the answer could not be given |
+
+On status 3 and 4 stdout holds the question as one JSON object: `message`;
+`schema`, the form, always present and `null` for a confirmation, so a
+reader can tell the two apart; `url` when the question has one;
+`answers_given`, how many `--answer` the call used before it asked;
+`refused`, on status 4, why the answer did not fit; and `output` or
+`error`, how the call ended once told *cancel* or that its answer could
+not be given.
+
+The program answers the call's questions in order from the
+`--answer` options given before the command, each one of:
+
+- an action alone, `accept`, `decline` or `cancel`;
+- a JSON object without an `action` member, which is the form's
+  content and *accept*;
+- a JSON object with an `action` member, `{"action": …, "note": …,
+  "content": …}`, with no other members, which gives the action, the
+  note, and on *accept* the content. A form whose own field is named
+  `action` is answered in this form.
+
+An `--answer` that is not one of these forms, or has content with an
+action other than *accept*, ends the run with status 2 before the call
+runs. Each answer is then checked against its question, when the tool
+asks it, as [Questions](#questions) says. One that fails, content a
+confirmation did not ask for, a member the form does not define, a
+value the form refuses, is not given: the tool is told the answer
+could not be given, as an error from its elicitor, and runs on, so the
+run reports its outcome with status 4 rather than status 2, which
+says the call did not run. A caller checks what the call did before it
+runs it again. A question after the last
+`--answer` is answered *cancel*, or asked of a person at the terminal
+when the program has one.
 
 ## Schema generation
 
@@ -869,8 +1130,11 @@ a recorder if it has one; cancels running calls when it abandons a
 batch and waits for them; gives each call its own idempotency key, if
 it gives keys, and a call it runs again the key it first carried; runs
 an ambiguous call again only when replay allows it, and otherwise
-completes it saying the outcome is unknown; and closes nothing that
-the host built.
+completes it saying the outcome is unknown; refuses an answer whose
+content the question did not ask for rather than taking it as
+*accept*; takes facts from a source it does not trust only as hints,
+and replay from one as *unknown*; and closes nothing that the host
+built.
 
 **A conforming adapter** maps each row of its binding table and adds
 nothing the contract cannot express.
@@ -955,6 +1219,74 @@ module and is listed in the changelog as one.
   differ, `retryable` with a not-before time in a `_meta` block, a
   rate-limit error code, so it waits for one to settle. The MCP
   client handles its own transport failures meanwhile.
+
+## Changes since 0.7
+
+- The MCP binding gains instructions, which the contract has no field
+  for: the serving host gives them, and the consuming host decides
+  whether the model reads them (#98).
+- A result's output parts are the ones a `function_call_output` takes,
+  `input_text`, `input_image`, `input_file` and `input_video`; a
+  binding builds no other, and a reader takes `text` and `output_text`
+  as `input_text` (#100). The Open Responses binding and the MCP
+  output row follow.
+- The MCP binding's output row becomes [Content](#content), a table
+  stating each block's rendering both ways. A consumed resource keeps
+  its URI, media type, name, description and size: a typed blob is a
+  data URL of its type, a PNG, JPEG, GIF or WebP blob an
+  `input_image`, an embedded
+  text resource is preceded by a line naming it and a link is a line
+  naming it. A block whose audience leaves out the assistant is not
+  in the output (#93).
+- Audio is consumed as an `input_file` with a data URL of its type and
+  served back as audio by that type, not by its filename; a served
+  blob carries its type, and its URI is the filename when that is
+  already a URI, rather than `file:///` put in front of it (#97).
+- Structured content a text block already holds, equal under RFC 8785,
+  is not sent again; a consumed tool's output schema is checked, and a
+  result that fails it is an error beginning `invalid result:` that
+  says the call ran, which is not an ambiguous outcome (#95).
+- The MCP binding gains roots and logging, neither of which the
+  contract carries: the consuming side offers roots only when the host
+  supplies them, and asks for log messages only for a host that takes
+  them, which never reach the model (#99).
+- The call's context lists the elicitor beside the call, the recorder
+  and cancellation. Stopping a call gains time limits: a harness MAY
+  bound a call by a maximum time and an idle time that progress
+  resets, and stops it on expiry as its interrupt does, with an error
+  naming the limit and an ambiguous outcome; the user's wait on a
+  question counts toward neither. The MCP binding applies them on the
+  consuming side (#96).
+- The MCP binding states how a consumed tool is named,
+  `<prefix>__<name>` under a host's prefix, and gains
+  [Resources](#resources): two tools a consuming side may offer for a
+  server's resources, `list_resources` and `read_resource`, defined
+  here word for word, with their outputs, and yielding to a server
+  tool of the same name (#94).
+- A call gains [Questions](#questions), the elicitor's rules: what a
+  question and an answer are, content only on *accept* and only of
+  the members the form defines, a confirmation's answer without
+  content, a harness refusing content it did not ask for rather than
+  taking it as *accept*, and a note with any action. Bindings gain
+  [Command line](#command-line): exit statuses, the question on
+  stdout with `schema` always present, and `--answer` in the object
+  form that carries a note (#85).
+- Properties gain **flow**, unstated by default and with presence:
+  the labels on a tool's output, `untrusted` and `private`, whether a
+  call sends data out of the session, and through which arguments; an
+  unknown label reads as `untrusted`, and a declaration that loosens is
+  taken from a trusted tool only. The MCP binding reads
+  `openWorldHint`, true or absent, as reading untrusted content and
+  sending, takes a server's flow as stated only from a server whose
+  claims the host takes and otherwise only where it is stricter, and
+  serves `openWorldHint: true` for a flow that reads untrusted content
+  or sends (#92).
+- A claim has a source the reader trusts or does not. Facts from an
+  untrusted source are hints, marked as such: a reader may use them to
+  be stricter, never decides a call on them alone and ignores their
+  rewrite, and replay from such a source is *unknown*. The MCP binding
+  takes facts as hints from a server the host does not trust, and
+  carries the mark (#84).
 
 ## Changes since 0.6
 
