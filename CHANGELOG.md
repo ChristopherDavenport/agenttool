@@ -62,7 +62,8 @@ versions may break the API.
   content, is an error beginning `invalid result: the call ran, but`,
   so the model does not trust it and does not read it as a call that
   failed and may be made again. A `$schema` naming draft-07 or 2020-12
-  is read over `http` or `https`, with or without a trailing `#`; a
+  is read over `http` or `https`, with or without a trailing `#`, and
+  given to the validator in the spelling it takes; a
   schema the validator cannot read leaves the tool unchecked and is
   reported through the SDK logger from `WithClientOptions`. mcpclient
   now requires
@@ -159,7 +160,8 @@ versions may break the API.
   consumed from an untrusted one passes the mark on.
 - Fixed: mcpserver reads a draft-07 or 2020-12 `$schema` however its
   URI is spelt, over `http` or `https`, with or without a trailing `#`,
-  where it refused a tool whose schema lacked the `#`. A schema of
+  and validates against it in the spelling the validator takes, where
+  it refused a tool whose schema lacked the `#`. A schema of
   another dialect is served without argument validation and reported to
   the new `Options.Logger`, `slog.Default()` when nil, rather than
   refused; a malformed or unresolvable schema is still refused when the

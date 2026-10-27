@@ -101,10 +101,18 @@ func TestSchemaDialects(t *testing.T) {
 		t.Fatal(err)
 	}
 	tools := agenttool.Set(roundTrip(t, server).Tools())
+	// Valid arguments pass under every spelling: the check reads the
+	// dialect, not the spelling.
+	for _, name := range []string{"short", "hashed", "other"} {
+		tl, _ := tools.Lookup(name)
+		if _, err := tl.Execute(context.Background(), agenttool.Call{ID: "1", Args: json.RawMessage(`{"n":5}`)}); err != nil {
+			t.Errorf("%s: valid arguments refused: %v", name, err)
+		}
+	}
 	for name, wantErr := range map[string]bool{"short": true, "hashed": true, "other": false} {
 		tl, _ := tools.Lookup(name)
 		_, err := tl.Execute(context.Background(), agenttool.Call{ID: "1", Args: json.RawMessage(`{"n":"five"}`)})
-		if wantErr != (err != nil) {
+		if wantErr != (err != nil) || (err != nil && strings.Contains(err.Error(), "cannot validate version")) {
 			t.Errorf("%s: err = %v, want validated %v", name, err, wantErr)
 		}
 	}

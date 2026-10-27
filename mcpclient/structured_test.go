@@ -84,6 +84,9 @@ func TestOutputSchemaChecked(t *testing.T) {
 	add("unreadable", json.RawMessage(`{"type":"object","$schema":"https://json-schema.org/draft/2019-09/schema"}`), &sdk.CallToolResult{StructuredContent: map[string]any{"temp": "hot"}})
 	add("draft07 spelt short", json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema","type":"object","properties":{"temp":{"type":"number"}}}`), &sdk.CallToolResult{StructuredContent: map[string]any{"temp": "hot"}})
 	add("2020-12 with a hash", json.RawMessage(`{"$schema":"http://json-schema.org/draft/2020-12/schema#","type":"object","properties":{"temp":{"type":"number"}}}`), &sdk.CallToolResult{StructuredContent: map[string]any{"temp": "hot"}})
+	add("draft07 spelt short ok", json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema","type":"object","properties":{"temp":{"type":"number"}}}`), &sdk.CallToolResult{StructuredContent: map[string]any{"temp": 21}})
+	add("2020-12 with a hash ok", json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema#","type":"object","properties":{"temp":{"type":"number"}}}`), &sdk.CallToolResult{StructuredContent: map[string]any{"temp": 21}})
+	add("draft07 over https ok", json.RawMessage(`{"$schema":"https://json-schema.org/draft-07/schema","type":"object","properties":{"temp":{"type":"number"}}}`), &sdk.CallToolResult{StructuredContent: map[string]any{"temp": 21}})
 	var logged bytes.Buffer
 	s := connect(t, server, WithClientOptions(sdk.ClientOptions{Logger: slog.New(slog.NewTextHandler(&logged, nil))}))
 	ctx := context.Background()
@@ -96,11 +99,18 @@ func TestOutputSchemaChecked(t *testing.T) {
 	}
 	for _, name := range []string{"bad", "none", "draft07 spelt short", "2020-12 with a hash"} {
 		res, err := call(name)
-		if err == nil || !strings.HasPrefix(err.Error(), "invalid result: the call ran") || strings.Contains(err.Error(), "could not be checked") {
+		if err == nil || !strings.HasPrefix(err.Error(), "invalid result: the call ran") || strings.Contains(err.Error(), "could not be checked") || strings.Contains(err.Error(), "cannot validate version") {
 			t.Errorf("%s: err = %v, want an invalid result that says the call ran", name, err)
 		}
 		if _, ok := res.Details.(*sdk.CallToolResult); !ok {
 			t.Errorf("%s: details = %T, want the SDK result", name, res.Details)
+		}
+	}
+	// Valid content under each spelling of a dialect passes: the check
+	// reads the dialect, not the spelling.
+	for _, name := range []string{"draft07 spelt short ok", "2020-12 with a hash ok", "draft07 over https ok"} {
+		if res, err := call(name); err != nil {
+			t.Errorf("%s: err = %v, output %q; want valid structured content to pass", name, err, res.Output.Text)
 		}
 	}
 	if _, err := call("bad"); err == nil || !strings.Contains(err.Error(), "temp") {

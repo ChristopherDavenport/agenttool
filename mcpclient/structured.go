@@ -123,8 +123,12 @@ func outputCheckOf(t *sdk.Tool) (*outputCheck, error) {
 	if err := json.Unmarshal(raw, &schema); err != nil {
 		return nil, err
 	}
-	if schema.Schema != "" && !knownDialect(schema.Schema) {
-		return nil, fmt.Errorf("unsupported $schema %q: the validator handles draft-07 and 2020-12", schema.Schema)
+	if schema.Schema != "" {
+		d, ok := dialect(schema.Schema)
+		if !ok {
+			return nil, fmt.Errorf("unsupported $schema %q: the validator handles draft-07 and 2020-12", schema.Schema)
+		}
+		schema.Schema = d
 	}
 	resolved, err := schema.Resolve(nil)
 	if err != nil {
@@ -133,19 +137,26 @@ func outputCheckOf(t *sdk.Tool) (*outputCheck, error) {
 	return &outputCheck{resolved: resolved}, nil
 }
 
-// knownDialect reports whether a $schema names a dialect the validator
-// handles, draft-07 or 2020-12, however the URI is spelt: over http or
-// https, with or without the empty fragment.
-func knownDialect(uri string) bool {
+// dialect returns the spelling of the $schema the validator takes for
+// uri, when uri names draft-07 or 2020-12 however it is spelt: over
+// http or https, with or without the empty fragment. jsonschema-go
+// compares the string itself, so the schema is given its spelling.
+func dialect(uri string) (string, bool) {
 	uri = strings.TrimSuffix(uri, "#")
 	if rest, ok := strings.CutPrefix(uri, "https://"); ok {
 		uri = rest
 	} else if rest, ok := strings.CutPrefix(uri, "http://"); ok {
 		uri = rest
 	} else {
-		return false
+		return "", false
 	}
-	return uri == "json-schema.org/draft-07/schema" || uri == "json-schema.org/draft/2020-12/schema"
+	switch uri {
+	case "json-schema.org/draft-07/schema":
+		return "http://json-schema.org/draft-07/schema#", true
+	case "json-schema.org/draft/2020-12/schema":
+		return "https://json-schema.org/draft/2020-12/schema", true
+	}
+	return "", false
 }
 
 // check validates a successful result's structured content against the

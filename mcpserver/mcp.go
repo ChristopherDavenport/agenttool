@@ -449,8 +449,12 @@ func resolveSchema(raw json.RawMessage) (*jsonschema.Resolved, error) {
 	if err := json.Unmarshal(raw, &schema); err != nil {
 		return nil, err
 	}
-	if schema.Schema != "" && !knownDialect(schema.Schema) {
-		return nil, fmt.Errorf("%w %q: the validator handles draft-07 and 2020-12", errDialect, schema.Schema)
+	if schema.Schema != "" {
+		d, ok := dialect(schema.Schema)
+		if !ok {
+			return nil, fmt.Errorf("%w %q: the validator handles draft-07 and 2020-12", errDialect, schema.Schema)
+		}
+		schema.Schema = d
 	}
 	return schema.Resolve(nil)
 }
@@ -459,19 +463,26 @@ func resolveSchema(raw json.RawMessage) (*jsonschema.Resolved, error) {
 // does not handle.
 var errDialect = errors.New("unsupported $schema")
 
-// knownDialect reports whether a $schema names draft-07 or 2020-12,
-// however the URI is spelt: over http or https, with or without the
-// empty fragment. It is mcpclient's rule for output schemas.
-func knownDialect(uri string) bool {
+// dialect returns the spelling of the $schema the validator takes for
+// uri, when uri names draft-07 or 2020-12 however it is spelt: over
+// http or https, with or without the empty fragment. jsonschema-go
+// compares the string itself, so the schema is given its spelling.
+func dialect(uri string) (string, bool) {
 	uri = strings.TrimSuffix(uri, "#")
 	if rest, ok := strings.CutPrefix(uri, "https://"); ok {
 		uri = rest
 	} else if rest, ok := strings.CutPrefix(uri, "http://"); ok {
 		uri = rest
 	} else {
-		return false
+		return "", false
 	}
-	return uri == "json-schema.org/draft-07/schema" || uri == "json-schema.org/draft/2020-12/schema"
+	switch uri {
+	case "json-schema.org/draft-07/schema":
+		return "http://json-schema.org/draft-07/schema#", true
+	case "json-schema.org/draft/2020-12/schema":
+		return "https://json-schema.org/draft/2020-12/schema", true
+	}
+	return "", false
 }
 
 // validate checks raw arguments against a resolved schema. The error is
