@@ -130,7 +130,11 @@ versions may break the API.
   answer.
 - Added: `Elicitation.Check(answer)`, the rules RFC 0001's new
   Questions section states for an answer, for a harness to apply
-  before it gives one (#85). RFC 0001 gains a Command line binding.
+  before it gives one (#85): content only on accept, an empty object
+  the same as none with any action, and on accept the form's required
+  members present and each member of its type, bounds, format and
+  choices, within the schema MCP's elicitation allows. The command
+  line, mcpclient and mcpserver all apply it. RFC 0001 gains a Command line binding.
 - Added: `Flow`, a tool property read by `FlowOf` and set by
   `WithFlow` (#92). It labels a tool's output `LabelUntrusted`, content
   an outside party wrote, or `LabelPrivate`, content that must not leave

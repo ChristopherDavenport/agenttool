@@ -459,13 +459,25 @@ elicitor on its context and waits for the **answer**.
   user dismissed it or nobody was asked. A reader MUST treat an action
   it does not know as an error, never as *accept*.
 - **Content** is present only on *accept*, and is a JSON object of
-  members the question's form defines. An answer to a confirmation has
-  no content, and an empty object is the same as none. A harness MUST
-  refuse an answer whose content has a member the form does not define,
-  or that has content on another action, and MUST NOT take such content
+  members the question's form defines; with any action an empty object
+  is the same as none. An answer to a confirmation has no content. On
+  *accept* every member the form requires is present, and each member
+  is what the form says of it, within the schema MCP's elicitation
+  allows: a string, within `minLength` and `maxLength`, of its
+  `format`, `email`, `uri`, `date` or `date-time`, and one of its
+  `enum` or of its titled choices, `oneOf` or `anyOf` of `const`; a
+  `number` or an `integer` within `minimum` and `maximum`; a
+  `boolean`; or an `array` of the choices its `items` offer, within
+  `minItems` and `maxItems`. A keyword outside those is not checked.
+- A harness MUST refuse an answer whose content has a member the form
+  does not define, leaves out a member it requires, gives a value it
+  refuses, or comes with another action, and MUST NOT take such content
   as *accept*: content the question did not ask for is someone
   answering a different question, and the action it would imply is the
-  one that runs a side effect.
+  one that runs a side effect. Every binding checks the same way: the
+  command line before it gives an `--answer`, the consuming side of MCP
+  before it sends an answer, and the serving side before its tool sees
+  one.
 - A **note** is the user's own words with any action, why they
   declined or what to bear in mind, for the asker, which MAY pass it
   on: a harness that asked whether a call may run tells the model. It

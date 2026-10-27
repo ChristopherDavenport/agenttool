@@ -1,12 +1,8 @@
 package agenttool
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"slices"
 )
 
 // Elicitation is a question a tool asks the user in the middle of a
@@ -58,63 +54,6 @@ type Answer struct {
 	// no place for it, so mcpclient does not send it to a server and
 	// mcpserver's answers never carry one.
 	Note string
-}
-
-// Check reports whether a is an answer to q that a harness may give,
-// under RFC 0001's rules for questions: content only with
-// [ActionAccept], and then a JSON object of members q's form defines. A
-// question with no form, a confirmation, takes no members, and an empty
-// object is the same as none. A harness refuses an answer that fails,
-// rather than taking content the question did not ask for as consent:
-// a model that wrote {"note": "not before Friday"} to a confirmation
-// meant to say no. The note goes with any action and is not checked.
-func (q Elicitation) Check(a Answer) error {
-	switch a.Action {
-	case ActionAccept, ActionDecline, ActionCancel:
-	default:
-		return fmt.Errorf("unknown action %q: an answer is accept, decline or cancel", a.Action)
-	}
-	if len(bytes.TrimSpace(a.Content)) == 0 || bytes.Equal(bytes.TrimSpace(a.Content), []byte("null")) {
-		return nil
-	}
-	if a.Action != ActionAccept {
-		return fmt.Errorf("an answer has content only on accept, not on %s", a.Action)
-	}
-	var content map[string]json.RawMessage
-	if err := json.Unmarshal(a.Content, &content); err != nil || content == nil {
-		return errors.New("the answer's content is not a JSON object")
-	}
-	defined := q.fields()
-	var extra []string
-	for name := range content {
-		if !slices.Contains(defined, name) {
-			extra = append(extra, name)
-		}
-	}
-	if len(extra) == 0 {
-		return nil
-	}
-	slices.Sort(extra)
-	if len(defined) == 0 {
-		return fmt.Errorf("the question asks for no fields, and the answer gives %q", extra)
-	}
-	return fmt.Errorf("the question's form does not define %q", extra)
-}
-
-// fields returns the names of the members q's form defines, none for a
-// question without one.
-func (q Elicitation) fields() []string {
-	var schema struct {
-		Properties map[string]json.RawMessage `json:"properties"`
-	}
-	if len(q.Schema) == 0 || json.Unmarshal(q.Schema, &schema) != nil {
-		return nil
-	}
-	names := make([]string, 0, len(schema.Properties))
-	for name := range schema.Properties {
-		names = append(names, name)
-	}
-	return names
 }
 
 // Elicitor answers a question a tool asks the user mid-call. A harness

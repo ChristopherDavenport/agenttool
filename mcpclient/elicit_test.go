@@ -211,8 +211,10 @@ func TestElicitationAnswerChecked(t *testing.T) {
 		ans  agenttool.Answer
 		want string
 	}{
-		"a member the form lacks": {agenttool.Answer{Action: agenttool.ActionAccept, Content: json.RawMessage(`{"confirm":true,"force":true}`)}, `"force"`},
-		"content on decline":      {agenttool.Answer{Action: agenttool.ActionDecline, Content: json.RawMessage(`{"confirm":false}`)}, "only on accept"},
+		"a member the form lacks":   {agenttool.Answer{Action: agenttool.ActionAccept, Content: json.RawMessage(`{"confirm":true,"force":true}`)}, `"force"`},
+		"content on decline":        {agenttool.Answer{Action: agenttool.ActionDecline, Content: json.RawMessage(`{"confirm":false}`)}, "only on accept"},
+		"a value of the wrong type": {agenttool.Answer{Action: agenttool.ActionAccept, Content: json.RawMessage(`{"confirm":"yes"}`)}, `"confirm"`},
+		"a required member missing": {agenttool.Answer{Action: agenttool.ActionAccept, Content: json.RawMessage(`{}`)}, `"confirm"`},
 	} {
 		for proto, opts := range map[string][]Option{"current": {WithElicitation()}, "older": {WithElicitation(), older}} {
 			t.Run(name+"/"+proto, func(t *testing.T) {
