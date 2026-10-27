@@ -5,7 +5,7 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
-## Unreleased
+## v0.0.25 - 2026-10-26
 
 - Fixed: mcpclient's `Remote.Close` returns nil for a session that had already
   ended, the server's process exited or its connection dropped, and so
