@@ -635,8 +635,9 @@ call, so this suits a tool that asks before it acts. An answer is an
 action, the form's fields as a JSON object, or `{"action": "decline",
 "note": "not before Friday"}` to pass on what the user said with it.
 The question's `schema` is `null` when it asks only yes or no, and an
-answer is checked against it: fields the form does not define end the
-run with status 2 rather than count as yes. A program that knows a
+answer is checked against it: fields the form does not define are
+refused rather than counted as yes, the tool is told, and the run ends
+with status 4 and the tool's outcome, since it has run. A program that knows a
 person is at the terminal sets `Ask: cli.Prompt(os.Stdin, os.Stderr)`
 instead, or `cli.PromptNotes` to ask for a note with each answer. `--record` appends the call's records to a file
 as JSON lines.

@@ -898,14 +898,17 @@ One process runs one call, and the exit status carries the result:
 | --- | --- |
 | 0 | the call succeeded, and its output is on stdout |
 | 1 | the call returned an error, on stderr as `Error: ` and the message, as the error convention renders it |
-| 2 | the command line was not understood, or an `--answer` did not answer its question, and the call did not run or was told the answer could not be given |
+| 2 | the command line was not understood, an `--answer` among them, and the call did not run |
 | 3 | the tool asked a question nobody answered, and was answered *cancel* |
+| 4 | an `--answer` did not answer the question it was given for; the call ran, and the tool was told the answer could not be given |
 
-On status 3 stdout holds the question as one JSON object: `message`;
+On status 3 and 4 stdout holds the question as one JSON object: `message`;
 `schema`, the form, always present and `null` for a confirmation, so a
 reader can tell the two apart; `url` when the question has one;
 `answers_given`, how many `--answer` the call used before it asked;
-and `output` or `error`, how the call ended once told *cancel*.
+`refused`, on status 4, why the answer did not fit; and `output` or
+`error`, how the call ended once told *cancel* or that its answer could
+not be given.
 
 The program answers the call's questions in order from the
 `--answer` options given before the command, each one of:
@@ -918,11 +921,16 @@ The program answers the call's questions in order from the
   note, and on *accept* the content. A form whose own field is named
   `action` is answered in this form.
 
-Each answer is checked against its question as [Questions](#questions)
-says. One that fails, content a confirmation did not ask for, a member
-the form does not define, content with another action, is not given:
-the tool is told the answer could not be given, and the run ends with
-status 2 and the reason on stderr. A question after the last
+An `--answer` that is not one of these forms, or has content with an
+action other than *accept*, ends the run with status 2 before the call
+runs. Each answer is then checked against its question, when the tool
+asks it, as [Questions](#questions) says. One that fails, content a
+confirmation did not ask for, a member the form does not define, a
+value the form refuses, is not given: the tool is told the answer
+could not be given, as an error from its elicitor, and runs on, so the
+run reports its outcome with status 4 rather than status 2, which
+says the call did not run. A caller checks what the call did before it
+runs it again. A question after the last
 `--answer` is answered *cancel*, or asked of a person at the terminal
 when the program has one.
 

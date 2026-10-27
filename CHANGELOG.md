@@ -117,8 +117,11 @@ versions may break the API.
   accept with itself as content, so `--answer '{"note":"not before
   Friday"}'` to "Delete the note?" deleted it. Each `--answer` is now
   checked against its question: content only on accept, and only of
-  the members the question's form defines. One that fails is not given,
-  and the run ends with status 2 saying why.
+  the members the question's form defines. One that fails is not given:
+  the tool is told, and the run ends with the new status 4,
+  `ExitAnswerRefused`, printing the question with `refused` and what
+  the tool returned, since the tool has run. An `--answer` malformed
+  before the call runs is still status 2.
 - Added: `--answer '{"action": "decline", "note": "…"}'`, the object
   form that gives an action with `Answer.Note`, and `content` for a
   form on accept (#85). The question on stdout always carries

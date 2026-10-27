@@ -260,9 +260,11 @@ func TestRun(t *testing.T) {
 		{name: "bad answer", args: []string{"--answer", "maybe", "delete"}, code: cli.ExitUsage, stderrHas: "an answer is accept"},
 		// #85: a JSON object is not consent to a question that asked for
 		// no fields, and a note goes in the object form with its action.
-		{name: "an object answers no confirmation", args: []string{"--answer", `{"note":"not before Friday"}`, "delete"}, code: cli.ExitUsage, stderrHas: `"note"`},
+		// A refused answer is found once the tool is running: the tool is
+		// told, and its outcome is reported with the question.
+		{name: "an object answers no confirmation", args: []string{"--answer", `{"note":"not before Friday"}`, "delete"}, code: cli.ExitAnswerRefused, stdoutHas: `"refused":`, stderrHas: `"note"`},
 		{name: "a note with its action", args: []string{"--answer", `{"action":"decline","note":"not before Friday"}`, "delete"}, stdout: "kept; the user said: not before Friday\n"},
-		{name: "form content with a member the form lacks", args: []string{"--answer", "accept", "--answer", `{"reason":"merged","why":"x"}`, "delete"}, code: cli.ExitUsage, stderrHas: `"why"`},
+		{name: "form content with a member the form lacks", args: []string{"--answer", "accept", "--answer", `{"reason":"merged","why":"x"}`, "delete"}, code: cli.ExitAnswerRefused, stdoutHas: `"answers_given":1`, stderrHas: `"why"`},
 		{name: "form content in the object form", args: []string{"--answer", "accept", "--answer", `{"action":"accept","content":{"reason":"merged"},"note":"tidy up"}`, "delete"}, stdout: "deleted: {\"reason\":\"merged\"}\n"},
 		{name: "content with decline", args: []string{"--answer", `{"action":"decline","content":{"reason":"x"}}`, "delete"}, code: cli.ExitUsage, stderrHas: "only on accept"},
 		{name: "an unknown action in the object form", args: []string{"--answer", `{"action":"maybe"}`, "delete"}, code: cli.ExitUsage, stderrHas: "maybe"},
@@ -735,5 +737,42 @@ func TestPromptNotes(t *testing.T) {
 				t.Errorf("answer = %+v, want %s with note %q", a, tt.action, tt.note)
 			}
 		})
+	}
+}
+
+// TestRefusedAnswerAfterEffect: a tool that acted before it asked, and
+// was given an answer that did not fit, has run: the program reports
+// its outcome and the question, with a status of its own, rather than
+// the usage status that says the command did not run (#85).
+func TestRefusedAnswerAfterEffect(t *testing.T) {
+	deleted := 0
+	tl := agenttool.New("rm", "Delete, then ask why.", func(ctx context.Context, _ agenttool.NoArgs) (string, error) {
+		deleted++
+		ask, _ := agenttool.ElicitorFrom(ctx)
+		if _, err := ask(ctx, agenttool.Elicitation{Message: "Why?", Schema: json.RawMessage(`{"type":"object","properties":{"reason":{"type":"string"}}}`)}); err != nil {
+			return "deleted, no reason recorded", nil
+		}
+		return "deleted", nil
+	})
+	var out, errb strings.Builder
+	code := cli.Runner{Name: "t", Tools: agenttool.Set{tl}, Stdout: &out, Stderr: &errb}.Run(context.Background(), []string{"--answer", `{"why":"x"}`, "rm"})
+	if code != cli.ExitAnswerRefused || deleted != 1 {
+		t.Fatalf("code = %d, deleted %d; want %d after one run", code, deleted, cli.ExitAnswerRefused)
+	}
+	var q struct {
+		Message      string          `json:"message"`
+		Schema       json.RawMessage `json:"schema"`
+		AnswersGiven int             `json:"answers_given"`
+		Refused      string          `json:"refused"`
+		Output       string          `json:"output"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &q); err != nil {
+		t.Fatalf("stdout %q: %v", out.String(), err)
+	}
+	if q.Message != "Why?" || len(q.Schema) == 0 || q.AnswersGiven != 0 || !strings.Contains(q.Refused, `"why"`) || q.Output != "deleted, no reason recorded" {
+		t.Errorf("stdout = %+v; want the question, the refusal and the tool's output", q)
+	}
+	if !strings.Contains(errb.String(), "ran") {
+		t.Errorf("stderr = %q; want it to say the command ran", errb.String())
 	}
 }

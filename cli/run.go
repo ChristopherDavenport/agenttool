@@ -47,6 +47,15 @@ const (
 	// a tool that asks before it acts and repeats what was done for one
 	// that does not.
 	ExitNeedsAnswer = 3
+
+	// ExitAnswerRefused is a call that was given an --answer that does
+	// not answer its question: content the question did not ask for, a
+	// member its form does not define, or a value its form refuses. The
+	// tool was told the answer could not be given and ran on, so it may
+	// have acted; stdout holds the question as JSON, with the refusal and
+	// the tool's output or error. A caller runs the call again with an
+	// answer that fits only once it has checked what the call did.
+	ExitAnswerRefused = 4
 )
 
 // Runner runs one command line against a set of tools: one call of one
@@ -510,9 +519,23 @@ func (r Runner) call(ctx context.Context, tool agenttool.Tool, args json.RawMess
 		}
 	}
 
-	if bad := ask.refused(); bad != nil {
-		fmt.Fprintf(r.Stderr, "%s: %v; the call was told the answer could not be given. Answer the question with the fields its schema defines, or with {\"action\": \"decline\", \"note\": \"...\"} to say no and why, and run the command again\n", r.Name, bad)
-		return ExitUsage
+	if q, given, bad := ask.refused(); bad != nil {
+		// The tool has run, and may have acted: what it did is reported
+		// with the question, never dropped as if it had not run.
+		out := question{Message: q.Message, Schema: q.Schema, URL: q.URL, AnswersGiven: given, Refused: bad.Error()}
+		if err != nil {
+			out.Error = err.Error()
+		} else {
+			out.Output = res.Output.String()
+		}
+		data, merr := json.Marshal(out)
+		if merr != nil {
+			fmt.Fprintf(r.Stderr, "%s: %v\n", r.Name, merr)
+			return ExitFailed
+		}
+		fmt.Fprintf(r.Stdout, "%s\n", data)
+		fmt.Fprintf(r.Stderr, "%s: %v; the command ran, and the tool was told the answer could not be given. Check what it did, then answer with the fields the question's schema defines, or with {\"action\": \"decline\", \"note\": \"...\"} to say no and why\n", r.Name, bad)
+		return ExitAnswerRefused
 	}
 	if q, given, ok := ask.unanswered(); ok {
 		out := question{Message: q.Message, Schema: q.Schema, URL: q.URL, AnswersGiven: given}
@@ -575,8 +598,11 @@ type question struct {
 	// AnswersGiven is how many --answer the call used before it
 	// asked this; they are needed again, in order, when it runs again.
 	AnswersGiven int `json:"answers_given"`
+	// Refused is why an --answer given for it did not answer it.
+	Refused string `json:"refused,omitempty"`
 	// Output and Error are how the call ended once told the question
-	// was cancelled, so that nothing it returned is lost.
+	// was cancelled, or its answer refused, so that nothing it returned
+	// is lost.
 	Output string `json:"output,omitempty"`
 	Error  string `json:"error,omitempty"`
 }
@@ -594,8 +620,11 @@ type elicitor struct {
 	ask     agenttool.Elicitor
 	pending *agenttool.Elicitation
 	given   int
-	// bad is the first --answer that did not answer its question.
-	bad error
+	// bad is the first --answer that did not answer its question, badQ
+	// that question and badGiven the answers used before it.
+	bad      error
+	badQ     agenttool.Elicitation
+	badGiven int
 }
 
 func (e *elicitor) elicit(ctx context.Context, q agenttool.Elicitation) (agenttool.Answer, error) {
@@ -606,11 +635,11 @@ func (e *elicitor) elicit(ctx context.Context, q agenttool.Elicitation) (agentto
 		n := e.next
 		// Content the question did not ask for is refused, not taken as
 		// accept: the tool is told the answer could not be given, and the
-		// run ends with the usage status.
+		// run reports what it did with that.
 		if err := q.Check(a); err != nil {
 			err = fmt.Errorf("--answer %d does not answer %q: %w", n, q.Message, err)
 			if e.bad == nil {
-				e.bad = err
+				e.bad, e.badQ, e.badGiven = err, q, n-1
 			}
 			e.mu.Unlock()
 			return agenttool.Answer{}, err
@@ -634,11 +663,12 @@ func (e *elicitor) elicit(ctx context.Context, q agenttool.Elicitation) (agentto
 	return ask(ctx, q)
 }
 
-// refused is the first --answer that did not answer its question.
-func (e *elicitor) refused() error {
+// refused is the first --answer that did not answer its question, with
+// the question and how many answers were used before it.
+func (e *elicitor) refused() (agenttool.Elicitation, int, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.bad
+	return e.badQ, e.badGiven, e.bad
 }
 
 // unused is how many --answer the call never asked for.
