@@ -720,7 +720,10 @@ func (s *Remote) refresh(ctx context.Context, force bool) error {
 // the listing was cut by the end of the session and may be made once
 // more, which it may only when first is set, and settles nothing then.
 // The session cannot be replaced while it runs, since a restart adopts
-// its session under the same lock.
+// its session under the same lock. Telling a cut listing waits for the
+// session's end under that lock too, which is safe: nothing the end
+// waits on takes it, the client's handlers included, and the wait is
+// bounded by [endGrace] and ctx.
 func (s *Remote) relist(ctx context.Context, force, first bool) (again bool, err error) {
 	s.listing.Lock()
 	defer s.listing.Unlock()
@@ -1033,7 +1036,7 @@ func (s *Remote) call(ctx context.Context, ref toolRef, readOnly bool, call agen
 	before := s.seen.Load()
 	res, err := s.callTool(ctx, send, cancel, l.session, params)
 	if err != nil {
-		if s.opts.dial != nil && ctx.Err() == nil && cut(l, err) {
+		if s.opts.dial != nil && ctx.Err() == nil && cut(ctx, l, err) {
 			// Not sent again: the server may have run it, and a call that
 			// ran twice is worse than one that failed.
 			err = fmt.Errorf("%w while the call was in flight; it may or may not have run, and was not sent again: %w", ErrSessionEnded, err)
