@@ -143,6 +143,19 @@ versions may break the API.
   `WithClaims`, and otherwise only where it is stricter. mcpserver
   serves `openWorldHint: true` for a tool whose flow reads untrusted
   content or sends, whatever its annotations say.
+- Added: `Facts.Hint`, the mark on facts from a source the host does
+  not trust (#84). A reader may use a hint's calls to make a decision
+  stricter, must not decide a call on them alone, and ignores its
+  rewrite, which `FactsOf` returns as nil. The zero value is a claim, as
+  a tool built in process makes, so existing tools read as before.
+- Added: `mcpclient.WithFactsHints()` takes the facts of a server the
+  host does not trust as hints, and leaves its replay unknown (#84).
+  `WithClaims` took a server's facts and replay together, so a host
+  that wanted a marketplace server's writes held to its edit rules also
+  let a cut-off call of that server's deploy run again on its word.
+  `WithClaims` still takes both, and wins. mcpserver marks an answer
+  whose facts are hints `hint: true`, so a server that serves tools it
+  consumed from an untrusted one passes the mark on.
 - Dependencies: every module requires `openresponses` v0.0.17, up from
   v0.0.13. Its `Text` no longer documents itself for function call
   outputs, which take `input_text`, and its types keep members they do

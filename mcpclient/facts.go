@@ -185,6 +185,7 @@ type factsClaim struct {
 
 type factsAnswer struct {
 	Facts  *factsClaim `json:"facts,omitempty"`
+	Hint   bool        `json:"hint,omitempty"`
 	Error  string      `json:"error,omitempty"`
 	Replay string      `json:"replay"`
 }
@@ -195,15 +196,20 @@ type factsResult struct {
 }
 
 // claim reads one answer as the claim a tool makes, its presence
-// included: facts or an error is a claim, neither is none.
-func (a factsAnswer) claim() (agenttool.Facts, bool, error) {
+// included: facts or an error is a claim, neither is none. Facts are
+// hints when the server marked them so, or when hint says the host does
+// not take the server's claims, and a hint has no rewrite.
+func (a factsAnswer) claim(hint bool) (agenttool.Facts, bool, error) {
 	switch {
 	case a.Error != "":
 		return agenttool.Facts{}, true, errors.New(a.Error)
 	case a.Facts == nil:
 		return agenttool.Facts{}, false, nil
 	}
-	f := agenttool.Facts{Rewrite: rawOrNil(a.Facts.Rewrite)}
+	f := agenttool.Facts{Hint: hint || a.Hint}
+	if !f.Hint {
+		f.Rewrite = rawOrNil(a.Facts.Rewrite)
+	}
 	if a.Facts.Calls != nil {
 		f.Calls = make([]agenttool.FactCall, len(a.Facts.Calls))
 		for i, c := range a.Facts.Calls {
@@ -274,7 +280,7 @@ func (s *Remote) facts(ctx context.Context, calls []FactsCall, first bool) (_ []
 			out[i] = FactsAnswer{Claimed: true, Err: fmt.Errorf("mcp: no tool %q", c.Name)}
 			continue
 		}
-		if !s.claimsOn(l) || (!e.meta.Facts && !e.meta.Replay) {
+		if !s.factsOn(l) || (!e.meta.Facts && !(e.meta.Replay && s.claimsOn(l))) {
 			continue
 		}
 		ask = append(ask, factsCall{Name: e.remote, Arguments: c.Args})
@@ -289,19 +295,20 @@ func (s *Remote) facts(ctx context.Context, calls []FactsCall, first bool) (_ []
 		return nil, first && s.resend(ctx, l, err), err
 	}
 	for j, i := range at {
-		out[i] = answerFor(got[j], metas[j])
+		out[i] = answerFor(got[j], metas[j], s.claimsOn(l))
 	}
 	return out, false, nil
 }
 
 // answerFor reads a server's answer as what the local tool, built from
-// meta, reports: a claim it does not make reads as none.
-func answerFor(a factsAnswer, meta ToolMeta) FactsAnswer {
+// meta, reports: a claim it does not make reads as none. Without
+// trusted the facts are hints and the replay is not taken.
+func answerFor(a factsAnswer, meta ToolMeta, trusted bool) FactsAnswer {
 	var ans FactsAnswer
 	if meta.Facts {
-		ans.Facts, ans.Claimed, ans.Err = a.claim()
+		ans.Facts, ans.Claimed, ans.Err = a.claim(!trusted)
 	}
-	if meta.Replay {
+	if meta.Replay && trusted {
 		ans.Replay = a.replay()
 	}
 	return ans
@@ -311,6 +318,11 @@ func answerFor(a factsAnswer, meta ToolMeta) FactsAnswer {
 // claims: the host passed [WithClaims] and the server advertises
 // [FactsCapability].
 func (s *Remote) claimsOn(l *link) bool { return s.opts.claims && l.factsCap }
+
+// factsOn reports whether the tools listed on l carry the server's
+// facts, as claims under [WithClaims] or as hints under
+// [WithFactsHints], on a server that advertises [FactsCapability].
+func (s *Remote) factsOn(l *link) bool { return (s.opts.claims || s.opts.hints) && l.factsCap }
 
 // askOne asks the server about one call of the tool ref. With
 // [WithReconnect] it is asked on the restarted server only when that
@@ -376,9 +388,10 @@ func (s *Remote) askFacts(ctx context.Context, l *link, calls []factsCall) ([]fa
 // claimOptions are the options that give the tool ref, listed on l, the
 // server's claims, as meta marks them, when the remote carries them.
 func (s *Remote) claimOptions(l *link, ref toolRef, meta ToolMeta) []agenttool.Option {
-	if !s.claimsOn(l) {
+	if !s.factsOn(l) {
 		return nil
 	}
+	trusted := s.claimsOn(l)
 	var opts []agenttool.Option
 	if meta.Facts {
 		opts = append(opts, agenttool.WithFacts(func(ctx context.Context, args json.RawMessage) (agenttool.Facts, error) {
@@ -386,11 +399,11 @@ func (s *Remote) claimOptions(l *link, ref toolRef, meta ToolMeta) []agenttool.O
 			if err != nil {
 				return agenttool.Facts{}, err
 			}
-			f, _, err := a.claim()
+			f, _, err := a.claim(!trusted)
 			return f, err
 		}))
 	}
-	if meta.Replay {
+	if meta.Replay && trusted {
 		opts = append(opts, agenttool.WithReplay(func(ctx context.Context, args json.RawMessage) agenttool.Replay {
 			a, err := s.askOne(ctx, ref, args)
 			if err != nil {

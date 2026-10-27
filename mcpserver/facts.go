@@ -100,9 +100,12 @@ type factsClaim struct {
 
 // factsAnswer is the answer for one call.
 type factsAnswer struct {
-	Facts  *factsClaim `json:"facts,omitempty"`
-	Error  string      `json:"error,omitempty"`
-	Replay string      `json:"replay"`
+	Facts *factsClaim `json:"facts,omitempty"`
+	// Hint says the facts are hints, from a source the serving host
+	// does not trust; see [agenttool.Facts.Hint].
+	Hint   bool   `json:"hint,omitempty"`
+	Error  string `json:"error,omitempty"`
+	Replay string `json:"replay"`
 }
 
 // factsResult is the result of [FactsMethod].
@@ -281,6 +284,7 @@ func answerCall(ctx context.Context, tl agenttool.Tool, args json.RawMessage) fa
 		a.Error = err.Error()
 	default:
 		a.Facts = claimOf(f)
+		a.Hint = f.Hint
 	}
 	return a
 }

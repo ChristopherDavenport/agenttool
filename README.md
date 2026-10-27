@@ -470,9 +470,13 @@ answers, err := remote.Facts(ctx,
 // ReplayOf report for that call; a tool that claims nothing is not sent.
 ```
 
-Without the option, or on a server that does not advertise the
-method, the server is never asked and its tools make no claim, as
-before. Sequential and resource come from the listing either way,
+A host that does not trust a server can still hold its calls to the
+host's rules: `mcpclient.WithFactsHints()` takes its facts as hints,
+marked `Facts.Hint`, which a policy reads only to make a decision
+stricter and never alone, without their rewrite, and leaves the
+server's replay unknown. Without either option, or on a server that
+does not advertise the method, the server is never asked and its tools
+make no claim, as before. Sequential and resource come from the listing either way,
 since they can only make calls run one after another, so a host no
 longer names them for an `mcpserver` tool. A `WithResource` the host
 gives still wins, since the host sees every server it composes.

@@ -35,7 +35,9 @@
 // the server with [FactsMethod] under the caller's context;
 // [Remote.Facts] asks about a model response's calls in one request.
 // Without either, the server is never asked and its tools make no
-// claim, as before.
+// claim, as before. [WithFactsHints] takes the facts of a server the
+// host does not trust as hints, which a policy reads only to be
+// stricter, and leaves its replay unknown.
 //
 // Tools returns a snapshot. The remote subscribes to the server's
 // tool-list-changed notification and refreshes it, so a loop that reads
@@ -130,6 +132,7 @@ type options struct {
 	onRefreshError func(error)
 	elicitation    bool
 	claims         bool
+	hints          bool
 	// host is the roots and log messages the host takes part in; see
 	// [WithRoots] and [WithLogging].
 	host hostOptions
@@ -461,9 +464,28 @@ func WithElicitation() Option {
 // never asked either way.
 //
 // What the listing says of sequential, barrier and resource applies without it,
-// since it can only make calls run one after another.
+// since it can only make calls run one after another. A host that does
+// not trust a server and still wants its facts, to hold its calls to
+// stricter rules, takes them as hints with [WithFactsHints].
 func WithClaims() Option {
 	return func(o *options) { o.claims = true }
+}
+
+// WithFactsHints takes the server's facts claims as hints, for a server
+// the host does not trust, such as one from a marketplace: a tool the
+// server marks as claiming, on a server that advertises
+// [FactsCapability], answers [agenttool.FactsOf] with facts marked
+// [agenttool.Facts.Hint] and without their rewrite. A policy may read a
+// hint's calls to make a decision stricter, holding a server's writes to
+// the host's edit rules, and must not decide a call on them alone. The
+// server's replay claim is not taken: a call of its tools reads as
+// [agenttool.ReplayUnknown], since running a call twice is an allow.
+//
+// [WithClaims] wins: under it the facts are claims, except those the
+// server itself marks as hints, which it took from a server it does not
+// trust.
+func WithFactsHints() Option {
+	return func(o *options) { o.hints = true }
 }
 
 // Remote is one connected MCP server: its session and the tools it
@@ -789,7 +811,7 @@ func (s *Remote) list(ctx context.Context, l *link) ([]agenttool.Tool, map[strin
 		if err != nil {
 			return nil, nil, fmt.Errorf("mcp: list tools: %w", err)
 		}
-		def, err := definition(t, s.claimsOn(l))
+		def, err := definition(t, s.factsOn(l))
 		if err != nil {
 			return nil, nil, err
 		}

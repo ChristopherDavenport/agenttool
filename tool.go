@@ -483,6 +483,15 @@ type Facts struct {
 	// forged taken off. It is part of the claim because only the tool can
 	// make it, when the stamp's key never leaves the tool. Nil is none.
 	Rewrite json.RawMessage
+	// Hint says the facts come from a source the host does not trust, a
+	// server whose claims it does not take: a reader may use their Calls
+	// to make a decision stricter, must not decide the call on them
+	// alone, so it decides the call on its own arguments as well, and
+	// ignores Rewrite, which [FactsOf] returns as nil. False, the zero
+	// value, is a claim, which is what a tool the host built makes. The
+	// mark is on the facts so that it travels with them to whatever
+	// reads them, through [Wrap] and over MCP.
+	Hint bool
 }
 
 // Factual is implemented by a tool that can say what a call would touch,
@@ -530,12 +539,16 @@ func IsFactual(t Tool) bool {
 // makes the claim at all. A tool that does not reports false with the
 // zero Facts and no error, which a reader takes as the call itself, its
 // arguments as given. A tool that does is asked, and its answer and its
-// error are returned as they are.
+// error are returned as they are, except that a hint's Rewrite is nil:
+// see [Facts.Hint].
 func FactsOf(ctx context.Context, t Tool, args json.RawMessage) (Facts, bool, error) {
 	if !IsFactual(t) {
 		return Facts{}, false, nil
 	}
 	f, err := t.(Factual).Facts(ctx, args)
+	if f.Hint {
+		f.Rewrite = nil
+	}
 	return f, true, err
 }
 
