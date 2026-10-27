@@ -1109,8 +1109,11 @@ a recorder if it has one; cancels running calls when it abandons a
 batch and waits for them; gives each call its own idempotency key, if
 it gives keys, and a call it runs again the key it first carried; runs
 an ambiguous call again only when replay allows it, and otherwise
-completes it saying the outcome is unknown; and closes nothing that
-the host built.
+completes it saying the outcome is unknown; refuses an answer whose
+content the question did not ask for rather than taking it as
+*accept*; takes facts from a source it does not trust only as hints,
+and replay from one as *unknown*; and closes nothing that the host
+built.
 
 **A conforming adapter** maps each row of its binding table and adds
 nothing the contract cannot express.
