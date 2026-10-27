@@ -164,6 +164,13 @@ versions may break the API.
   the new `Options.Logger`, `slog.Default()` when nil, rather than
   refused; a malformed or unresolvable schema is still refused when the
   tool is added.
+- Fixed: both MCP adapters check an answer against its question, as
+  `Elicitation.Check` does (#85). mcpclient refused nothing its
+  elicitor gave and sent content a confirmation never asked for as
+  accept; it now answers the server with an error, and the call returns
+  the reason. mcpserver accepted members a form does not define, and
+  any content for a confirmation; the tool's elicitor now returns such
+  an answer as an error, never as accept.
 - Dependencies: every module requires `openresponses` v0.0.17, up from
   v0.0.13. Its `Text` no longer documents itself for function call
   outputs, which take `input_text`, and its types keep members they do

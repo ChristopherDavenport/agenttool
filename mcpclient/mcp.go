@@ -446,6 +446,12 @@ func WithRefreshError(fn func(error)) Option {
 // server asks a question fails, since there is nobody to ask. An
 // ElicitationHandler set through [WithClientOptions] takes precedence
 // and this option then does nothing.
+//
+// An answer is checked against its question before it is sent, with
+// [agenttool.Elicitation.Check]: content the question did not ask for,
+// a member its form does not define or content with a decline, is
+// refused rather than sent, the server is answered with an error, and
+// the call returns the reason.
 func WithElicitation() Option {
 	return func(o *options) { o.elicitation = true }
 }
@@ -1315,6 +1321,13 @@ func (s *Remote) elicit(ctx context.Context, req *sdk.ElicitRequest) (*sdk.Elici
 	}
 	if err != nil {
 		return nil, fmt.Errorf("mcp: elicitation: %w", err)
+	}
+	// An answer the question did not ask for is refused, not sent: a
+	// server that read it would take content it never asked for as the
+	// user's consent. The server is told the elicitation failed, and the
+	// call returns the reason.
+	if err := q.Check(ans); err != nil {
+		return nil, fmt.Errorf("mcp: elicitation answer refused: %w", err)
 	}
 	res := &sdk.ElicitResult{Action: string(ans.Action)}
 	switch ans.Action {
