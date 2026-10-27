@@ -716,6 +716,31 @@ func TestImageBlobTypes(t *testing.T) {
 	}
 }
 
+// TestImageContentTypes: image content, as blobs, becomes input_image
+// only for the types a model request takes, and a file otherwise.
+func TestImageContentTypes(t *testing.T) {
+	for mime, want := range map[string]string{
+		"image/png":     "input_image",
+		"image/webp":    "input_image",
+		"image/svg+xml": "input_file",
+		"image/tiff":    "input_file",
+		"":              "input_file",
+	} {
+		res, err := ResultOf(&sdk.CallToolResult{Content: []sdk.Content{&sdk.ImageContent{MIMEType: mime, Data: []byte{1}}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := json.Marshal(res.Output.Parts[0])
+		var head struct {
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal(got, &head)
+		if head.Type != want {
+			t.Errorf("image %q = %s, want %s", mime, got, want)
+		}
+	}
+}
+
 // normal re-encodes JSON so two spellings of one value compare equal.
 func normal(t *testing.T, raw []byte) string {
 	t.Helper()
@@ -735,8 +760,8 @@ func TestResultEdgeCases(t *testing.T) {
 		t.Errorf("empty error result = %v", err)
 	}
 	res, err := ResultOf(&sdk.CallToolResult{Content: []sdk.Content{&sdk.ImageContent{Data: []byte{1}}}})
-	if err != nil || res.Output.Parts[0].(*openresponses.InputImage).ImageURL != "data:application/octet-stream;base64,AQ==" {
-		t.Errorf("image without mime = %+v, %v", res, err)
+	if f, ok := res.Output.Parts[0].(*openresponses.InputFile); err != nil || !ok || f.FileData != "data:application/octet-stream;base64,AQ==" {
+		t.Errorf("image without mime = %+v, %v; want a file of unknown type", res, err)
 	}
 }
 

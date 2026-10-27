@@ -1413,7 +1413,9 @@ func (s *Remote) onProgress(p *sdk.ProgressNotificationParams) {
 // each without the members the server left out, so the model can tell
 // what it was given and where from. A content block whose audience is
 // stated and leaves out the assistant is for the user alone and is not
-// in the output; the SDK result in Details still holds it.
+// in the output; the SDK result in Details still holds it. Image
+// content takes the same rule as a blob: a PNG, JPEG, GIF or WebP is an
+// input_image, and any other type, or none, an input_file named "image".
 //
 // An isError result becomes an error whose message is the text content,
 // so the loop produces the error output the model sees. Details carries
@@ -1447,7 +1449,13 @@ func ResultOf(res *sdk.CallToolResult) (agenttool.Result, error) {
 			blocks = append(blocks, v.Text)
 		case *sdk.ImageContent:
 			textOnly = false
-			parts = append(parts, &openresponses.InputImage{ImageURL: dataURL(v.MIMEType, v.Data)})
+			if modelImage(v.MIMEType) {
+				parts = append(parts, &openresponses.InputImage{ImageURL: dataURL(v.MIMEType, v.Data)})
+			} else {
+				// An image a model request cannot take, an SVG or one of no
+				// stated type, goes as a file of its type.
+				parts = append(parts, &openresponses.InputFile{Filename: "image", FileData: dataURL(v.MIMEType, v.Data)})
+			}
 		case *sdk.AudioContent:
 			textOnly = false
 			parts = append(parts, &openresponses.InputFile{Filename: audioName(v.MIMEType), FileData: dataURL(v.MIMEType, v.Data)})

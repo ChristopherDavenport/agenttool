@@ -29,7 +29,8 @@ versions may break the API.
   (#93). An embedded blob with a media type is sent as a data URL of
   that type, an `input_image` when the type is PNG, JPEG, GIF or WebP
   and an `input_file` for any other image type, an SVG or a TIFF, which
-  a provider would refuse as an image, so a
+  a provider would refuse as an image; image content follows the same
+  rule, and one of no stated type is a file too. So a
   screenshot returned as `screenshot://page/1` is no longer refused by
   an adapter that types a file by its name's extension; the
   `input_file` keeps the URI as its name. An embedded text resource is
