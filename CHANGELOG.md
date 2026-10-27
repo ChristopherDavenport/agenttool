@@ -5,6 +5,13 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Dependencies: every module requires `openresponses` v0.0.17, up from
+  v0.0.13. Its `Text` no longer documents itself for function call
+  outputs, which take `input_text`, and its types keep members they do
+  not define at every depth.
+
 ## v0.0.26 - 2026-10-26
 
 - Fixed: under `WithReconnect`, mcpclient's request cut because the
