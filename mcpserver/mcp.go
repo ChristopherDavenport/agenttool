@@ -29,7 +29,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"path"
 	"strconv"
 	"strings"
@@ -84,6 +86,12 @@ type Options struct {
 	// [Options.NewServer] serves it; a host that builds its own
 	// [sdk.Server] sets it in the server's options instead.
 	Instructions string
+
+	// Logger is told of a tool whose arguments go unvalidated, because
+	// its schema names a dialect the validator does not handle, and is
+	// the SDK server's logger under [Options.NewServer]. Nil is
+	// [slog.Default].
+	Logger *slog.Logger
 }
 
 // NewServer builds an SDK server named name that serves tools. It fails
@@ -95,8 +103,8 @@ func NewServer(name, version string, tools ...agenttool.Tool) (*sdk.Server, erro
 // NewServer is [NewServer] with o.
 func (o Options) NewServer(name, version string, tools ...agenttool.Tool) (*sdk.Server, error) {
 	var opts *sdk.ServerOptions
-	if o.Instructions != "" {
-		opts = &sdk.ServerOptions{Instructions: o.Instructions}
+	if o.Instructions != "" || o.Logger != nil {
+		opts = &sdk.ServerOptions{Instructions: o.Instructions, Logger: o.Logger}
 	}
 	s := sdk.NewServer(&sdk.Implementation{Name: name, Version: version}, opts)
 	if err := o.AddTools(s, tools...); err != nil {
@@ -113,7 +121,10 @@ func (o Options) NewServer(name, version string, tools ...agenttool.Tool) (*sdk.
 // tool runs. A schema the validator cannot parse or resolve is a
 // registration error, "mcpserver: tool NAME: schema: ...", reported
 // before any tool is added, as [agenttool.New] panics for the same
-// mistake; the validator handles JSON Schema draft-07 and 2020-12. The
+// mistake; the validator handles JSON Schema draft-07 and 2020-12,
+// however the $schema URI is spelt. A schema of another dialect is not
+// refused, since it may be sound: the tool is served without the check,
+// and [Options.Logger] is told. The
 // handler then runs Execute with the raw arguments and maps the result
 // with [ContentOf]; a returned error, a validation failure included,
 // sets isError with the message as text so the calling model can see it
@@ -310,7 +321,17 @@ func Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
 // Handler is [Handler] with o.
 func (o Options) Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
 	resolved, err := resolveSchema(tl.Parameters())
-	if err != nil {
+	switch {
+	case errors.Is(err, errDialect):
+		// The schema may be sound; the validator cannot read it. The tool
+		// is served unvalidated, as one whose schema is its author's and
+		// guards itself, and the host is told.
+		log := o.Logger
+		if log == nil {
+			log = slog.Default()
+		}
+		log.Warn("mcpserver: tool arguments not validated", "tool", tl.Name(), "err", err)
+	case err != nil:
 		return nil, fmt.Errorf("mcpserver: tool %q: schema: %w", tl.Name(), err)
 	}
 	waiting := parked{abandonAfter: o.AbandonAfter, maxRequests: o.MaxRequests}
@@ -428,17 +449,37 @@ func resolveSchema(raw json.RawMessage) (*jsonschema.Resolved, error) {
 	if err := json.Unmarshal(raw, &schema); err != nil {
 		return nil, err
 	}
-	switch schema.Schema {
-	case "", "http://json-schema.org/draft-07/schema#", "https://json-schema.org/draft-07/schema#", "https://json-schema.org/draft/2020-12/schema":
-	default:
-		return nil, fmt.Errorf("unsupported $schema %q: the validator handles draft-07 and 2020-12", schema.Schema)
+	if schema.Schema != "" && !knownDialect(schema.Schema) {
+		return nil, fmt.Errorf("%w %q: the validator handles draft-07 and 2020-12", errDialect, schema.Schema)
 	}
 	return schema.Resolve(nil)
+}
+
+// errDialect is a schema whose $schema names a dialect the validator
+// does not handle.
+var errDialect = errors.New("unsupported $schema")
+
+// knownDialect reports whether a $schema names draft-07 or 2020-12,
+// however the URI is spelt: over http or https, with or without the
+// empty fragment. It is mcpclient's rule for output schemas.
+func knownDialect(uri string) bool {
+	uri = strings.TrimSuffix(uri, "#")
+	if rest, ok := strings.CutPrefix(uri, "https://"); ok {
+		uri = rest
+	} else if rest, ok := strings.CutPrefix(uri, "http://"); ok {
+		uri = rest
+	} else {
+		return false
+	}
+	return uri == "json-schema.org/draft-07/schema" || uri == "json-schema.org/draft/2020-12/schema"
 }
 
 // validate checks raw arguments against a resolved schema. The error is
 // phrased like the tool package's own decode errors.
 func validate(resolved *jsonschema.Resolved, raw json.RawMessage) error {
+	if resolved == nil {
+		return nil
+	}
 	var instance any
 	if err := json.Unmarshal(raw, &instance); err != nil {
 		return fmt.Errorf("invalid arguments: %w", err)

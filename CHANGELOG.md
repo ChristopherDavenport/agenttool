@@ -157,6 +157,13 @@ versions may break the API.
   `WithClaims` still takes both, and wins. mcpserver marks an answer
   whose facts are hints `hint: true`, so a server that serves tools it
   consumed from an untrusted one passes the mark on.
+- Fixed: mcpserver reads a draft-07 or 2020-12 `$schema` however its
+  URI is spelt, over `http` or `https`, with or without a trailing `#`,
+  where it refused a tool whose schema lacked the `#`. A schema of
+  another dialect is served without argument validation and reported to
+  the new `Options.Logger`, `slog.Default()` when nil, rather than
+  refused; a malformed or unresolvable schema is still refused when the
+  tool is added.
 - Dependencies: every module requires `openresponses` v0.0.17, up from
   v0.0.13. Its `Text` no longer documents itself for function call
   outputs, which take `input_text`, and its types keep members they do
