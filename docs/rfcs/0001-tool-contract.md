@@ -715,7 +715,7 @@ differently send different requests and record different sessions.
 | image | `input_image` whose `image_url` is a data URL of its `mimeType`, `application/octet-stream` when it has none | `input_image` whose `image_url` is a base64 data URL; one with any other URL is served as a resource link |
 | audio | `input_file` whose `file_data` is a data URL of its `mimeType`; the `filename`, `audio.<ext>` after the type in the reference binding, is informational | `input_file` whose `file_data` is a data URL of an `audio/*` type, as audio of that type; the media type decides, never the filename |
 | embedded text resource | `input_text`: the line `resource <uri> (<mimeType>)`, without ` (<mimeType>)` when it has none, a newline, then its text | not served: an `input_text` is served as text |
-| embedded blob resource | with an `image/*` `mimeType`, `input_image` whose `image_url` is a data URL of that type; with another `mimeType`, `input_file` whose `filename` is the URI and whose `file_data` is a data URL of that type; with none, `input_file` whose `filename` is the URI and whose `file_data` is bare base64, which a reader types by the filename's extension | `input_file` with `file_data`, other than audio: a data URL is a blob of its type, and bare base64 a blob typed by the `filename`'s extension under the table below, untyped when the extension is not in it; its URI is as below; `file_data` that is neither is served as text |
+| embedded blob resource | with a `mimeType` of `image/png`, `image/jpeg`, `image/gif` or `image/webp`, the image types a model request takes, `input_image` whose `image_url` is a data URL of that type; with another `mimeType`, another image type included, `input_file` whose `filename` is the URI and whose `file_data` is a data URL of that type; with none, `input_file` whose `filename` is the URI and whose `file_data` is bare base64, which a reader types by the filename's extension | `input_file` with `file_data`, other than audio: a data URL is a blob of its type, and bare base64 a blob typed by the `filename`'s extension under the table below, untyped when the extension is not in it; its URI is as below; `file_data` that is neither is served as text |
 | resource link | `input_text`: `resource_link <uri>: <name>, <description>, <mimeType>, <size> bytes`, each member the link leaves out left out with its comma, and `resource_link <uri>` when it leaves out all four | `input_image` with a URL that is not a data URL; `input_file` with `file_url` and no `file_data`, named by `filename` |
 | any other block | `input_text` holding the block's JSON | a part of any other type, as its JSON in a text block |
 
@@ -1105,7 +1105,8 @@ module and is listed in the changelog as one.
 - The MCP binding's output row becomes [Content](#content), a table
   stating each block's rendering both ways. A consumed resource keeps
   its URI, media type, name, description and size: a typed blob is a
-  data URL of its type, an image blob an `input_image`, an embedded
+  data URL of its type, a PNG, JPEG, GIF or WebP blob an
+  `input_image`, an embedded
   text resource is preceded by a line naming it and a link is a line
   naming it. A block whose audience leaves out the assistant is not
   in the output (#93).

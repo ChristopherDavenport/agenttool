@@ -1376,8 +1376,8 @@ func (s *Remote) onProgress(p *sdk.ProgressNotificationParams) {
 // name, "audio.wav" for audio/wav, is for a reader that goes by names.
 //
 // A blob with a media type is sent as a data URL of that type, an
-// input_image when the type is an image and an input_file named by its
-// URI otherwise, so an adapter can type it whatever the URI looks like;
+// input_image when the type is a PNG, JPEG, GIF or WebP and an
+// input_file named by its URI otherwise, so an adapter can type it whatever the URI looks like;
 // a blob without one keeps its URI as the name and its bytes as bare
 // base64, which a reader types by the name's extension. An embedded
 // text resource is its text after a line naming it,
@@ -1502,24 +1502,31 @@ func forAssistant(a *sdk.Annotations) bool {
 }
 
 // blobPart maps an embedded blob: an input_image when its media type is
-// an image, an input_file otherwise, named by the resource's URI. The
-// data is a data URL of the media type when the server gave one, and
-// bare base64 when it did not, which a reader types by the name.
+// one of [modelImages], an input_file otherwise, named by the resource's
+// URI. The data is a data URL of the media type when the server gave
+// one, and bare base64 when it did not, which a reader types by the
+// name.
 func blobPart(r *sdk.ResourceContents) openresponses.Content {
 	if r.MIMEType == "" {
 		return &openresponses.InputFile{Filename: r.URI, FileData: base64.StdEncoding.EncodeToString(r.Blob)}
 	}
-	if isMediaType(r.MIMEType, "image") {
+	if modelImage(r.MIMEType) {
 		return &openresponses.InputImage{ImageURL: dataURL(r.MIMEType, r.Blob)}
 	}
 	return &openresponses.InputFile{Filename: r.URI, FileData: dataURL(r.MIMEType, r.Blob)}
 }
 
-// isMediaType reports whether mediaType is of the top-level type top,
-// "image" for "image/png; x=y", ignoring case.
-func isMediaType(mediaType, top string) bool {
-	t, _, ok := strings.Cut(mediaType, "/")
-	return ok && strings.EqualFold(strings.TrimSpace(t), top)
+// modelImages are the image types a model request takes in an
+// input_image. Another image type, an SVG, a TIFF, a HEIC, is sent as a
+// file, since a provider refuses the whole request over an image it
+// cannot decode.
+var modelImages = map[string]bool{"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true}
+
+// modelImage reports whether mediaType, without its parameters and
+// compared without case, is one of [modelImages].
+func modelImage(mediaType string) bool {
+	base, _, _ := strings.Cut(mediaType, ";")
+	return modelImages[strings.ToLower(strings.TrimSpace(base))]
 }
 
 // resourceText renders an embedded text resource: the line

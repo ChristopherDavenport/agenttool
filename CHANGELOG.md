@@ -27,7 +27,9 @@ versions may break the API.
   and the command line still do. `Parts`'s doc names the four types.
 - Fixed: mcpclient's `ResultOf` keeps what a resource says about itself
   (#93). An embedded blob with a media type is sent as a data URL of
-  that type, an `input_image` when the type is an image, so a
+  that type, an `input_image` when the type is PNG, JPEG, GIF or WebP
+  and an `input_file` for any other image type, an SVG or a TIFF, which
+  a provider would refuse as an image, so a
   screenshot returned as `screenshot://page/1` is no longer refused by
   an adapter that types a file by its name's extension; the
   `input_file` keeps the URI as its name. An embedded text resource is

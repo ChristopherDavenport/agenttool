@@ -682,6 +682,40 @@ func TestResultOfResources(t *testing.T) {
 	}
 }
 
+// TestImageBlobTypes: only the image types a model request takes, png,
+// jpeg, gif and webp, become input_image; another image type stays a
+// file, so it does not break the next request.
+func TestImageBlobTypes(t *testing.T) {
+	for mime, want := range map[string]string{
+		"image/png":     "input_image",
+		"image/jpeg":    "input_image",
+		"Image/GIF":     "input_image",
+		"image/webp":    "input_image",
+		"image/svg+xml": "input_file",
+		"image/tiff":    "input_file",
+		"image/heic":    "input_file",
+	} {
+		res, err := ResultOf(&sdk.CallToolResult{Content: []sdk.Content{
+			&sdk.EmbeddedResource{Resource: &sdk.ResourceContents{URI: "file:///pic", MIMEType: mime, Blob: []byte{1}}},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := json.Marshal(res.Output.Parts[0])
+		var head struct {
+			Type     string `json:"type"`
+			FileData string `json:"file_data"`
+		}
+		_ = json.Unmarshal(got, &head)
+		if head.Type != want {
+			t.Errorf("%s blob = %s, want %s", mime, got, want)
+		}
+		if want == "input_file" && head.FileData != "data:"+mime+";base64,AQ==" {
+			t.Errorf("%s file = %s, want its data URL", mime, got)
+		}
+	}
+}
+
 // normal re-encodes JSON so two spellings of one value compare equal.
 func normal(t *testing.T, raw []byte) string {
 	t.Helper()
