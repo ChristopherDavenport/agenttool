@@ -680,6 +680,8 @@ set on the local side by the host and does not cross.
 | call on the context | the server installs it for every call, as the executor does | serve |
 | recorder on the context | the handler leaves one it finds; the go-sdk at v1.8.0 derives each call's context from the one the session was opened with, `Run` or `Connect` over stdio and in memory, the initialize request over streamable HTTP, which is observed behaviour a test pins and not a documented guarantee | serve |
 | client identity | the server puts the MCP session on the context: `mcpserver.SessionFrom` | serve |
+| roots | no field in the contract. The consuming side offers the roots capability only when the host supplies roots, `mcpclient.WithRoots`, and answers `roots/list` with them; without them it MUST NOT advertise roots, so a server that scopes itself to its client's roots is not told it has some and then given none | consume |
+| logging | no field in the contract. The consuming side asks for log messages only when the host takes them, `mcpclient.WithLogging`: from 2026-07-28 by the log level in each call's `_meta`, `io.modelcontextprotocol/logLevel`, and before it by `logging/setLevel` when the session starts. It hands each message to the host, with the call on the context when the message belongs to a call it can name, and a log message never reaches a call's output, its details or the model | consume |
 | elicitation | `elicitation/create` ↔ the elicitor on the call's context. The client offers it only with `mcpclient.WithElicitation`; from 2026-07-28 the question returns with its call and is that call's, and before it a question the server sends on its own is put to the one call in flight, and to nobody when there is none or several; nobody to ask answers `cancel`. The server installs an elicitor on a served call's context when the client offers elicitation: from 2026-07-28 a question goes back as the call's input request, the tool running on while the client asks, and before it as `elicitation/create`; a question of a mode the client does not take answers `cancel` | both |
 
 #### Content
@@ -1049,6 +1051,10 @@ module and is listed in the changelog as one.
   is not sent again; a consumed tool's output schema is checked, and a
   result that fails it is an error beginning `invalid result:` that
   says the call ran, which is not an ambiguous outcome (#95).
+- The MCP binding gains roots and logging, neither of which the
+  contract carries: the consuming side offers roots only when the host
+  supplies them, and asks for log messages only for a host that takes
+  them, which never reach the model (#99).
 
 ## Changes since 0.6
 

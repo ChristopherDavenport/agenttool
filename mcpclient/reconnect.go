@@ -360,8 +360,11 @@ func (s *Remote) reconnect(ctx context.Context, old *link) (*link, ReconnectInfo
 // them, so the session, the snapshot and its claims change in one step,
 // and settles every notification received so far, since the listing is
 // a whole one. It returns the tools before and after, by local name and
-// definition. It refuses once the remote is closed.
+// definition. It refuses once the remote is closed. With [WithLogging]
+// it first asks an older server for its log messages, since a restarted
+// session starts without the level.
 func (s *Remote) adopt(ctx context.Context, l *link) (before, after map[string]string, err error) {
+	s.setLogLevel(ctx, l)
 	s.listing.Lock()
 	defer s.listing.Unlock()
 	gen := s.seen.Load()

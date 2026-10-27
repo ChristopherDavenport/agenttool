@@ -61,6 +61,21 @@ versions may break the API.
   failed and may be made again. mcpclient now requires
   `github.com/google/jsonschema-go` directly. An output schema on
   `agenttool.Tool`, served by mcpserver, is a follow-up.
+- Fixed: mcpclient no longer offers roots it never fills (#99). It kept
+  the SDK's default capability `roots: {listChanged: true}` and gave
+  none, so a server that scopes itself to its client's roots asked,
+  got an empty list and refused every path. Added: `WithRoots(roots…)`
+  offers the host's roots and answers `roots/list` with them; without it
+  the client offers no roots. A capability set through
+  `WithClientOptions` still wins.
+- Added: `mcpclient.WithLogging(level, fn)` takes a server's log
+  messages and hands each to the host's `fn`, with the call on the
+  context when the message belongs to one the client can name (#99).
+  The level goes in each call's `_meta` under
+  `io.modelcontextprotocol/logLevel`, without which a 2026-07-28 server
+  sends nothing, and an older server that advertises logging is sent
+  `logging/setLevel` when its session starts, a restarted one included.
+  A log message never reaches a call's output or the model.
 - Dependencies: every module requires `openresponses` v0.0.17, up from
   v0.0.13. Its `Text` no longer documents itself for function call
   outputs, which take `input_text`, and its types keep members they do

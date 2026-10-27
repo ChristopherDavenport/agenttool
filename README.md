@@ -400,6 +400,13 @@ instructions: what it is for and how its tools go together.
 initialize, and `mcpclient.Remote.Instructions` reads them; the host
 decides whether the model does.
 
+Roots and logging are the host's too, and `mcpclient` offers neither
+unless the host takes part: `WithRoots` offers the directories a server
+may work in, a workspace's root, and without it no roots are offered;
+`WithLogging(level, fn)` asks for the server's log messages and hands
+each to `fn`, with the call on its context when it can tell which, and
+never to the model.
+
 A record crosses too. The tool that most wants one, a shell inside a
 sandbox recording which container served the call, is the tool most
 likely to be behind a server, so `mcpserver` puts the `Record` of a

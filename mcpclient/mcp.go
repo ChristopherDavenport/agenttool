@@ -128,6 +128,13 @@ type options struct {
 	onRefreshError func(error)
 	elicitation    bool
 	claims         bool
+	// roots are offered to the server when rootsSet; see [WithRoots].
+	roots    []*sdk.Root
+	rootsSet bool
+	// logLevel and onLog are the log messages the host takes; see
+	// [WithLogging].
+	logLevel sdk.LoggingLevel
+	onLog    func(context.Context, *sdk.LoggingMessageParams)
 	dial           func(context.Context) (sdk.Transport, error)
 	onReconnect    func(ReconnectInfo)
 	// protocolVersion is the version the session offers, the SDK's
@@ -438,6 +445,47 @@ func WithElicitation() Option {
 	return func(o *options) { o.elicitation = true }
 }
 
+// WithRoots offers the server roots, the directories it may work in,
+// and answers its roots/list request with them. Without it the client
+// does not offer roots at all, so a server that scopes itself to its
+// client's roots is told there are none to ask for rather than asking
+// and being given an empty list. The roots are the host's: a host that
+// runs its agent in a workspace offers the workspace's root.
+//
+//	mcpclient.WithRoots(&mcp.Root{URI: "file:///home/me/project", Name: "project"})
+//
+// The roots are fixed for the remote's life, and offered without
+// list-changed notifications. A capability the host sets itself through
+// [WithClientOptions] wins: one that names roots offers them whether or
+// not this option is given. Roots are deprecated from protocol version
+// 2026-07-28 and still work there.
+func WithRoots(roots ...*sdk.Root) Option {
+	return func(o *options) {
+		o.roots = append(o.roots, roots...)
+		o.rootsSet = true
+	}
+}
+
+// WithLogging takes the server's log messages at level and above and
+// hands each to fn, which belongs to the host: a log message is for
+// whoever runs the server and never reaches a call's output, its
+// details or the model. The level goes in each call's _meta, which is
+// how a server from protocol version 2026-07-28 is asked for messages,
+// and without which it sends none; an older server that advertises
+// logging is sent logging/setLevel when its session starts.
+//
+// fn's context carries the call, through [agenttool.CallFrom], when the
+// message belongs to a call the client can name: the message arrived
+// with that call's request, or exactly one call of the remote was in
+// flight. A message about no call, or about one of several running,
+// arrives on a context without one. A nil fn takes no messages, as
+// without the option. A LoggingMessageHandler set through
+// [WithClientOptions] is called as well, before fn. Logging is
+// deprecated from 2026-07-28 and still works there.
+func WithLogging(level sdk.LoggingLevel, fn func(ctx context.Context, msg *sdk.LoggingMessageParams)) Option {
+	return func(o *options) { o.logLevel, o.onLog = level, fn }
+}
+
 // WithClaims takes the server's facts and replay claims for its tools,
 // for a server the host trusts, such as an executor it started itself.
 // Without it the remote's tools make no claim even when the server
@@ -577,25 +625,36 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 			}
 		}()
 	}
+	// The capabilities are always stated, since the SDK's default offers
+	// roots, which this client offers only when the host gives them.
+	caps := &sdk.ClientCapabilities{}
+	if clientOpts.Capabilities != nil {
+		c := *clientOpts.Capabilities
+		caps = &c
+	}
+	if o.rootsSet && caps.RootsV2 == nil {
+		caps.RootsV2 = &sdk.RootCapabilities{}
+	}
 	if o.elicitation && clientOpts.ElicitationHandler == nil {
 		clientOpts.ElicitationHandler = s.elicit
 		// The SDK offers form elicitation alone for a handler, and a
 		// server then refuses to ask by URL, which is how a tool asks for
-		// a credential it must not see. Offer both, over the SDK's own
-		// default capabilities or the caller's, unless the caller has
+		// a credential it must not see. Offer both, unless the caller has
 		// said which elicitation it takes.
-		// The SDK's default when none are set, reproduced so that
-		// offering URL elicitation does not also stop offering roots.
-		//lint:ignore SA1019 roots are deprecated, and still what the SDK offers by default
-		caps := &sdk.ClientCapabilities{RootsV2: &sdk.RootCapabilities{ListChanged: true}}
-		if clientOpts.Capabilities != nil {
-			c := *clientOpts.Capabilities
-			caps = &c
-		}
 		if caps.Elicitation == nil {
 			caps.Elicitation = &sdk.ElicitationCapabilities{Form: &sdk.FormElicitationCapabilities{}, URL: &sdk.URLElicitationCapabilities{}}
 		}
-		clientOpts.Capabilities = caps
+	}
+	clientOpts.Capabilities = caps
+	if o.onLog != nil {
+		userLog := clientOpts.LoggingMessageHandler
+		//lint:ignore SA1019 logging is deprecated from 2026-07-28, and still works there
+		clientOpts.LoggingMessageHandler = func(ctx context.Context, req *sdk.LoggingMessageRequest) {
+			if userLog != nil {
+				userLog(ctx, req)
+			}
+			s.onLog(ctx, req)
+		}
 	}
 	userProgress := clientOpts.ProgressNotificationHandler
 	clientOpts.ProgressNotificationHandler = func(ctx context.Context, req *sdk.ProgressNotificationClientRequest) {
@@ -606,6 +665,10 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 	}
 
 	client := sdk.NewClient(&o.client, &clientOpts)
+	if len(o.roots) > 0 {
+		//lint:ignore SA1019 roots are deprecated from 2026-07-28, and still work there
+		client.AddRoots(o.roots...)
+	}
 	for _, setup := range o.setups {
 		if err := setup(client); err != nil {
 			return nil, fmt.Errorf("mcp: client setup: %w", err)
@@ -976,9 +1039,15 @@ func (s *Remote) call(ctx context.Context, ref toolRef, readOnly bool, out *outp
 		args = json.RawMessage("{}")
 	}
 	params := &sdk.CallToolParams{Name: remote, Arguments: args}
+	if s.opts.onLog != nil {
+		params.Meta = sdk.Meta{sdk.MetaKeyLogLevel: s.opts.logLevel}
+	}
 	if call.OnUpdate != nil {
 		token := "agenttool-" + strconv.FormatInt(s.token.Add(1), 10)
-		params.Meta = sdk.Meta{"progressToken": token}
+		if params.Meta == nil {
+			params.Meta = sdk.Meta{}
+		}
+		params.Meta["progressToken"] = token
 		s.mu.Lock()
 		s.progress[token] = call.OnUpdate
 		s.mu.Unlock()
@@ -1274,6 +1343,38 @@ func (s *Remote) awaitNotification(ctx context.Context, l *link, target int64) {
 	case <-timer.C:
 	case <-ctx.Done():
 	}
+}
+
+// onLog hands a server's log message to the host's function, with the
+// call it belongs to on the context when that can be told; see
+// [WithLogging]. The call's context is taken without its cancellation,
+// so a message that arrives as its call ends is still handed over whole.
+func (s *Remote) onLog(ctx context.Context, req *sdk.LoggingMessageRequest) {
+	if req == nil || req.Params == nil {
+		return
+	}
+	if own, _ := ctx.Value(ownCallKey{}).(*ownCall); own != nil && own.remote == s {
+		ctx = context.WithoutCancel(own.ctx)
+	} else if callCtx, ok := s.soleCall(); ok {
+		ctx = context.WithoutCancel(callCtx)
+	} else {
+		ctx = context.WithoutCancel(ctx)
+	}
+	s.opts.onLog(ctx, req.Params)
+}
+
+// setLogLevel asks a server before protocol version 2026-07-28 for its
+// log messages, when the host takes them and the server advertises
+// logging; a later server is asked on each call instead. It is best
+// effort: a server that refuses sends no messages, which is what the
+// host would have had without the option.
+func (s *Remote) setLogLevel(ctx context.Context, l *link) {
+	res := l.session.InitializeResult()
+	if s.opts.onLog == nil || res == nil || res.Capabilities == nil || res.Capabilities.Logging == nil || res.ProtocolVersion >= "2026-07-28" {
+		return
+	}
+	//lint:ignore SA1019 logging is deprecated from 2026-07-28, and still works there
+	_ = l.session.SetLoggingLevel(ctx, &sdk.SetLoggingLevelParams{Level: s.opts.logLevel})
 }
 
 // onProgress routes a progress notification to the call that asked for
