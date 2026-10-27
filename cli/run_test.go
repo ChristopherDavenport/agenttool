@@ -267,6 +267,7 @@ func TestRun(t *testing.T) {
 		{name: "form content with a member the form lacks", args: []string{"--answer", "accept", "--answer", `{"reason":"merged","why":"x"}`, "delete"}, code: cli.ExitAnswerRefused, stdoutHas: `"answers_given":1`, stderrHas: `"why"`},
 		{name: "form content in the object form", args: []string{"--answer", "accept", "--answer", `{"action":"accept","content":{"reason":"merged"},"note":"tidy up"}`, "delete"}, stdout: "deleted: {\"reason\":\"merged\"}\n"},
 		{name: "content with decline", args: []string{"--answer", `{"action":"decline","content":{"reason":"x"}}`, "delete"}, code: cli.ExitUsage, stderrHas: "only on accept"},
+		{name: "a decline's empty content", args: []string{"--answer", `{"action":"decline","content":{},"note":"later"}`, "delete"}, stdout: "kept; the user said: later\n"},
 		{name: "an unknown action in the object form", args: []string{"--answer", `{"action":"maybe"}`, "delete"}, code: cli.ExitUsage, stderrHas: "maybe"},
 		{name: "an unknown member of the object form", args: []string{"--answer", `{"action":"accept","contents":{}}`, "delete"}, code: cli.ExitUsage, stderrHas: "contents"},
 		{name: "progress on stderr", args: []string{"work"}, stdout: "done\n", stderrHas: "[1/2] half\n"},

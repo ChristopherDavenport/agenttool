@@ -466,8 +466,13 @@ func (a *answerList) Set(s string) error {
 	default:
 		return fmt.Errorf("an answer's action is accept, decline or cancel, not %q", ans.Action)
 	}
-	if len(ans.Content) > 0 && string(ans.Content) != "null" && ans.Action != agenttool.ActionAccept {
-		return fmt.Errorf("an answer has content only on accept, not on %s", ans.Action)
+	if ans.Action != agenttool.ActionAccept {
+		// An empty object is no content, with any action.
+		var content map[string]json.RawMessage
+		if len(ans.Content) > 0 && string(ans.Content) != "null" && (json.Unmarshal(ans.Content, &content) != nil || len(content) > 0) {
+			return fmt.Errorf("an answer has content only on accept, not on %s", ans.Action)
+		}
+		ans.Content = nil
 	}
 	*a = append(*a, ans)
 	return nil
