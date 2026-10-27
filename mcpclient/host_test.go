@@ -1,5 +1,7 @@
 package mcpclient
 
+//lint:file-ignore SA1019 roots and logging are deprecated from protocol version 2026-07-28 and still work there; these are their tests
+
 import (
 	"context"
 	"encoding/json"
@@ -77,12 +79,10 @@ func TestLogMessagesReachTheHost(t *testing.T) {
 		{"older server", []Option{older}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			server := sdk.NewServer(&sdk.Implementation{Name: "net", Version: "1"}, &sdk.ServerOptions{HasTools: true})
+			server := sdk.NewServer(&sdk.Implementation{Name: "net", Version: "1"}, nil)
 			server.AddTool(&sdk.Tool{Name: "fetch", InputSchema: json.RawMessage(`{"type":"object"}`)},
 				func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
-					//lint:ignore SA1019 the deprecated feature under test
 					_ = req.Session.Log(ctx, &sdk.LoggingMessageParams{Level: "debug", Data: "too fine"})
-					//lint:ignore SA1019 the deprecated feature under test
 					if err := req.Session.Log(ctx, &sdk.LoggingMessageParams{Level: "warning", Logger: "upstream", Data: "lost the upstream connection"}); err != nil {
 						return nil, err
 					}
@@ -126,7 +126,6 @@ func TestNoLoggingNoMessages(t *testing.T) {
 	var sent error
 	server.AddTool(&sdk.Tool{Name: "fetch", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
-			//lint:ignore SA1019 the deprecated feature under test
 			sent = req.Session.Log(ctx, &sdk.LoggingMessageParams{Level: "emergency", Data: "x"})
 			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "fetched"}}}, nil
 		})
