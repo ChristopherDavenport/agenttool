@@ -92,8 +92,8 @@ RFC 2119.
   description, parameters and the strict flag.
 - **Property**: an optional, defaulted fact about a tool that a harness
   reads and the model does not: sequential, resource, annotations,
-  confinement, whether a call may run again, and whether the tool owns
-  something to close.
+  confinement, whether a call may run again, what a call touches, how
+  data flows through it, and whether the tool owns something to close.
 - **Harness**: whatever builds requests, hands calls to tools and
   returns their outputs: an agent loop, an MCP server serving Go
   tools, a test.
@@ -183,8 +183,9 @@ A property is a fact about a tool that a harness reads and the model
 does not. Each is optional and has a default, and a tool that declares
 none of them is a complete tool that runs in parallel with everything,
 claims no shared state, says nothing about its behaviour, claims no
-sandbox, never runs a call twice, is its own one fact and owns nothing
-that outlives a call.
+sandbox, never runs a call twice, is its own one fact, says nothing of
+where its data comes from or goes, and owns nothing that outlives a
+call.
 
 | Property | Type | Default | Read by |
 | --- | --- | --- | --- |
@@ -195,7 +196,8 @@ that outlives a call.
 | annotations | object | unstated | a policy layer |
 | confined | (ctx, args) → (boolean, string) | (false, `""`), unstated | a policy layer, per call |
 | replay | (ctx, args) → unknown, safe or keyed | unknown | a harness resuming or retrying, per call |
-| facts | (ctx, args) → (calls, rewrite) or error | absent: the call itself | a policy layer, per call |
+| facts | (ctx, args) → (calls, rewrite, hint) or error | absent: the call itself | a policy layer, per call |
+| flow | object: reads, sends, to, carries | unstated | a policy layer, a recorder |
 | closer | presence | absent, owns nothing | the host |
 
 - **strict** is the tool's claim that its parameters schema keeps the
@@ -262,6 +264,35 @@ that outlives a call.
   pay a round trip for facts skips the tool. Like confined, this is
   what a tool reports, never what it runs; a tool that rewrites checks
   when it runs that what it runs is what it claimed.
+
+  A claim has a **source** the reader trusts or does not: a tool the
+  host built or a server it trusts, or a server it does not. Facts from
+  an untrusted source are **hints**. A reader MAY use a hint's calls to
+  make a decision stricter, MUST NOT decide a call on them alone, so it
+  decides the call on its own arguments as well, and ignores a hint's
+  rewrite, which would change what runs and what is recorded on the
+  word of a source it does not trust. A binding MUST mark facts that
+  are hints, so the mark travels with the facts to whatever reads them,
+  and a reader that cannot tell takes them as hints. Replay from an
+  untrusted source is *unknown*, since running a call twice is an
+  allow.
+- **flow** says how data moves through a call of the tool. `reads` is
+  a set of labels on the tool's output: `untrusted`, content an outside
+  party wrote, a web page or an inbox; and `private`, content the user
+  would not have leave the session, an inbox or a vault. `sends` says a
+  call carries data out of the session. `to` names the arguments, by
+  their top-level member names, that say where it goes, and `carries`
+  the arguments whose values go there; absent, each is every argument.
+  The default is *unstated*, and a binding MUST let a reader tell a
+  tool that said nothing from one that declared `reads: []` and
+  `sends: false`, as facts has presence. A reader MUST read a label it
+  does not know as `untrusted`, so a label added later is the strict
+  mistake. Flow is the author's statement, as annotations are: a
+  declared label or `sends` MAY make a policy stricter, and a
+  declaration that a tool reads nothing untrusted or private, sends
+  nothing, or sends only through `to` and `carries`, is taken only from
+  a tool the host trusts. It is per tool: a tool whose calls differ
+  declares what its widest call does.
 - **closer** says the tool owns something that outlives a call, a
   container, a persistent shell, a pool, and how to release it. See
   [Lifecycle](#lifecycle).
@@ -668,7 +699,8 @@ and everything else is optional.
 | annotations | `Annotated` interface and `Annotations` struct, read by `AnnotationsOf`, set by `WithAnnotations(a)` |
 | confined | `Confined` interface, read by `ConfinedBy(ctx, t, args)`, set by `WithConfined(fn)` |
 | replay | `Replayable` interface and `Replay` (`ReplayUnknown`, `ReplaySafe`, `ReplayKeyed`), read by `ReplayOf(ctx, t, args)`, which reads an unknown value as `ReplayUnknown`, set by `WithReplay(fn)` |
-| facts | `Factual` interface, `Facts{Calls, Rewrite}` and `FactCall{Tool, Args, Text}`, read by `FactsOf(ctx, t, args)`, which also reports whether the tool claims and returns its error as is, presence read by `IsFactual(t)`, set by `WithFacts(fn)`; a `New` or `NewFunc` tool built without it, and a `Wrap` of a tool that does not claim, has the method and reads as not claiming |
+| facts | `Factual` interface, `Facts{Calls, Rewrite, Hint}` and `FactCall{Tool, Args, Text}`, read by `FactsOf(ctx, t, args)`, which also reports whether the tool claims and returns its error as is, presence read by `IsFactual(t)`, set by `WithFacts(fn)`; a `New` or `NewFunc` tool built without it, and a `Wrap` of a tool that does not claim, has the method and reads as not claiming. `Hint` marks facts from an untrusted source, so the zero value is a claim, what a tool the host built in process makes; `FactsOf` returns a hint's `Rewrite` as nil |
+| flow | `Flowing` interface, `Flow{Reads, Sends, To, Carries}` and `Label` (`LabelUntrusted`, `LabelPrivate`), read by `FlowOf(t)`, which reports presence and reads an unknown label as `LabelUntrusted`, set by `WithFlow(f)` |
 | closer | `io.Closer`; `Set.Close()` closes a list in order and joins errors; `WithCloser(fn)` makes a `New` or `NewFunc` tool one, and without it the tool is not |
 | forwarding wrapper | `Wrap(t, exec)` forwards every property of `t` and closes it; `Unwrap(t)` returns it |
 | call | `Call{ID, Args, IdempotencyKey, OnUpdate}`; `Call.Update` sends progress |
@@ -715,8 +747,9 @@ set on the local side by the host and does not cross.
 | sequential, barrier, resource | no field in MCP; the serving side puts them in the tool's `_meta` under `ToolMetaKey` (`sequential`, `barrier`, `resource`), and the consuming side declares them from there. A barrier is served with `sequential` beside it, so a consumer that predates barriers runs its batch one call at a time, stricter and never looser; a consumer that reads `barrier` takes the tool as a barrier alone. `mcpclient.WithSequential(names…)` adds sequential, `WithBarrier(names…)` adds barrier, and `WithResource(resource, names…)` names a remote tool's state and wins over the server's, an empty resource withdrawing it, since the host sees every server it composes and the server only itself | both |
 | annotations | `annotations`: `title`, `readOnlyHint`, `destructiveHint` (absent is true), `idempotentHint`, `openWorldHint` (absent is true); a tool with no block is unstated | both |
 | confined | no field; `mcpclient.WithConfined(by, names…)` says a remote tool runs confined, and `WithConfinedFunc(fn, names…)` answers per call; the claim is the host's, which placed the server, and the server's does not cross | consume |
-| replay | answered by `execution/facts` beside the call's facts, for a tool whose `_meta` marks `replay`, and taken by the consuming side only when the host opts in (`mcpclient.WithClaims`), as for facts; *keyed* is sent and read as *unknown*, since the idempotency key does not cross. A consumed tool not so taken is *unknown* whatever its `idempotentHint`, since MCP defines no deduplication and a call whose stream broke may or may not have run | both |
-| facts | `execution/facts`, a method of its own beside `tools/call`, so it cannot reach the model's tool list: its params are a response's calls together, `{name, arguments}`, and its result one answer per call in order, `facts` (`{calls: [{tool, args, text}], rewrite}`, calls `null` for the call itself and `[]` for nothing the tool can state), or `error` in its place, or neither for a tool that makes no claim, with the call's `replay`. Answering never runs a tool. The server advertises it as the experimental capability `FactsCapability`, and marks a claiming tool `facts` in its `_meta` under `ToolMetaKey`, which is the presence a reader sees without asking. The consuming side takes the claim only when the host opts in, `mcpclient.WithClaims()`, for a server it trusts: a claim is what a policy decides on, so a server that lied about what its calls touch could steer the policy into allowing them. With it, a consumed tool so marked on a server that advertises the method is factual and asks under the call's context; without it, or on a server that does not advertise it, the server is never asked and the tool makes no claim | both |
+| replay | answered by `execution/facts` beside the call's facts, for a tool whose `_meta` marks `replay`, and taken by the consuming side only when the host takes the server's claims (`mcpclient.WithClaims`), never with facts taken as hints; *keyed* is sent and read as *unknown*, since the idempotency key does not cross. A consumed tool not so taken is *unknown* whatever its `idempotentHint`, since MCP defines no deduplication and a call whose stream broke may or may not have run | both |
+| facts | `execution/facts`, a method of its own beside `tools/call`, so it cannot reach the model's tool list: its params are a response's calls together, `{name, arguments}`, and its result one answer per call in order, `facts` (`{calls: [{tool, args, text}], rewrite}`, calls `null` for the call itself and `[]` for nothing the tool can state), or `error` in its place, or neither for a tool that makes no claim, with the call's `replay`. Answering never runs a tool. The server advertises it as the experimental capability `FactsCapability`, and marks a claiming tool `facts` in its `_meta` under `ToolMetaKey`, which is the presence a reader sees without asking. An answer whose facts are hints carries `hint: true`, so a server that serves tools it consumed from an untrusted one passes the mark on. The consuming side takes the claim only when the host opts in, `mcpclient.WithClaims()`, for a server it trusts: a claim is what a policy decides on, so a server that lied about what its calls touch could steer the policy into allowing them. With it, a consumed tool so marked on a server that advertises the method is factual and asks under the call's context, and an answer marked `hint` is a hint. A host that does not trust the server MAY take its facts as hints, `mcpclient.WithFactsHints()`: every answer is then a hint, its rewrite dropped, and the server's replay is not taken. Without either, or on a server that does not advertise the method, the server is never asked and the tool makes no claim | both |
+| flow | consume: a tool whose `openWorldHint` is true or absent, with an annotations block or without one, as MCP defaults it, has flow `reads: [untrusted]`, `sends: true`, with no `to` or `carries`; a tool whose hint is false is *unstated*, not `reads: []`, since a closed-world hint is a loosening claim. The server's own flow, in the tool's `_meta` under `ToolMetaKey` as `flow`, `{reads, sends, to, carries}`, is taken as stated when the host takes the server's claims (`mcpclient.WithClaims`); otherwise it is merged only where it is stricter: its labels are added, and the tool reads as sending with no `to` or `carries`, since an untrusted server's word that a tool sends nothing, or sends only through some arguments, is a loosening claim. Serve: the serving side puts flow in `_meta` under `ToolMetaKey`, and serves `openWorldHint: true` whenever the flow reads `untrusted` or sends, whatever the annotations say, so a client that reads only MCP is never looser | both |
 | read-only | the tool's `_meta` under `ToolMetaKey` carries `readOnly`, the served tool's annotation, as the server's statement rather than a hint; the consuming side reads it with `ToolMetaOf` | both |
 | idempotency key | no field; a consumed call's key is not sent, and a served call has none | — |
 | closer | not a closer: the remote session is closed through `mcpclient.Remote.Close` | consume |
@@ -1214,6 +1247,22 @@ module and is listed in the changelog as one.
   [Command line](#command-line): exit statuses, the question on
   stdout with `schema` always present, and `--answer` in the object
   form that carries a note (#85).
+- Properties gain **flow**, unstated by default and with presence:
+  the labels on a tool's output, `untrusted` and `private`, whether a
+  call sends data out of the session, and through which arguments; an
+  unknown label reads as `untrusted`, and a declaration that loosens is
+  taken from a trusted tool only. The MCP binding reads
+  `openWorldHint`, true or absent, as reading untrusted content and
+  sending, takes a server's flow as stated only from a server whose
+  claims the host takes and otherwise only where it is stricter, and
+  serves `openWorldHint: true` for a flow that reads untrusted content
+  or sends (#92).
+- A claim has a source the reader trusts or does not. Facts from an
+  untrusted source are hints, marked as such: a reader may use them to
+  be stricter, never decides a call on them alone and ignores their
+  rewrite, and replay from such a source is *unknown*. The MCP binding
+  takes facts as hints from a server the host does not trust, and
+  carries the mark (#84).
 
 ## Changes since 0.6
 
