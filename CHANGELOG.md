@@ -5,6 +5,20 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Fixed: mcpclient's `Remote.Close` returns nil for a session that had already
+  ended, the server's process exited or its connection dropped, and so
+  for one whose restart under `WithReconnect` failed (#88). It used to
+  return the error of closing that dead session's transport, such as a
+  connection refused by a host that stopped, and only some of the time:
+  the failed restart also closed the old session, in the background,
+  and which of the two closes ran second decided whether `Close` saw
+  the error. A session is now closed once, by whichever asks first, and
+  `Close` waits for a close already in flight. The end was already
+  reported to the requests that met it and to `WithReconnected`. Close
+  of a live session still returns its close error.
+
 ## v0.0.24 - 2026-10-24
 
 - Added: `Barrier`, a tool property read by `IsBarrier` and set by

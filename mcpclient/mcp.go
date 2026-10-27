@@ -822,6 +822,16 @@ func (s *Remote) Await(ctx context.Context) error {
 // that nobody chose. The wait is bounded by the same few seconds those
 // requests are given to run, and a call with no question open holds it
 // for no longer than its cancel takes to land.
+//
+// Close returns the error of closing a session that was live when it
+// began. It returns nil for a session that had already ended, the
+// server's process exited or its connection dropped, and so for one
+// whose restart failed: the end was reported to the requests that met
+// it, and with [WithReconnect] to [WithReconnected], and the error of
+// tearing down the transport of a server that is gone, such as a
+// connection refused by a host that stopped, says nothing more. A
+// session is closed once, whether by Close or by a restart releasing
+// it, and Close waits for a close already in flight.
 func (s *Remote) Close() error {
 	s.mu.Lock()
 	s.closed = true
@@ -847,7 +857,12 @@ func (s *Remote) Close() error {
 	case <-t.C:
 	}
 	t.Stop()
-	return l.session.Close()
+	ended := l.isEnded()
+	err := l.close()
+	if ended {
+		return nil
+	}
+	return err
 }
 
 // Name returns the local name of a remote tool under this server's
