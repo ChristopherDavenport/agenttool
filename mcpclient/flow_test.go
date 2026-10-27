@@ -31,27 +31,33 @@ func TestFlowOfConsumedTools(t *testing.T) {
 	add("open", &sdk.ToolAnnotations{OpenWorldHint: &yes}, nil)
 	add("closed", &sdk.ToolAnnotations{OpenWorldHint: &no}, nil)
 	add("closed_private", &sdk.ToolAnnotations{OpenWorldHint: &no}, map[string]any{"reads": []any{"private"}, "sends": false})
+	add("closed_says_pure", &sdk.ToolAnnotations{OpenWorldHint: &no}, map[string]any{"reads": []any{}, "sends": false})
 	add("open_says_pure", nil, map[string]any{"reads": []any{}, "sends": false})
 	add("send_email", nil, map[string]any{"reads": []any{}, "sends": true, "to": []any{"to"}, "carries": []any{"subject", "body"}})
 
 	openWorld := agenttool.Flow{Reads: []agenttool.Label{agenttool.LabelUntrusted}, Sends: true}
 	untrusted := map[string]*agenttool.Flow{
-		"no_block":       &openWorld,
-		"hint_absent":    &openWorld,
-		"open":           &openWorld,
-		"closed":         nil,
-		"closed_private": {Reads: []agenttool.Label{agenttool.LabelPrivate}, Sends: true},
-		"open_says_pure": &openWorld,
-		"send_email":     &openWorld,
+		"no_block":    &openWorld,
+		"hint_absent": &openWorld,
+		"open":        &openWorld,
+		"closed":      nil,
+		// An untrusted server's flow only adds to the open-world reading:
+		// it never states less than that, and saying nothing more leaves
+		// the tool as its hint left it.
+		"closed_private":   {Reads: []agenttool.Label{agenttool.LabelUntrusted, agenttool.LabelPrivate}, Sends: true},
+		"closed_says_pure": nil,
+		"open_says_pure":   &openWorld,
+		"send_email":       &openWorld,
 	}
 	trusted := map[string]*agenttool.Flow{
-		"no_block":       &openWorld,
-		"hint_absent":    &openWorld,
-		"open":           &openWorld,
-		"closed":         nil,
-		"closed_private": {Reads: []agenttool.Label{agenttool.LabelPrivate}},
-		"open_says_pure": {},
-		"send_email":     {Sends: true, To: []string{"to"}, Carries: []string{"subject", "body"}},
+		"no_block":         &openWorld,
+		"hint_absent":      &openWorld,
+		"open":             &openWorld,
+		"closed":           nil,
+		"closed_private":   {Reads: []agenttool.Label{agenttool.LabelPrivate}},
+		"closed_says_pure": {},
+		"open_says_pure":   {},
+		"send_email":       {Sends: true, To: []string{"to"}, Carries: []string{"subject", "body"}},
 	}
 	for name, cases := range map[string]struct {
 		opts []Option

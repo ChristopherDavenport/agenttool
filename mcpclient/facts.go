@@ -110,28 +110,35 @@ func flowMeta(v any) *agenttool.Flow {
 // carries an annotations block, is untrusted content and a call that
 // sends; a hint of false says nothing, since a closed world is a
 // loosening claim. The server's own flow is taken as stated when the
-// host takes its claims, and otherwise only where it is stricter: its
-// labels are added, and the tool reads as sending through every
-// argument, since an untrusted server's word that a tool sends nothing,
-// or only through some arguments, would loosen a policy.
+// host takes its claims. Otherwise it can only add: a flow that says a
+// tool reads a label or sends makes the tool's flow the open-world
+// reading with those labels added, whatever its hint said, and one that
+// adds nothing leaves the tool as its hint left it. An untrusted server
+// can so never state less than the open-world reading, make an unstated
+// flow a stated one that reads nothing, or take a label away.
 func flowOf(t *sdk.Tool, meta ToolMeta, trusted bool) (agenttool.Flow, bool) {
-	var flow agenttool.Flow
+	openWorld := agenttool.Flow{Reads: []agenttool.Label{agenttool.LabelUntrusted}, Sends: true}
 	stated := t.Annotations == nil || t.Annotations.OpenWorldHint == nil || *t.Annotations.OpenWorldHint
-	if stated {
-		flow = agenttool.Flow{Reads: []agenttool.Label{agenttool.LabelUntrusted}, Sends: true}
-	}
 	switch {
 	case meta.Flow == nil:
-		return flow, stated
+		if stated {
+			return openWorld, true
+		}
+		return agenttool.Flow{}, false
 	case trusted:
 		return *meta.Flow, true
+	case len(meta.Flow.Reads) == 0 && !meta.Flow.Sends:
+		if stated {
+			return openWorld, true
+		}
+		return agenttool.Flow{}, false
 	}
+	flow := openWorld
 	for _, l := range meta.Flow.Reads {
 		if !flow.ReadsLabel(l) {
 			flow.Reads = append(flow.Reads, l)
 		}
 	}
-	flow.Sends = true
 	return flow, true
 }
 

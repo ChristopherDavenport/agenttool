@@ -142,7 +142,8 @@ versions may break the API.
   block, as reading untrusted content and sending, and a hint of false
   as saying nothing. A server's own flow, which mcpserver serves in the
   tool's `_meta` under `ToolMetaKey`, is taken as stated under
-  `WithClaims`, and otherwise only where it is stricter. mcpserver
+  `WithClaims`; otherwise it can only add labels to the open-world
+  reading, and never makes a tool read nothing or take a label away. mcpserver
   serves `openWorldHint: true` for a tool whose flow reads untrusted
   content or sends, whatever its annotations say.
 - Added: `Facts.Hint`, the mark on facts from a source the host does
