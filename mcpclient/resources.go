@@ -9,6 +9,7 @@ import (
 
 	"github.com/ChristopherDavenport/agenttool"
 	"github.com/ChristopherDavenport/openresponses"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -25,6 +26,10 @@ const (
 	listResourcesParameters = `{"type":"object","properties":{"cursor":{"type":"string","description":"The cursor the previous page ended with, to list the page after it."}},"required":[]}`
 	readResourceParameters  = `{"type":"object","properties":{"uri":{"type":"string","description":"The resource's URI."}},"required":["uri"]}`
 )
+
+// maxTemplatePages is how many pages of URI templates list_resources
+// asks for before it gives up on a server that never stops paging.
+const maxTemplatePages = 100
 
 // resourceAnnotations are the resource tools' hints: they read and
 // change nothing, and what they read may come from outside the server.
@@ -107,14 +112,26 @@ func orEmpty(args json.RawMessage) json.RawMessage {
 // resourceRequest sends one request of a resource tool on the session
 // as it is, restarting an ended one with [WithReconnect], unless the
 // server now lists a tool of the same name, which wins. [Remote.Close]
-// ends it with [ErrClosed], as it ends a call.
+// ends it with [ErrClosed], as it ends a call, and the server's limits
+// from [WithCallTimeout] bound it as they bound a call, a limit naming
+// the tool by its name on the server or under the prefix winning over
+// the server's.
 func (s *Remote) resourceRequest(ctx context.Context, name string, fn func(context.Context, *sdk.ClientSession) (agenttool.Result, error)) (agenttool.Result, error) {
-	l, err := s.live(ctx)
-	if err != nil {
-		return agenttool.Result{}, fmt.Errorf("mcp: %s: %w", name, err)
-	}
 	ctx, stop := context.WithCancelCause(ctx)
 	defer stop(nil)
+	limit := s.opts.timeout
+	if t, ok := latest(s.opts.timeouts, name, s.Name(name)); ok {
+		limit = t
+	}
+	lim := startLimiter(s.Name(name), limit, stop)
+	defer lim.end()
+	l, err := s.live(ctx)
+	if err != nil {
+		if cause := context.Cause(ctx); stoppedBy(cause) {
+			err = cause
+		}
+		return agenttool.Result{}, fmt.Errorf("mcp: %s: %w", name, err)
+	}
 	id := s.callSeq.Add(1)
 	s.mu.Lock()
 	if s.closed {
@@ -136,7 +153,7 @@ func (s *Remote) resourceRequest(ctx context.Context, name string, fn func(conte
 	}()
 	r, err := fn(ctx, l.session)
 	if err != nil {
-		if cause := context.Cause(ctx); errors.Is(cause, ErrClosed) {
+		if cause := context.Cause(ctx); stoppedBy(cause) {
 			err = cause
 		}
 		return agenttool.Result{}, fmt.Errorf("mcp: %s: %w", name, err)
@@ -148,8 +165,14 @@ func (s *Remote) resourceRequest(ctx context.Context, name string, fn func(conte
 // server's URI templates, one line each, then the line next_cursor and
 // the cursor when there is another page; "no resources" when there is
 // nothing to list. A resource or template whose audience leaves out the
-// assistant is not listed. A server that refuses the templates' listing
-// lists none.
+// assistant is not listed.
+//
+// Every page of templates is listed, up to [maxTemplatePages]. A server
+// that refuses the first, with an error response, has no templates and
+// lists none. Anything else that keeps the listing from finishing, a
+// later page refused, a cursor the server already gave, too many pages
+// or the end of the call, is the call's error, never a listing cut
+// short.
 func listResources(ctx context.Context, session *sdk.ClientSession, cursor string) (agenttool.Result, error) {
 	page, err := session.ListResources(ctx, &sdk.ListResourcesParams{Cursor: cursor})
 	if err != nil {
@@ -167,22 +190,11 @@ func listResources(ctx context.Context, session *sdk.ClientSession, cursor strin
 		lines = append(lines, linkLine("resource_link", r.URI, r.Name, r.Description, r.MIMEType, size))
 	}
 	if cursor == "" {
-		next := ""
-		for {
-			templates, err := session.ListResourceTemplates(ctx, &sdk.ListResourceTemplatesParams{Cursor: next})
-			if err != nil {
-				break
-			}
-			for _, t := range templates.ResourceTemplates {
-				if t == nil || !forAssistant(t.Annotations) {
-					continue
-				}
-				lines = append(lines, linkLine("resource_template", t.URITemplate, t.Name, t.Description, t.MIMEType, nil))
-			}
-			if next = templates.NextCursor; next == "" {
-				break
-			}
+		templates, err := listTemplates(ctx, session)
+		if err != nil {
+			return agenttool.Result{}, err
 		}
+		lines = append(lines, templates...)
 	}
 	if page.NextCursor != "" {
 		lines = append(lines, "next_cursor "+page.NextCursor)
@@ -191,6 +203,41 @@ func listResources(ctx context.Context, session *sdk.ClientSession, cursor strin
 		return agenttool.Text("no resources"), nil
 	}
 	return agenttool.Text(strings.Join(lines, "\n")), nil
+}
+
+// listTemplates lists every page of the server's URI templates as
+// lines; see [listResources] for when it stops.
+func listTemplates(ctx context.Context, session *sdk.ClientSession) ([]string, error) {
+	var lines []string
+	seen := map[string]bool{}
+	next := ""
+	for page := 0; ; page++ {
+		if page == maxTemplatePages {
+			return nil, fmt.Errorf("resource templates: the server gave more than %d pages", maxTemplatePages)
+		}
+		templates, err := session.ListResourceTemplates(ctx, &sdk.ListResourceTemplatesParams{Cursor: next})
+		if err != nil {
+			var refused *jsonrpc.Error
+			if page == 0 && ctx.Err() == nil && errors.As(err, &refused) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("resource templates: %w", err)
+		}
+		for _, t := range templates.ResourceTemplates {
+			if t == nil || !forAssistant(t.Annotations) {
+				continue
+			}
+			lines = append(lines, linkLine("resource_template", t.URITemplate, t.Name, t.Description, t.MIMEType, nil))
+		}
+		next = templates.NextCursor
+		if next == "" {
+			return lines, nil
+		}
+		if seen[next] {
+			return nil, fmt.Errorf("resource templates: the server repeated the cursor %q", next)
+		}
+		seen[next] = true
+	}
 }
 
 // readResult renders a read resource's contents as [ResultOf] renders

@@ -3,13 +3,17 @@ package mcpclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ChristopherDavenport/agenttool"
 	"github.com/ChristopherDavenport/openresponses"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -150,5 +154,113 @@ func TestResourceDefinitionsMatchTheRFC(t *testing.T) {
 		if normal(t, got) != normal(t, []byte(lines[i])) {
 			t.Errorf("definition %d = %s\n   the RFC says %s", i, got, lines[i])
 		}
+	}
+}
+
+// templateServer offers one resource and answers resources/templates/list
+// with answer, counting the requests.
+func templateServer(n *atomic.Int64, answer func(cursor string) (*sdk.ListResourceTemplatesResult, error)) *sdk.Server {
+	server := sdk.NewServer(&sdk.Implementation{Name: "tpl", Version: "1"}, nil)
+	server.AddResource(&sdk.Resource{URI: "file:///a", Name: "a"}, func(context.Context, *sdk.ReadResourceRequest) (*sdk.ReadResourceResult, error) {
+		return &sdk.ReadResourceResult{}, nil
+	})
+	server.AddReceivingMiddleware(func(next sdk.MethodHandler) sdk.MethodHandler {
+		return func(ctx context.Context, method string, req sdk.Request) (sdk.Result, error) {
+			if method != "resources/templates/list" {
+				return next(ctx, method, req)
+			}
+			n.Add(1)
+			cursor := ""
+			if p, ok := req.GetParams().(*sdk.ListResourceTemplatesParams); ok && p != nil {
+				cursor = p.Cursor
+			}
+			return answer(cursor)
+		}
+	})
+	return server
+}
+
+func toolNamed(t *testing.T, tools []agenttool.Tool, name string) agenttool.Tool {
+	t.Helper()
+	for _, tl := range tools {
+		if tl.Name() == name {
+			return tl
+		}
+	}
+	t.Fatalf("no %s in %v", name, names(tools))
+	return nil
+}
+
+// TestListResourcesTemplatePages: the templates' listing ends on a
+// repeated cursor and after a cap of pages, an error on a later page or
+// the end of the call is the call's error and never a partial listing,
+// and only a refusal of the first page lists no templates.
+func TestListResourcesTemplatePages(t *testing.T) {
+	refused := &jsonrpc.Error{Code: jsonrpc.CodeMethodNotFound, Message: "no templates"}
+	one := []*sdk.ResourceTemplate{{URITemplate: "x://{a}", Name: "t"}}
+	cases := []struct {
+		name    string
+		answer  func(cursor string) (*sdk.ListResourceTemplatesResult, error)
+		want    string // the output, or
+		wantErr string // a part of the error
+		most    int64  // requests at most
+	}{
+		{"repeated cursor", func(string) (*sdk.ListResourceTemplatesResult, error) {
+			return &sdk.ListResourceTemplatesResult{NextCursor: "same", ResourceTemplates: one}, nil
+		}, "", "repeated", 3},
+		{"endless pages", func(c string) (*sdk.ListResourceTemplatesResult, error) {
+			return &sdk.ListResourceTemplatesResult{NextCursor: c + "x", ResourceTemplates: one}, nil
+		}, "", "pages", maxTemplatePages + 1},
+		{"later page fails", func(c string) (*sdk.ListResourceTemplatesResult, error) {
+			if c == "" {
+				return &sdk.ListResourceTemplatesResult{NextCursor: "2", ResourceTemplates: one}, nil
+			}
+			return nil, refused
+		}, "", "method not found", 2},
+		{"first page refused", func(string) (*sdk.ListResourceTemplatesResult, error) { return nil, refused },
+			"resource_link file:///a: a", "", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var n atomic.Int64
+			s := connect(t, templateServer(&n, tc.answer))
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			res, err := toolNamed(t, s.ResourceTools(), "list_resources").Execute(ctx, agenttool.Call{ID: "c", Args: json.RawMessage(`{}`)})
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("err = %v, output %q; want an error naming %q", err, res.Output.Text, tc.wantErr)
+				}
+			} else if err != nil || res.Output.Text != tc.want {
+				t.Errorf("output = %q, %v; want %q", res.Output.Text, err, tc.want)
+			}
+			if got := n.Load(); got > tc.most {
+				t.Errorf("%d templates requests, want at most %d", got, tc.most)
+			}
+		})
+	}
+}
+
+// TestResourceToolsUnderCallTimeout: the server's call limits bound its
+// resource tools too, since they are that server's tools.
+func TestResourceToolsUnderCallTimeout(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "hang", Version: "1"}, nil)
+	server.AddResource(&sdk.Resource{URI: "file:///slow", Name: "slow"}, func(ctx context.Context, _ *sdk.ReadResourceRequest) (*sdk.ReadResourceResult, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	s := connect(t, server, WithPrefix("h"), WithCallTimeout(100*time.Millisecond, 0))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := toolNamed(t, s.ResourceTools(), "h__read_resource").Execute(ctx, agenttool.Call{ID: "c", Args: json.RawMessage(`{"uri":"file:///slow"}`)})
+	var te *TimeoutError
+	if !errors.As(err, &te) || !te.Idle {
+		t.Errorf("err = %v, want the server's idle limit", err)
+	}
+	// A tool's own limit names it by its resource tool's name.
+	s = connect(t, server, WithCallTimeout(0, 0), WithCallTimeout(0, 100*time.Millisecond, "read_resource"))
+	_, err = toolNamed(t, s.ResourceTools(), "read_resource").Execute(ctx, agenttool.Call{ID: "c", Args: json.RawMessage(`{"uri":"file:///slow"}`)})
+	if !errors.As(err, &te) || te.Idle {
+		t.Errorf("err = %v, want read_resource's own maximum", err)
 	}
 }

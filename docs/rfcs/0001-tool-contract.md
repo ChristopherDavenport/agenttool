@@ -792,13 +792,21 @@ the server. Their outputs are text unless a read returns a blob:
   zero being absent, and a template's `resource_template
   <uriTemplate>: <name>, <description>, <mimeType>` under the same rule
   for absent members. A resource or template whose audience leaves out
-  the assistant is not listed, and a server that refuses the
-  templates' listing lists none. An output with no lines is `no
+  the assistant is not listed. A server that refuses the first page of
+  the templates' listing, with an error response, has no templates and
+  lists none. Anything else that keeps the listing from finishing is
+  the call's error, and never a listing cut short: a later page
+  refused, a cursor the server already gave, more than 100 pages of
+  templates, or the end of the call. An output with no lines is `no
   resources`.
 - **read_resource** sends `resources/read` with the `uri`, which it
   requires, and renders each of the contents as an embedded resource
   is rendered in [Content](#content): text alone is text, the contents
   joined by newlines, and a blob among them makes the output parts.
+
+They are the server's tools for every rule that bounds a call: the
+[timeout](#mcp) the host sets for the server applies to them, and a
+limit set for a tool of either name applies to that one.
 
 ### Open Responses
 

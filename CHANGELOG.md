@@ -98,7 +98,12 @@ versions may break the API.
   same name wins, and a server without resources has none. RFC 0001
   states their definitions word for word, since a definition is hashed,
   with their outputs, and states the consumed-tool naming rule,
-  `<prefix>__<name>`.
+  `<prefix>__<name>`. `list_resources` lists every page of
+  URI templates on its first page, and fails rather than return a
+  listing cut short: on a repeated cursor, past 100 pages, on a later
+  page refused or at the end of the call; a server that refuses the
+  first page has none. `WithCallTimeout` bounds both tools as it bounds
+  the server's own.
 - Dependencies: every module requires `openresponses` v0.0.17, up from
   v0.0.13. Its `Text` no longer documents itself for function call
   outputs, which take `input_text`, and its types keep members they do
