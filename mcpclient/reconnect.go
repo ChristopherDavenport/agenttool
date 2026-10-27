@@ -31,9 +31,10 @@ const reconnectTimeout = 30 * time.Second
 
 // endGrace is how long a request that failed waits for its session to
 // report that it ended, to tell a request the end cut from one that
-// failed on a live session. The session reports it as soon as its
-// connection is idle, which is at once unless a handler of the client's
-// is still running.
+// failed on a live session, and so that a request the end cut returns
+// only once the next request will find the session ended. The session
+// reports it as soon as its connection is idle, which is at once unless
+// a handler of the client's is still running.
 const endGrace = 500 * time.Millisecond
 
 // WithReconnect restarts the server when its session ends, a process
@@ -57,6 +58,14 @@ const endGrace = 500 * time.Millisecond
 // wrapping [ErrSessionEnded]: it may or may not have run, and it is not
 // sent again. A request without side effects, a claim, [Remote.Facts]
 // or a listing, is sent once more on the restarted session.
+//
+// A request the end of its session cut returns once the remote has seen
+// the session end, so the very next request restarts the server rather
+// than being sent on the dead session and cut too. The wait is bounded:
+// a session that has not reported its end within half a second, because
+// a handler of the client's is still running on it, or a request whose
+// context ends first, returns cut without it, and the next request may
+// then be cut as well.
 //
 // A restart is a refresh. The new session is initialised as the first
 // was, with every option given to Connect, and its tools are listed
@@ -157,16 +166,18 @@ func (l *link) close() error {
 	return l.closeErr
 }
 
-// endedWithin reports whether the session ends within d.
-func (l *link) endedWithin(d time.Duration) bool {
+// endedWithin reports whether the session ends within d, giving up
+// early when ctx ends.
+func (l *link) endedWithin(ctx context.Context, d time.Duration) bool {
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
 	case <-l.ended:
 		return true
 	case <-t.C:
-		return false
+	case <-ctx.Done():
 	}
+	return l.isEnded()
 }
 
 // serverInfo is the server's implementation as it gave it at initialize.
@@ -407,21 +418,26 @@ func (s *Remote) sendOn(ctx context.Context, ref toolRef) (*link, error) {
 
 // cut reports whether a request on l that failed with err, its context
 // still live, failed because the session ended rather than because the
-// server answered with an error. It is only asked with [WithReconnect]
-// on.
-func cut(l *link, err error) bool {
-	if errors.Is(err, sdk.ErrConnectionClosed) {
-		return true
-	}
+// server answered with an error. Unless the server answered, it waits
+// up to [endGrace] for the session to report its end, or until ctx
+// ends, so that a request it cut returns only once the next request
+// will find the session ended and restart the server. A request
+// refused because the connection closed is cut whether or not the end
+// is reported in time. It takes no lock of its own, and requests cut
+// together wait on the one channel the session's end closes. It is only
+// asked with [WithReconnect] on.
+func cut(ctx context.Context, l *link, err error) bool {
+	closed := errors.Is(err, sdk.ErrConnectionClosed)
 	var werr *jsonrpc.Error
-	if errors.As(err, &werr) {
+	if !closed && errors.As(err, &werr) {
 		return false
 	}
-	return l.endedWithin(endGrace)
+	return l.endedWithin(ctx, endGrace) || closed
 }
 
 // resend reports whether a side-effect-free request on l that failed
-// with err is to be sent once more, on a restarted session.
+// with err is to be sent once more, on a restarted session: it was cut,
+// and its context did not end while that was being told.
 func (s *Remote) resend(ctx context.Context, l *link, err error) bool {
-	return s.opts.dial != nil && ctx.Err() == nil && cut(l, err)
+	return s.opts.dial != nil && ctx.Err() == nil && cut(ctx, l, err) && ctx.Err() == nil
 }

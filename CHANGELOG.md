@@ -5,6 +5,20 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Fixed: under `WithReconnect`, mcpclient's request cut because the
+  server's connection closed returns only once the remote has seen the
+  session end, so the very next request restarts the server and runs
+  (#90). A request refused with the SDK's `ErrConnectionClosed` used to
+  return at once, before the session had reported its end, and the next
+  call, refresh or facts read could be sent on the same dead session
+  and be cut as well; how many were cut before one restarted the server
+  depended on scheduling. The cut call is still not sent again. The
+  wait is the one other cut requests already made: at most half a
+  second, ended early by the caller's context, and a session that has
+  not ended by then leaves the request cut all the same.
+
 ## v0.0.25 - 2026-10-26
 
 - Fixed: mcpclient's `Remote.Close` returns nil for a session that had already

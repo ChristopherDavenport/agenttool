@@ -623,3 +623,214 @@ func TestReconnectKeepsTheClientsHandlers(t *testing.T) {
 		t.Errorf("custom method on the restarted session: %+v, %v", got, err)
 	}
 }
+
+// holding is a remote whose session can be left refusing requests
+// because its connection closed while it has not yet reported its end:
+// its server's hold tool notifies progress before it answers, and the
+// client's progress handler waits for release, and a session does not
+// end while a handler of the client's runs.
+type holding struct {
+	r       *restarter
+	s       *Remote
+	h       hooked
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newHolding(t *testing.T) *holding {
+	t.Helper()
+	hd := &holding{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	hd.r = &restarter{t: t, serve: func(int) *sdk.Server {
+		s := newServer(t)
+		s.AddTool(&sdk.Tool{Name: "hold", InputSchema: json.RawMessage(`{"type":"object"}`)},
+			func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+				err := req.Session.NotifyProgress(ctx, &sdk.ProgressNotificationParams{ProgressToken: "hold", Progress: 1})
+				return &sdk.CallToolResult{}, err
+			})
+		return s
+	}}
+	hd.s = hd.r.connect(false, hd.h.option(), WithNotificationGrace(0), WithClientOptions(sdk.ClientOptions{
+		ProgressNotificationHandler: func(context.Context, *sdk.ProgressNotificationClientRequest) {
+			select {
+			case hd.entered <- struct{}{}:
+			default:
+			}
+			<-hd.release
+		},
+	}))
+	// Registered after connect's Close, so it runs first: closing a
+	// session waits for its handlers.
+	t.Cleanup(hd.free)
+	return hd
+}
+
+// free lets the client's handler return, and so the session end.
+func (hd *holding) free() { hd.once.Do(func() { close(hd.release) }) }
+
+// closeHeld leaves the session with the client's handler running and
+// its connection closed, and returns it once it refuses requests with
+// sdk.ErrConnectionClosed, not yet ended.
+func (hd *holding) closeHeld(t *testing.T) *link {
+	t.Helper()
+	if _, err := execute(lookup(t, hd.s, "hold"), `{}`); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-hd.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the client's progress handler did not run")
+	}
+	l := hd.s.current()
+	hd.r.kill()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := l.session.Ping(context.Background(), nil)
+		if errors.Is(err, sdk.ErrConnectionClosed) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the session does not refuse requests after its connection closed: %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if l.isEnded() {
+		t.Fatal("the session ended while the client's handler was running")
+	}
+	return l
+}
+
+// A call cut because its session's connection closed returns once the
+// session has ended, so the very next call restarts the server and runs,
+// rather than being sent on the dead session and cut as well (#90). The
+// session ends 50 ms after the connection closed, when the client's
+// handler returns; the cut call waits for it.
+func TestReconnectRestartsOnTheCallAfterACut(t *testing.T) {
+	const runs = 20
+	failed := 0
+	for i := range runs {
+		hd := newHolding(t)
+		old := hd.closeHeld(t)
+		time.AfterFunc(50*time.Millisecond, hd.free)
+		_, err := execute(lookup(t, hd.s, "upper"), `{"text":"x"}`)
+		if !errors.Is(err, ErrSessionEnded) || !errors.Is(err, sdk.ErrConnectionClosed) {
+			t.Fatalf("run %d: the first call returned %v; want it cut by the closed connection", i, err)
+		}
+		if !old.isEnded() {
+			t.Errorf("run %d: the cut call returned before its session ended", i)
+		}
+		res, err := execute(lookup(t, hd.s, "upper"), `{"text":"x"}`)
+		if err != nil || res.Output.Text != "X" {
+			t.Logf("run %d: the call after the cut: %q, %v; want it to restart the server and run", i, res.Output.Text, err)
+			failed++
+			continue
+		}
+		if n := hd.r.dials.Load(); n != 1 {
+			t.Errorf("run %d: dialed %d times, want 1", i, n)
+		}
+		if infos := hd.h.got(); len(infos) != 1 || infos[0].Err != nil {
+			t.Errorf("run %d: hook got %+v; want one restart", i, infos)
+		}
+	}
+	if failed > 0 {
+		t.Errorf("in %d of %d runs the call after a cut was cut too", failed, runs)
+	}
+}
+
+// A refresh whose listing the closed connection cuts is made once more
+// on the restarted server, not on the dead session.
+func TestReconnectRefreshAfterACut(t *testing.T) {
+	const runs = 20
+	failed := 0
+	for i := range runs {
+		hd := newHolding(t)
+		hd.closeHeld(t)
+		time.AfterFunc(50*time.Millisecond, hd.free)
+		if err := hd.s.Refresh(context.Background()); err != nil {
+			t.Logf("run %d: the refresh: %v; want it made again on the restarted server", i, err)
+			failed++
+			continue
+		}
+		if n := hd.r.dials.Load(); n != 1 {
+			t.Errorf("run %d: dialed %d times, want 1", i, n)
+		}
+	}
+	if failed > 0 {
+		t.Errorf("in %d of %d runs the refresh was cut twice", failed, runs)
+	}
+}
+
+// Calls the closed connection cuts together all wait for the session's
+// end on the one channel and return; then the next call restarts the
+// server once.
+func TestReconnectConcurrentCutsWaitForTheEnd(t *testing.T) {
+	hd := newHolding(t)
+	old := hd.closeHeld(t)
+	upper := lookup(t, hd.s, "upper")
+	const n = 5
+	type outcome struct {
+		err   error
+		ended bool
+	}
+	out := make(chan outcome, n)
+	for range n {
+		go func() {
+			_, err := execute(upper, `{"text":"x"}`)
+			out <- outcome{err, old.isEnded()}
+		}()
+	}
+	time.AfterFunc(50*time.Millisecond, hd.free)
+	for range n {
+		select {
+		case o := <-out:
+			if !errors.Is(o.err, ErrSessionEnded) {
+				t.Errorf("a cut call returned %v; want ErrSessionEnded", o.err)
+			}
+			if !o.ended {
+				t.Error("a cut call returned before its session ended")
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the cut calls did not all return")
+		}
+	}
+	if res, err := execute(upper, `{"text":"x"}`); err != nil || res.Output.Text != "X" {
+		t.Fatalf("the next call: %q, %v", res.Output.Text, err)
+	}
+	if got := hd.r.dials.Load(); got != 1 {
+		t.Errorf("dialed %d times, want 1", got)
+	}
+}
+
+// The wait for the end is bounded: a session that does not end within
+// endGrace leaves the call cut all the same, and a caller whose context
+// ends during the wait gets its call back at once, cut.
+func TestReconnectCutWaitIsBounded(t *testing.T) {
+	t.Run("the session does not end", func(t *testing.T) {
+		hd := newHolding(t)
+		hd.closeHeld(t)
+		start := time.Now()
+		_, err := execute(lookup(t, hd.s, "upper"), `{"text":"x"}`)
+		took := time.Since(start)
+		if !errors.Is(err, ErrSessionEnded) {
+			t.Errorf("the call returned %v; want ErrSessionEnded", err)
+		}
+		if took < endGrace || took > endGrace+2*time.Second {
+			t.Errorf("the call took %v; want about endGrace, %v", took, endGrace)
+		}
+	})
+	t.Run("the caller's context ends", func(t *testing.T) {
+		hd := newHolding(t)
+		hd.closeHeld(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		_, err := lookup(t, hd.s, "upper").Execute(ctx, agenttool.Call{ID: "c", Args: json.RawMessage(`{"text":"x"}`)})
+		took := time.Since(start)
+		if !errors.Is(err, ErrSessionEnded) {
+			t.Errorf("the call returned %v; want ErrSessionEnded", err)
+		}
+		if took >= endGrace {
+			t.Errorf("the call took %v; want it back when its context ended, before endGrace", took)
+		}
+	})
+}
