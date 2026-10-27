@@ -695,6 +695,16 @@ func (s *Remote) Tools() []agenttool.Tool {
 	return append([]agenttool.Tool(nil), s.tools...)
 }
 
+// outputUnchecked tells the host that a tool's results go unchecked,
+// because the validator cannot read its output schema, through the SDK
+// logger from [WithClientOptions] when one is set. The tool is listed
+// and called as one with no schema is.
+func (s *Remote) outputUnchecked(name string, err error) {
+	if l := s.opts.clientOpts.Logger; l != nil {
+		l.Warn("mcpclient: tool results not checked against its output schema", "tool", name, "err", err)
+	}
+}
+
 // refreshFailed reports a failed automatic refresh.
 func (s *Remote) refreshFailed(err error) {
 	switch {
@@ -932,7 +942,11 @@ func (s *Remote) wrap(l *link, t *sdk.Tool, def string) (agenttool.Tool, error) 
 	if a, ok := AnnotationsOf(t); ok {
 		opts = append(opts, agenttool.WithAnnotations(a))
 	}
-	plan := callPlan{readOnly: readOnly, out: outputCheckOf(t), limit: s.opts.timeout}
+	out, err := outputCheckOf(t)
+	if err != nil {
+		s.outputUnchecked(name, err)
+	}
+	plan := callPlan{readOnly: readOnly, out: out, limit: s.opts.timeout}
 	if lim, ok := latest(s.opts.timeouts, remote, name); ok {
 		plan.limit = lim
 	}

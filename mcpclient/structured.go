@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -96,42 +97,55 @@ func jcsEqual(a, b any) bool {
 }
 
 // outputCheck is what a consumed tool checks its structured content
-// against: the tool's output schema, resolved, or the error that kept it
-// from being resolved. A nil check is a tool that declares none.
+// against: the tool's output schema, resolved. A nil check is a tool
+// that declares none, or one whose schema the validator cannot read.
 type outputCheck struct {
 	resolved *jsonschema.Resolved
-	err      error
 }
 
-// outputCheckOf resolves t's output schema, and returns nil when it
-// declares none. A schema the validator cannot read is kept as its
-// error, so the tool is listed and each call says why its result could
-// not be checked.
-func outputCheckOf(t *sdk.Tool) *outputCheck {
+// outputCheckOf resolves t's output schema. It returns nil when the
+// tool declares none, and nil with the reason when the validator cannot
+// read the one it declares: the tool is then unchecked, as a tool with
+// no schema is, rather than failing every call for a fault in its
+// listing, and the caller tells the host why.
+func outputCheckOf(t *sdk.Tool) (*outputCheck, error) {
 	if t.OutputSchema == nil {
-		return nil
+		return nil, nil
 	}
 	raw, err := json.Marshal(t.OutputSchema)
 	if err != nil {
-		return &outputCheck{err: err}
+		return nil, err
 	}
 	if string(raw) == "null" {
-		return nil
+		return nil, nil
 	}
 	var schema jsonschema.Schema
 	if err := json.Unmarshal(raw, &schema); err != nil {
-		return &outputCheck{err: err}
+		return nil, err
 	}
-	switch schema.Schema {
-	case "", "http://json-schema.org/draft-07/schema#", "https://json-schema.org/draft-07/schema#", "https://json-schema.org/draft/2020-12/schema":
-	default:
-		return &outputCheck{err: fmt.Errorf("unsupported $schema %q: the validator handles draft-07 and 2020-12", schema.Schema)}
+	if schema.Schema != "" && !knownDialect(schema.Schema) {
+		return nil, fmt.Errorf("unsupported $schema %q: the validator handles draft-07 and 2020-12", schema.Schema)
 	}
 	resolved, err := schema.Resolve(nil)
 	if err != nil {
-		return &outputCheck{err: err}
+		return nil, err
 	}
-	return &outputCheck{resolved: resolved}
+	return &outputCheck{resolved: resolved}, nil
+}
+
+// knownDialect reports whether a $schema names a dialect the validator
+// handles, draft-07 or 2020-12, however the URI is spelt: over http or
+// https, with or without the empty fragment.
+func knownDialect(uri string) bool {
+	uri = strings.TrimSuffix(uri, "#")
+	if rest, ok := strings.CutPrefix(uri, "https://"); ok {
+		uri = rest
+	} else if rest, ok := strings.CutPrefix(uri, "http://"); ok {
+		uri = rest
+	} else {
+		return false
+	}
+	return uri == "json-schema.org/draft-07/schema" || uri == "json-schema.org/draft/2020-12/schema"
 }
 
 // check validates a successful result's structured content against the
@@ -141,10 +155,7 @@ func outputCheckOf(t *sdk.Tool) *outputCheck {
 // call has had whatever effect it has, and its outcome is not in doubt.
 func (c *outputCheck) check(res *sdk.CallToolResult) error {
 	const ran = "invalid result: the call ran, but"
-	switch {
-	case c.err != nil:
-		return fmt.Errorf("%s its result could not be checked: the tool's output schema: %w", ran, c.err)
-	case res.StructuredContent == nil:
+	if res.StructuredContent == nil {
 		return fmt.Errorf("%s the tool declares an output schema and its result has no structured content", ran)
 	}
 	// The SDK decoded the content into Go values; round trip it so the

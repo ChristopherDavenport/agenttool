@@ -1,8 +1,10 @@
 package mcpclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -79,8 +81,11 @@ func TestOutputSchemaChecked(t *testing.T) {
 	add("none", schema, &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "21"}}})
 	add("failed", schema, &sdk.CallToolResult{IsError: true, Content: []sdk.Content{&sdk.TextContent{Text: "no sensor"}}})
 	add("unchecked", nil, &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "21"}}})
-	add("unreadable", json.RawMessage(`{"type":"object","$schema":"https://example.com/other"}`), &sdk.CallToolResult{StructuredContent: map[string]any{}})
-	s := connect(t, server)
+	add("unreadable", json.RawMessage(`{"type":"object","$schema":"https://json-schema.org/draft/2019-09/schema"}`), &sdk.CallToolResult{StructuredContent: map[string]any{"temp": "hot"}})
+	add("draft07 spelt short", json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema","type":"object","properties":{"temp":{"type":"number"}}}`), &sdk.CallToolResult{StructuredContent: map[string]any{"temp": "hot"}})
+	add("2020-12 with a hash", json.RawMessage(`{"$schema":"http://json-schema.org/draft/2020-12/schema#","type":"object","properties":{"temp":{"type":"number"}}}`), &sdk.CallToolResult{StructuredContent: map[string]any{"temp": "hot"}})
+	var logged bytes.Buffer
+	s := connect(t, server, WithClientOptions(sdk.ClientOptions{Logger: slog.New(slog.NewTextHandler(&logged, nil))}))
 	ctx := context.Background()
 	call := func(name string) (agenttool.Result, error) {
 		return lookup(t, s, name).Execute(ctx, agenttool.Call{ID: "c", Args: json.RawMessage(`{}`)})
@@ -89,9 +94,9 @@ func TestOutputSchemaChecked(t *testing.T) {
 	if res, err := call("good"); err != nil || res.Output.Text != `{"temp":21}` {
 		t.Errorf("good = %+v, %v", res.Output, err)
 	}
-	for _, name := range []string{"bad", "none", "unreadable"} {
+	for _, name := range []string{"bad", "none", "draft07 spelt short", "2020-12 with a hash"} {
 		res, err := call(name)
-		if err == nil || !strings.HasPrefix(err.Error(), "invalid result: the call ran") {
+		if err == nil || !strings.HasPrefix(err.Error(), "invalid result: the call ran") || strings.Contains(err.Error(), "could not be checked") {
 			t.Errorf("%s: err = %v, want an invalid result that says the call ran", name, err)
 		}
 		if _, ok := res.Details.(*sdk.CallToolResult); !ok {
@@ -106,5 +111,14 @@ func TestOutputSchemaChecked(t *testing.T) {
 	}
 	if res, err := call("unchecked"); err != nil || res.Output.Text != "21" {
 		t.Errorf("unchecked = %+v, %v", res.Output, err)
+	}
+	// A schema the validator cannot read leaves the tool unchecked, and
+	// says so to the host when it lists the tool, rather than failing
+	// every call.
+	if _, err := call("unreadable"); err != nil {
+		t.Errorf("unreadable: err = %v, want the result unchecked", err)
+	}
+	if got := logged.String(); !strings.Contains(got, "unreadable") || !strings.Contains(got, "2019-09") {
+		t.Errorf("logged %q, want the tool and the reason", got)
 	}
 }

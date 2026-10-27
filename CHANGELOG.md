@@ -58,7 +58,11 @@ versions may break the API.
   for arguments (#95). A result that fails it, or has no structured
   content, is an error beginning `invalid result: the call ran, but`,
   so the model does not trust it and does not read it as a call that
-  failed and may be made again. mcpclient now requires
+  failed and may be made again. A `$schema` naming draft-07 or 2020-12
+  is read over `http` or `https`, with or without a trailing `#`; a
+  schema the validator cannot read leaves the tool unchecked and is
+  reported through the SDK logger from `WithClientOptions`. mcpclient
+  now requires
   `github.com/google/jsonschema-go` directly. An output schema on
   `agenttool.Tool`, served by mcpserver, is a follow-up.
 - Fixed: mcpclient no longer offers roots it never fills (#99). It kept
