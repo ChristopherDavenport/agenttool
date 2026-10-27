@@ -89,6 +89,16 @@ versions may break the API.
   a hung server held a headless run until the harness killed it. RFC
   0001 states the rule for any harness under "Stopping a call", and the
   context of a call now lists the elicitor.
+- Added: `mcpclient.Remote.ResourceTools()`, two read-only tools for a
+  server that advertises resources, `list_resources` and
+  `read_resource` under the remote's prefix (#94). The model can list
+  the resources a page at a time, with the URI templates, and read one
+  by its URI, so a `resource_link` a tool returned can be followed. A
+  host offers them by appending them to `Tools()`. A server tool of the
+  same name wins, and a server without resources has none. RFC 0001
+  states their definitions word for word, since a definition is hashed,
+  with their outputs, and states the consumed-tool naming rule,
+  `<prefix>__<name>`.
 - Dependencies: every module requires `openresponses` v0.0.17, up from
   v0.0.13. Its `Text` no longer documents itself for function call
   outputs, which take `input_text`, and its types keep members they do

@@ -675,7 +675,7 @@ set on the local side by the host and does not cross.
 
 | Contract | MCP | Direction |
 | --- | --- | --- |
-| name, description | `name`, `description` | both |
+| name, description | `name`, `description`; a consumed tool is named `<prefix>__<name>`, the prefix and two underscores before its name on the server, when the host gives a prefix, `mcpclient.WithPrefix`, and `<name>` otherwise, so two servers' tools of one name do not collide in a request | both |
 | instructions | no field in the contract: a tool set has no description. The serving host gives them when it builds the server, `mcpserver.Options.Instructions`; the consuming side exposes them to the host, `mcpclient.Remote.Instructions`, which decides whether the model reads them | both |
 | parameters | `inputSchema`; a nil schema is served as an empty object schema | both |
 | strict | no field; not carried | — |
@@ -759,6 +759,46 @@ consumed and served again is the content the origin sent, audio as
 audio and a blob under its URI and type, except that an image blob
 returns as an image, a text resource or link as text, and a block for
 the user alone not at all.
+
+#### Resources
+
+A server's resources are not tools, and MCP leaves them to the client.
+For a server that advertises resources, the consuming side MAY offer
+two tools that reach them, so a model can follow a `resource_link` a
+tool returned; the reference binding offers them when the host asks,
+`mcpclient.Remote.ResourceTools`. They are named as consumed tools are,
+`list_resources` and `read_resource` under the host's prefix. A server
+tool of either name wins: the consuming side does not offer the one
+here, and refuses a call of one it offered before the server listed
+its own. A definition is hashed, so their definitions are these, word
+for word, with the name prefixed as above:
+
+```json
+{"type":"function","name":"list_resources","description":"List the resources this server offers, a page at a time, and the URI templates it reads others by. Read one with read_resource.","parameters":{"type":"object","properties":{"cursor":{"type":"string","description":"The cursor the previous page ended with, to list the page after it."}},"required":[]}}
+{"type":"function","name":"read_resource","description":"Read a resource this server offers, by the URI list_resources or a resource_link gives, or one a URI template from list_resources makes.","parameters":{"type":"object","properties":{"uri":{"type":"string","description":"The resource's URI."}},"required":["uri"]}}
+```
+
+Neither is strict. Both are annotated read-only, not destructive,
+idempotent and open-world, since what they read may come from outside
+the server. Their outputs are text unless a read returns a blob:
+
+- **list_resources** sends `resources/list` with the `cursor` when one
+  is given, and its output is one line per resource, then, when no
+  cursor was given, one line per URI template from every page of
+  `resources/templates/list`, then the line `next_cursor <cursor>` when
+  the server has another page, joined by newlines. A resource's line is
+  rendered as a resource link is in [Content](#content), `resource_link
+  <uri>: <name>, <description>, <mimeType>, <size> bytes`, a size of
+  zero being absent, and a template's `resource_template
+  <uriTemplate>: <name>, <description>, <mimeType>` under the same rule
+  for absent members. A resource or template whose audience leaves out
+  the assistant is not listed, and a server that refuses the
+  templates' listing lists none. An output with no lines is `no
+  resources`.
+- **read_resource** sends `resources/read` with the `uri`, which it
+  requires, and renders each of the contents as an embedded resource
+  is rendered in [Content](#content): text alone is text, the contents
+  joined by newlines, and a blob among them makes the output parts.
 
 ### Open Responses
 
@@ -1080,6 +1120,12 @@ module and is listed in the changelog as one.
   naming the limit and an ambiguous outcome; the user's wait on a
   question counts toward neither. The MCP binding applies them on the
   consuming side (#96).
+- The MCP binding states how a consumed tool is named,
+  `<prefix>__<name>` under a host's prefix, and gains
+  [Resources](#resources): two tools a consuming side may offer for a
+  server's resources, `list_resources` and `read_resource`, defined
+  here word for word, with their outputs, and yielding to a server
+  tool of the same name (#94).
 
 ## Changes since 0.6
 

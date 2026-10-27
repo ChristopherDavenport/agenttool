@@ -414,6 +414,12 @@ request, and returns a `*TimeoutError` that says the call may or may
 not have taken effect. Names after the two limits set one tool's
 limits; the user's wait on a question the call asked is not counted.
 
+A tool may answer with a `resource_link` rather than the content, and
+the model needs a tool to follow it. `remote.ResourceTools()` returns
+`list_resources` and `read_resource` for a server that advertises
+resources, read-only and under the remote's prefix; a host that wants
+them appends them to `Tools()`. A server tool of the same name wins.
+
 A record crosses too. The tool that most wants one, a shell inside a
 sandbox recording which container served the call, is the tool most
 likely to be behind a server, so `mcpserver` puts the `Record` of a

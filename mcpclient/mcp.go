@@ -1564,6 +1564,12 @@ func forModel(c sdk.Content) bool {
 	case *sdk.ResourceLink:
 		a = v.Annotations
 	}
+	return forAssistant(a)
+}
+
+// forAssistant reports whether annotations state no audience, or one
+// that includes the assistant.
+func forAssistant(a *sdk.Annotations) bool {
 	if a == nil || len(a.Audience) == 0 {
 		return true
 	}
@@ -1608,23 +1614,28 @@ func resourceText(r *sdk.ResourceContents) string {
 }
 
 // linkText renders a resource link as the line
-// "resource_link <uri>: <name>, <description>, <mimeType>, <size> bytes",
-// leaving out each member the server did not give, and the colon with
-// them when it gave none.
+// "resource_link <uri>: <name>, <description>, <mimeType>, <size> bytes".
 func linkText(l *sdk.ResourceLink) string {
+	return linkLine("resource_link", l.URI, l.Name, l.Description, l.MIMEType, l.Size)
+}
+
+// linkLine renders "<kind> <uri>: <name>, <description>, <mimeType>,
+// <size> bytes", leaving out each member the server did not give, and
+// the colon with them when it gave none.
+func linkLine(kind, uri, name, description, mediaType string, size *int64) string {
 	var members []string
-	for _, m := range []string{l.Name, l.Description, l.MIMEType} {
+	for _, m := range []string{name, description, mediaType} {
 		if m != "" {
 			members = append(members, m)
 		}
 	}
-	if l.Size != nil {
-		members = append(members, strconv.FormatInt(*l.Size, 10)+" bytes")
+	if size != nil {
+		members = append(members, strconv.FormatInt(*size, 10)+" bytes")
 	}
 	if len(members) == 0 {
-		return "resource_link " + l.URI
+		return kind + " " + uri
 	}
-	return "resource_link " + l.URI + ": " + strings.Join(members, ", ")
+	return kind + " " + uri + ": " + strings.Join(members, ", ")
 }
 
 // audioExt maps the audio media types MCP servers commonly send to a
