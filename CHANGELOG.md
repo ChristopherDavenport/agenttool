@@ -110,6 +110,22 @@ versions may break the API.
   page refused or at the end of the call; a server that refuses the
   first page has none. `WithCallTimeout` bounds both tools as it bounds
   the server's own.
+- Fixed: `agenttool/cli` no longer takes a JSON `--answer` to a
+  question that asked for no fields as consent (#85). Any object was
+  accept with itself as content, so `--answer '{"note":"not before
+  Friday"}'` to "Delete the note?" deleted it. Each `--answer` is now
+  checked against its question: content only on accept, and only of
+  the members the question's form defines. One that fails is not given,
+  and the run ends with status 2 saying why.
+- Added: `--answer '{"action": "decline", "note": "…"}'`, the object
+  form that gives an action with `Answer.Note`, and `content` for a
+  form on accept (#85). The question on stdout always carries
+  `schema`, `null` for a confirmation, and the usage text describes the
+  form. `cli.PromptNotes` is `Prompt` with a line for a note after each
+  answer.
+- Added: `Elicitation.Check(answer)`, the rules RFC 0001's new
+  Questions section states for an answer, for a harness to apply
+  before it gives one (#85). RFC 0001 gains a Command line binding.
 - Dependencies: every module requires `openresponses` v0.0.17, up from
   v0.0.13. Its `Text` no longer documents itself for function call
   outputs, which take `input_text`, and its types keep members they do

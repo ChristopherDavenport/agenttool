@@ -79,6 +79,9 @@ func tools() agenttool.Set {
 					return "", err
 				}
 				if a.Action != agenttool.ActionAccept {
+					if a.Note != "" {
+						return "kept; the user said: " + a.Note, nil
+					}
 					return "kept", nil
 				}
 				b, err := ask(ctx, agenttool.Elicitation{
@@ -241,7 +244,7 @@ func TestRun(t *testing.T) {
 			name:       "unanswered question",
 			args:       []string{"delete"},
 			code:       cli.ExitNeedsAnswer,
-			stdoutJSON: `{"message":"Delete the branch?","answers_given":0,"output":"kept"}`,
+			stdoutJSON: `{"message":"Delete the branch?","schema":null,"answers_given":0,"output":"kept"}`,
 			stderrHas:  "--answer",
 		},
 		{
@@ -255,6 +258,15 @@ func TestRun(t *testing.T) {
 		{name: "cancelled", args: []string{"--answer", "cancel", "delete"}, stdout: "kept\n"},
 		{name: "unused answers are reported", args: []string{"--answer", "decline", "--answer", "accept", "delete"}, stdout: "kept\n", stderrHas: "1 --answer not used"},
 		{name: "bad answer", args: []string{"--answer", "maybe", "delete"}, code: cli.ExitUsage, stderrHas: "an answer is accept"},
+		// #85: a JSON object is not consent to a question that asked for
+		// no fields, and a note goes in the object form with its action.
+		{name: "an object answers no confirmation", args: []string{"--answer", `{"note":"not before Friday"}`, "delete"}, code: cli.ExitUsage, stderrHas: `"note"`},
+		{name: "a note with its action", args: []string{"--answer", `{"action":"decline","note":"not before Friday"}`, "delete"}, stdout: "kept; the user said: not before Friday\n"},
+		{name: "form content with a member the form lacks", args: []string{"--answer", "accept", "--answer", `{"reason":"merged","why":"x"}`, "delete"}, code: cli.ExitUsage, stderrHas: `"why"`},
+		{name: "form content in the object form", args: []string{"--answer", "accept", "--answer", `{"action":"accept","content":{"reason":"merged"},"note":"tidy up"}`, "delete"}, stdout: "deleted: {\"reason\":\"merged\"}\n"},
+		{name: "content with decline", args: []string{"--answer", `{"action":"decline","content":{"reason":"x"}}`, "delete"}, code: cli.ExitUsage, stderrHas: "only on accept"},
+		{name: "an unknown action in the object form", args: []string{"--answer", `{"action":"maybe"}`, "delete"}, code: cli.ExitUsage, stderrHas: "maybe"},
+		{name: "an unknown member of the object form", args: []string{"--answer", `{"action":"accept","contents":{}}`, "delete"}, code: cli.ExitUsage, stderrHas: "contents"},
 		{name: "progress on stderr", args: []string{"work"}, stdout: "done\n", stderrHas: "[1/2] half\n"},
 		{name: "progress without a total, and as text", args: []string{"steps"}, stdout: "done\n", stderrHas: "[3] counting\nhalfway\n"},
 		{name: "a parameter named help is a flag", args: []string{"helpful", "--help", "yes"}, stdout: "help=yes\n"},
@@ -694,5 +706,34 @@ func TestMarkdownDetails(t *testing.T) {
 	}
 	if strings.Contains(got, "Hints") {
 		t.Errorf("usage claims a hint the tool did not give:\n%s", got)
+	}
+}
+
+// TestPromptNotes: the opt-in note line takes what the user says with
+// any answer, and an empty line or the end of input says nothing (#85).
+func TestPromptNotes(t *testing.T) {
+	form := json.RawMessage(`{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}`)
+	for _, tt := range []struct {
+		name, in string
+		q        agenttool.Elicitation
+		action   agenttool.Action
+		note     string
+	}{
+		{"no with a reason", "n\nnot before Friday\n", agenttool.Elicitation{Message: "Delete?"}, agenttool.ActionDecline, "not before Friday"},
+		{"a form and a note", "4\ncheck the total\n", agenttool.Elicitation{Schema: form}, agenttool.ActionAccept, "check the total"},
+		{"nothing to add", "y\n\n", agenttool.Elicitation{Message: "Go?"}, agenttool.ActionAccept, ""},
+		{"input ends", "y\n", agenttool.Elicitation{Message: "Go?"}, agenttool.ActionAccept, ""},
+		{"a cancel asks for no note", "", agenttool.Elicitation{Message: "Go?"}, agenttool.ActionCancel, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var out strings.Builder
+			a, err := cli.PromptNotes(strings.NewReader(tt.in), &out)(context.Background(), tt.q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a.Action != tt.action || a.Note != tt.note {
+				t.Errorf("answer = %+v, want %s with note %q", a, tt.action, tt.note)
+			}
+		})
 	}
 }

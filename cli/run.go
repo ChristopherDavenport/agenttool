@@ -410,7 +410,11 @@ func (v *value) entries() ([]entry, error) {
 }
 
 // answerList is the --answer option: each one an [agenttool.Answer],
-// given as an action alone or as the JSON object a form asks for.
+// given as an action alone, as the JSON object a form asks for, which
+// accepts with it, or as {"action": …, "note": …, "content": …}, which
+// says the action and what the user said with it. An object with an
+// "action" member is the last; a form whose own field is named action
+// is answered in that form, with the field in its content.
 type answerList []agenttool.Answer
 
 func (a *answerList) String() string { return "" }
@@ -423,9 +427,40 @@ func (a *answerList) Set(s string) error {
 	}
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(s), &obj); err != nil || obj == nil {
-		return errors.New("an answer is accept, decline, cancel or a JSON object")
+		return errors.New(`an answer is accept, decline, cancel, a JSON object of a form's fields, or {"action": …, "note": …, "content": …}`)
 	}
-	*a = append(*a, agenttool.Answer{Action: agenttool.ActionAccept, Content: json.RawMessage(s)})
+	if _, ok := obj["action"]; !ok {
+		*a = append(*a, agenttool.Answer{Action: agenttool.ActionAccept, Content: json.RawMessage(s)})
+		return nil
+	}
+	var ans agenttool.Answer
+	for k, v := range obj {
+		var err error
+		switch k {
+		case "action":
+			err = json.Unmarshal(v, &ans.Action)
+		case "note":
+			err = json.Unmarshal(v, &ans.Note)
+		case "content":
+			ans.Content = v
+		default:
+			return fmt.Errorf(`an answer object with an action has the members action, note and content, not %q`, k)
+		}
+		if err != nil {
+			return fmt.Errorf("an answer's %s is a string", k)
+		}
+	}
+	// The action, and content only with accept, are checked now; the
+	// content's members when the question they answer is asked.
+	switch ans.Action {
+	case agenttool.ActionAccept, agenttool.ActionDecline, agenttool.ActionCancel:
+	default:
+		return fmt.Errorf("an answer's action is accept, decline or cancel, not %q", ans.Action)
+	}
+	if len(ans.Content) > 0 && string(ans.Content) != "null" && ans.Action != agenttool.ActionAccept {
+		return fmt.Errorf("an answer has content only on accept, not on %s", ans.Action)
+	}
+	*a = append(*a, ans)
 	return nil
 }
 
@@ -475,6 +510,10 @@ func (r Runner) call(ctx context.Context, tool agenttool.Tool, args json.RawMess
 		}
 	}
 
+	if bad := ask.refused(); bad != nil {
+		fmt.Fprintf(r.Stderr, "%s: %v; the call was told the answer could not be given. Answer the question with the fields its schema defines, or with {\"action\": \"decline\", \"note\": \"...\"} to say no and why, and run the command again\n", r.Name, bad)
+		return ExitUsage
+	}
 	if q, given, ok := ask.unanswered(); ok {
 		out := question{Message: q.Message, Schema: q.Schema, URL: q.URL, AnswersGiven: given}
 		if err != nil {
@@ -527,9 +566,12 @@ func (r Runner) progress(res agenttool.Result) {
 
 // question is what stdout holds when a call stops for an answer.
 type question struct {
-	Message string          `json:"message"`
-	Schema  json.RawMessage `json:"schema,omitempty"`
-	URL     string          `json:"url,omitempty"`
+	Message string `json:"message"`
+	// Schema is the form the question asks for, and null for a
+	// confirmation, which takes no fields: always present, so a model
+	// can tell the two apart.
+	Schema json.RawMessage `json:"schema"`
+	URL    string          `json:"url,omitempty"`
 	// AnswersGiven is how many --answer the call used before it
 	// asked this; they are needed again, in order, when it runs again.
 	AnswersGiven int `json:"answers_given"`
@@ -552,6 +594,8 @@ type elicitor struct {
 	ask     agenttool.Elicitor
 	pending *agenttool.Elicitation
 	given   int
+	// bad is the first --answer that did not answer its question.
+	bad error
 }
 
 func (e *elicitor) elicit(ctx context.Context, q agenttool.Elicitation) (agenttool.Answer, error) {
@@ -559,7 +603,23 @@ func (e *elicitor) elicit(ctx context.Context, q agenttool.Elicitation) (agentto
 	if e.next < len(e.answers) {
 		a := e.answers[e.next]
 		e.next++
+		n := e.next
+		// Content the question did not ask for is refused, not taken as
+		// accept: the tool is told the answer could not be given, and the
+		// run ends with the usage status.
+		if err := q.Check(a); err != nil {
+			err = fmt.Errorf("--answer %d does not answer %q: %w", n, q.Message, err)
+			if e.bad == nil {
+				e.bad = err
+			}
+			e.mu.Unlock()
+			return agenttool.Answer{}, err
+		}
 		e.mu.Unlock()
+		if len(q.Schema) == 0 {
+			// A confirmation's answer has no content; {} said nothing.
+			a.Content = nil
+		}
 		return a, nil
 	}
 	ask := e.ask
@@ -572,6 +632,13 @@ func (e *elicitor) elicit(ctx context.Context, q agenttool.Elicitation) (agentto
 		return agenttool.Answer{Action: agenttool.ActionCancel}, nil
 	}
 	return ask(ctx, q)
+}
+
+// refused is the first --answer that did not answer its question.
+func (e *elicitor) refused() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.bad
 }
 
 // unused is how many --answer the call never asked for.

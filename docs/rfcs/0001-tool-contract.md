@@ -350,10 +350,9 @@ four things:
 - **Cancellation**, which is the harness's interrupt; see
   [Stopping a call](#stopping-a-call).
 - **The elicitor**, when the harness has one: how a tool asks the user
-  a question mid-call and waits for the answer, a confirmation, a form
-  or a page to visit, so the question reaches the harness as part of
-  the call that asked. A tool with none has nobody to ask, and reads
-  the question as cancelled, which says nobody chose.
+  a question mid-call and waits for the answer, so the question reaches
+  the harness as part of the call that asked; see
+  [Questions](#questions).
 
 ### A result
 
@@ -411,6 +410,40 @@ with no numbers sends text alone.
 Updates are delivered to the harness on the harness's own goroutine or
 thread, one at a time, in the order they were sent, and never after the
 call's final result.
+
+### Questions
+
+A tool that needs the user mid-call asks a **question** through the
+elicitor on its context and waits for the **answer**.
+
+- A question is a message, and at most one of a **form**, the JSON
+  Schema of an object of flat members the answer fills in, or a
+  **URL**, a page the user visits, which is how a tool asks for a
+  credential it must not see. A question with neither is a
+  **confirmation**: yes or no. A form that defines no members is a
+  confirmation too.
+- An answer is an **action**, `accept`, `decline` or `cancel`, with
+  **content** and a **note**. *Accept* is the user's yes, or the form
+  submitted; *decline* is an explicit no; *cancel* is no answer, the
+  user dismissed it or nobody was asked. A reader MUST treat an action
+  it does not know as an error, never as *accept*.
+- **Content** is present only on *accept*, and is a JSON object of
+  members the question's form defines. An answer to a confirmation has
+  no content, and an empty object is the same as none. A harness MUST
+  refuse an answer whose content has a member the form does not define,
+  or that has content on another action, and MUST NOT take such content
+  as *accept*: content the question did not ask for is someone
+  answering a different question, and the action it would imply is the
+  one that runs a side effect.
+- A **note** is the user's own words with any action, why they
+  declined or what to bear in mind, for the asker, which MAY pass it
+  on: a harness that asked whether a call may run tells the model. It
+  is not checked against the form.
+- A harness with nobody to ask, or a tool with no elicitor, answers
+  *cancel*, which says nobody chose, and never *decline*, which says
+  someone did. Failing to ask is an error from the elicitor, and is not
+  an answer.
+- A tool MAY ask several questions at once; the harness answers each.
 
 ### Records
 
@@ -646,7 +679,7 @@ and everything else is optional.
 | progress info | `ProgressInfo{Progress, Total, Message}`; `Progress(ctx, r)` sends from a typed tool |
 | record | `Recordable` (`RecordNS() string`), `Record{NS, Data}`, `RecordOf(details)` |
 | recorder on the context | `RecordFunc`, `ContextWithRecorder`, `RecorderFrom`, `WriteRecord`; `Executor.Recorder` installs it per batch |
-| elicitor on the context | `Elicitor` answers an `Elicitation{Message, Schema, URL}` with an `Answer{Action, Content}`, `ActionAccept`, `ActionDecline` or `ActionCancel`; `ContextWithElicitor`, `ElicitorFrom`; the harness installs it, and a tool with none has nobody to ask |
+| elicitor on the context | `Elicitor` answers an `Elicitation{Message, Schema, URL}` with an `Answer{Action, Content, Note}`, `ActionAccept`, `ActionDecline` or `ActionCancel`; `ContextWithElicitor`, `ElicitorFrom`; the harness installs it, and a tool with none has nobody to ask; `Elicitation.Check(answer)` applies the [Questions](#questions) rules to an answer before a harness gives it |
 | arguments validation | `New` validates a reflected schema with `Schema.ValidateJSON`; `ValidationError{Path, Msg}` |
 | executor | `Executor{MaxParallel, Sequential, Recorder, OnStart}`; `Execute` yields `Event{Index, Final, Result, Err}`; `Results` collects in job order |
 | a call starts | `Executor.OnStart(ctx, job) error`, on the job's goroutine, after the slot and the turn, with the call on `ctx`, before `Execute`; an error completes the job without running the tool |
@@ -700,7 +733,7 @@ set on the local side by the host and does not cross.
 | timeout | the consuming side MAY bound a call by a host-set idle time and maximum time, per server or per tool, `mcpclient.WithCallTimeout`, as [Stopping a call](#stopping-a-call) says; a progress notification for the call resets the idle time, so the consuming side asks for progress under an idle limit whether or not its caller takes updates; expiry cancels the request, which sends `notifications/cancelled`, and the call is not sent again | consume |
 | roots | no field in the contract. The consuming side offers the roots capability only when the host supplies roots, `mcpclient.WithRoots`, and answers `roots/list` with them; without them it MUST NOT advertise roots, so a server that scopes itself to its client's roots is not told it has some and then given none | consume |
 | logging | no field in the contract. The consuming side asks for log messages only when the host takes them, `mcpclient.WithLogging`: from 2026-07-28 by the log level in each call's `_meta`, `io.modelcontextprotocol/logLevel`, and before it by `logging/setLevel` when the session starts. It hands each message to the host, with the call on the context when the message belongs to a call it can name, and a log message never reaches a call's output, its details or the model | consume |
-| elicitation | `elicitation/create` ↔ the elicitor on the call's context. The client offers it only with `mcpclient.WithElicitation`; from 2026-07-28 the question returns with its call and is that call's, and before it a question the server sends on its own is put to the one call in flight, and to nobody when there is none or several; nobody to ask answers `cancel`. The server installs an elicitor on a served call's context when the client offers elicitation: from 2026-07-28 a question goes back as the call's input request, the tool running on while the client asks, and before it as `elicitation/create`; a question of a mode the client does not take answers `cancel` | both |
+| elicitation | `elicitation/create` ↔ the elicitor on the call's context. The client offers it only with `mcpclient.WithElicitation`; from 2026-07-28 the question returns with its call and is that call's, and before it a question the server sends on its own is put to the one call in flight, and to nobody when there is none or several; nobody to ask answers `cancel`. A note does not cross, since MCP's elicitation result has no place for it. The server installs an elicitor on a served call's context when the client offers elicitation: from 2026-07-28 a question goes back as the call's input request, the tool running on while the client asks, and before it as `elicitation/create`; a question of a mode the client does not take answers `cancel` | both |
 
 #### Content
 
@@ -820,6 +853,44 @@ convention is a `function_call_output` whose `output` is the `Error:`
 text; nothing in the item says it was an error, which is why the
 convention is the model's only signal and why a tool never writes one
 as content.
+
+### Command line
+
+`agenttool/cli` makes a set of tools one program whose commands are
+the tools, for a host that gives the model a shell and no MCP server.
+One process runs one call, and the exit status carries the result:
+
+| Status | Meaning |
+| --- | --- |
+| 0 | the call succeeded, and its output is on stdout |
+| 1 | the call returned an error, on stderr as `Error: ` and the message, as the error convention renders it |
+| 2 | the command line was not understood, or an `--answer` did not answer its question, and the call did not run or was told the answer could not be given |
+| 3 | the tool asked a question nobody answered, and was answered *cancel* |
+
+On status 3 stdout holds the question as one JSON object: `message`;
+`schema`, the form, always present and `null` for a confirmation, so a
+reader can tell the two apart; `url` when the question has one;
+`answers_given`, how many `--answer` the call used before it asked;
+and `output` or `error`, how the call ended once told *cancel*.
+
+The program answers the call's questions in order from the
+`--answer` options given before the command, each one of:
+
+- an action alone, `accept`, `decline` or `cancel`;
+- a JSON object without an `action` member, which is the form's
+  content and *accept*;
+- a JSON object with an `action` member, `{"action": …, "note": …,
+  "content": …}`, with no other members, which gives the action, the
+  note, and on *accept* the content. A form whose own field is named
+  `action` is answered in this form.
+
+Each answer is checked against its question as [Questions](#questions)
+says. One that fails, content a confirmation did not ask for, a member
+the form does not define, content with another action, is not given:
+the tool is told the answer could not be given, and the run ends with
+status 2 and the reason on stderr. A question after the last
+`--answer` is answered *cancel*, or asked of a person at the terminal
+when the program has one.
 
 ## Schema generation
 
@@ -1135,6 +1206,14 @@ module and is listed in the changelog as one.
   server's resources, `list_resources` and `read_resource`, defined
   here word for word, with their outputs, and yielding to a server
   tool of the same name (#94).
+- A call gains [Questions](#questions), the elicitor's rules: what a
+  question and an answer are, content only on *accept* and only of
+  the members the form defines, a confirmation's answer without
+  content, a harness refusing content it did not ask for rather than
+  taking it as *accept*, and a note with any action. Bindings gain
+  [Command line](#command-line): exit statuses, the question on
+  stdout with `schema` always present, and `--answer` in the object
+  form that carries a note (#85).
 
 ## Changes since 0.6
 

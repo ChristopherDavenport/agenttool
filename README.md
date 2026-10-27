@@ -622,9 +622,14 @@ nobody to ask answers. The tool does what it does with that, and the
 call ends with status 3. Stdout then holds the question as JSON,
 together with the tool's output or error. The model asks the user and
 runs the command again with `--answer`. The second run is a second
-call, so this suits a tool that asks before it acts. A program that
-knows a person is at the terminal sets `Ask: cli.Prompt(os.Stdin,
-os.Stderr)` instead. `--record` appends the call's records to a file
+call, so this suits a tool that asks before it acts. An answer is an
+action, the form's fields as a JSON object, or `{"action": "decline",
+"note": "not before Friday"}` to pass on what the user said with it.
+The question's `schema` is `null` when it asks only yes or no, and an
+answer is checked against it: fields the form does not define end the
+run with status 2 rather than count as yes. A program that knows a
+person is at the terminal sets `Ask: cli.Prompt(os.Stdin, os.Stderr)`
+instead, or `cli.PromptNotes` to ask for a note with each answer. `--record` appends the call's records to a file
 as JSON lines.
 
 `cli.Markdown` renders how to call each command, from the same
