@@ -5,7 +5,7 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
-## Unreleased
+## v0.0.27 - 2026-10-27
 
 - Added: `mcpserver.Options.Instructions`, served by `Options.NewServer`
   as the server's instructions at initialize (#98). A server built with
