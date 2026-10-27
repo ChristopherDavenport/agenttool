@@ -121,6 +121,7 @@ type options struct {
 	barrier    map[string]bool
 	resources  map[string]claim[string]
 	confined   map[string]claim[func(context.Context, json.RawMessage) (bool, string)]
+	flows      map[string]claim[agenttool.Flow]
 	// seq numbers the claims in the order their options were given, so
 	// the later of a claim on a tool's remote name and one on its
 	// prefixed name wins, whichever spelling each used.
@@ -327,6 +328,25 @@ func WithConfined(by string, names ...string) Option {
 // WithConfined(by, "bash").
 func WithConfinedFunc(fn func(ctx context.Context, args json.RawMessage) (bool, string), names ...string) Option {
 	return func(o *options) { claimOn(o, &o.confined, fn, names) }
+}
+
+// WithFlow declares the named tools' [agenttool.Flow], which wins over
+// what the server says of them: its open-world hint and the flow in its
+// _meta, with or without [WithClaims]. The host knows what a server's
+// tools reach, an inbox it connected or a sandbox with no network, and
+// the server is only its own word. Names are matched before and after
+// prefixing, as [WithResource]'s are, and the last option naming a tool
+// wins, whichever form of its name each used; the names of
+// [Remote.ResourceTools] are matched too.
+//
+//	mcpclient.WithFlow(agenttool.Flow{Reads: []agenttool.Label{agenttool.LabelPrivate}}, "read_email")
+//	mcpclient.WithFlow(agenttool.Flow{Sends: true, To: []string{"to"}}, "send_email")
+//
+// A declaration that loosens what the server's hints say, a tool that
+// reads nothing untrusted or sends nothing, is the host's to make, as
+// [WithConfined]'s is.
+func WithFlow(flow agenttool.Flow, names ...string) Option {
+	return func(o *options) { claimOn(o, &o.flows, flow, names) }
 }
 
 // WithNotificationGrace bounds how long a call waits, after its result
@@ -972,7 +992,9 @@ func (s *Remote) wrap(l *link, t *sdk.Tool, def string) (agenttool.Tool, error) 
 	if a, ok := AnnotationsOf(t); ok {
 		opts = append(opts, agenttool.WithAnnotations(a))
 	}
-	if flow, ok := flowOf(t, meta, s.opts.claims); ok {
+	if flow, ok := latest(s.opts.flows, remote, name); ok {
+		opts = append(opts, agenttool.WithFlow(flow))
+	} else if flow, ok := flowOf(t, meta, s.opts.claims); ok {
 		opts = append(opts, agenttool.WithFlow(flow))
 	}
 	out, err := outputCheckOf(t)

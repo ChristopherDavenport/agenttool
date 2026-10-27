@@ -88,3 +88,51 @@ func sameFlow(a, b agenttool.Flow) bool {
 	}
 	return reflect.DeepEqual(norm(a), norm(b))
 }
+
+// TestHostFlowWins: a host's declaration of a consumed tool's flow wins
+// over the server's open-world hint and over its _meta, with or without
+// WithClaims, since the host is the one that knows what the tool reaches.
+func TestHostFlowWins(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "mail", Version: "1"}, nil)
+	add := func(name string, flow map[string]any) {
+		tool := &sdk.Tool{Name: name, InputSchema: json.RawMessage(`{"type":"object"}`)}
+		if flow != nil {
+			tool.Meta = sdk.Meta{ToolMetaKey: map[string]any{"flow": flow}}
+		}
+		server.AddTool(tool, func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			return &sdk.CallToolResult{}, nil
+		})
+	}
+	add("read_email", nil)
+	add("send_email", map[string]any{"reads": []any{}, "sends": false})
+	server.AddResource(&sdk.Resource{URI: "file:///a", Name: "a"}, func(context.Context, *sdk.ReadResourceRequest) (*sdk.ReadResourceResult, error) {
+		return &sdk.ReadResourceResult{}, nil
+	})
+	inbox := agenttool.Flow{Reads: []agenttool.Label{agenttool.LabelUntrusted, agenttool.LabelPrivate}}
+	mail := agenttool.Flow{Sends: true, To: []string{"to"}, Carries: []string{"body"}}
+	local := agenttool.Flow{}
+	for name, opts := range map[string][]Option{"untrusted": nil, "with claims": {WithClaims()}} {
+		t.Run(name, func(t *testing.T) {
+			s := connect(t, server, append(opts, WithPrefix("m"),
+				WithFlow(inbox, "read_email"), WithFlow(agenttool.Flow{}, "m__send_email"), WithFlow(mail, "send_email"),
+				WithFlow(local, "read_resource"))...)
+			for tool, want := range map[string]agenttool.Flow{"m__read_email": inbox, "m__send_email": mail} {
+				if got, ok := agenttool.FlowOf(lookup(t, s, tool)); !ok || !sameFlow(got, want) {
+					t.Errorf("%s: flow = %+v, %v; want the host's %+v", tool, got, ok, want)
+				}
+			}
+			flows := map[string]agenttool.Flow{}
+			for _, tl := range s.ResourceTools() {
+				f, ok := agenttool.FlowOf(tl)
+				if !ok {
+					t.Errorf("%s states no flow", tl.Name())
+				}
+				flows[tl.Name()] = f
+			}
+			open := agenttool.Flow{Reads: []agenttool.Label{agenttool.LabelUntrusted}, Sends: true}
+			if !sameFlow(flows["m__list_resources"], open) || !sameFlow(flows["m__read_resource"], local) {
+				t.Errorf("resource tools' flows = %+v; want list_resources open-world and read_resource the host's", flows)
+			}
+		})
+	}
+}

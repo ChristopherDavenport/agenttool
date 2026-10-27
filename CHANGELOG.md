@@ -171,6 +171,12 @@ versions may break the API.
   the reason. mcpserver accepted members a form does not define, and
   any content for a confirmation; the tool's elicitor now returns such
   an answer as an error, never as accept.
+- Added: `mcpclient.WithFlow(flow, names…)`, the host's declaration
+  of a consumed tool's flow, which wins over the server's open-world
+  hint and its `_meta` flow, with or without `WithClaims` (#92). Names
+  match before and after the prefix, the last option wins, and
+  `ResourceTools` are matched too; without a declaration they read as
+  open-world, reading untrusted content and sending.
 - Dependencies: every module requires `openresponses` v0.0.17, up from
   v0.0.13. Its `Text` no longer documents itself for function call
   outputs, which take `input_text`, and its types keep members they do

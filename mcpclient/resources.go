@@ -62,7 +62,15 @@ func (s *Remote) ResourceTools() []agenttool.Tool {
 		taken[e.remote] = true
 	}
 	s.mu.RUnlock()
-	opts := []agenttool.Option{agenttool.WithAnnotations(resourceAnnotations)}
+	// Open-world, as their annotations say, so their flow is MCP's
+	// reading of that, unless the host declares one.
+	opts := func(name string) []agenttool.Option {
+		flow := agenttool.Flow{Reads: []agenttool.Label{agenttool.LabelUntrusted}, Sends: true}
+		if f, ok := latest(s.opts.flows, name, s.Name(name)); ok {
+			flow = f
+		}
+		return []agenttool.Option{agenttool.WithAnnotations(resourceAnnotations), agenttool.WithFlow(flow)}
+	}
 	var tools []agenttool.Tool
 	if !taken[listResourcesName] {
 		tools = append(tools, agenttool.NewFunc(s.Name(listResourcesName), listResourcesDescription, json.RawMessage(listResourcesParameters),
@@ -76,7 +84,7 @@ func (s *Remote) ResourceTools() []agenttool.Tool {
 				return s.resourceRequest(ctx, listResourcesName, func(ctx context.Context, session *sdk.ClientSession) (agenttool.Result, error) {
 					return listResources(ctx, session, args.Cursor)
 				})
-			}, opts...))
+			}, opts(listResourcesName)...))
 	}
 	if !taken[readResourceName] {
 		tools = append(tools, agenttool.NewFunc(s.Name(readResourceName), readResourceDescription, json.RawMessage(readResourceParameters),
@@ -97,7 +105,7 @@ func (s *Remote) ResourceTools() []agenttool.Tool {
 					}
 					return readResult(res), nil
 				})
-			}, opts...))
+			}, opts(readResourceName)...))
 	}
 	return tools
 }
