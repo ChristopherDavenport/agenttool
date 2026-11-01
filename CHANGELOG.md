@@ -17,12 +17,14 @@ versions may break the API.
   as it refuses an unknown action. RFC 0001 draft 0.9 states the rule
   under Questions: an answer MAY name who gave it, a harness that
   answers by rule MUST name `policy` or `agent`.
-- Added: the decider crosses MCP in the elicitation result's `_meta`
-  under `AnswerMetaKey`, `io.github.christopherdavenport.agenttool/answer`,
-  as `{"by": …}`, since MCP's result has no field for it. mcpclient
-  writes it for an answer that names a decider, and mcpserver reads it
-  into the answer its tool is given, refusing an entry that is not an
-  object, a `by` that is not a string or a decider it does not know.
+- Added: the decider and the note cross MCP in the elicitation result's
+  `_meta` under `AnswerMetaKey`,
+  `io.github.christopherdavenport.agenttool/answer`, as `{"by": …,
+  "note": …}`, since MCP's result has no field for either; the note was
+  dropped at the client before. mcpclient writes each member only when
+  the answer has it, and mcpserver reads them into the answer its tool
+  is given, refusing an entry that is not an object, a `by` or `note`
+  that is not a string, or a decider it does not know.
 - Added: the command line's object answer takes `by`, `{"action": …,
   "by": "agent"}`; a decider other than `human`, `policy` or `agent`
   ends the run with status 2 before the call runs.

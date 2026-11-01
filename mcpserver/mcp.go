@@ -190,8 +190,9 @@ func (o Options) NewServer(name, version string, tools ...agenttool.Tool) (*sdk.
 // against its schema, a question of a mode the client does not offer is
 // answered [agenttool.ActionCancel] by [agenttool.ByPolicy], and a
 // client that offers no elicitation leaves the context as the host set
-// it. Who gave an answer comes from the result's _meta under
-// [AnswerMetaKey], into [agenttool.Answer.By].
+// it. Who gave an answer and its note come from the result's _meta
+// under [AnswerMetaKey], into [agenttool.Answer.By] and
+// [agenttool.Answer.Note].
 //
 // When the request carries a progress token, Call.OnUpdate forwards each
 // update as a progress notification whose message is the update's text.

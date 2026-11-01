@@ -599,7 +599,11 @@ func whoAnswered(q agenttool.Elicitation) agenttool.Tool {
 		if by == "" {
 			by = "nobody named"
 		}
-		return agenttool.Text(string(ans.Action) + " by " + by), nil
+		out := string(ans.Action) + " by " + by
+		if ans.Note != "" {
+			out += "; note " + ans.Note
+		}
+		return agenttool.Text(out), nil
 	})
 }
 
@@ -627,6 +631,10 @@ func TestElicitationAnswerNamesWhoGaveIt(t *testing.T) {
 		{name: "an unknown decider", answer: &sdk.ElicitResult{Action: "accept", Meta: sdk.Meta{AnswerMetaKey: map[string]any{"by": "system"}}}, wantErr: `unknown decider "system"`},
 		{name: "a decider not a string", answer: &sdk.ElicitResult{Action: "accept", Meta: sdk.Meta{AnswerMetaKey: map[string]any{"by": 1}}}, wantErr: "elicitation answer"},
 		{name: "an entry not an object", answer: &sdk.ElicitResult{Action: "accept", Meta: sdk.Meta{AnswerMetaKey: "agent"}}, wantErr: "elicitation answer"},
+		// The note crosses in the same entry, checked as by is.
+		{name: "a note with its decider", answer: &sdk.ElicitResult{Action: "decline", Meta: sdk.Meta{AnswerMetaKey: map[string]any{"by": "agent", "note": "after the release"}}}, want: "decline by agent; note after the release"},
+		{name: "a note alone", answer: &sdk.ElicitResult{Action: "accept", Meta: sdk.Meta{AnswerMetaKey: map[string]any{"note": "after the release"}}}, want: "accept by nobody named; note after the release"},
+		{name: "a note not a string", answer: &sdk.ElicitResult{Action: "accept", Meta: sdk.Meta{AnswerMetaKey: map[string]any{"note": 1}}}, wantErr: "note is not a string"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -678,11 +686,11 @@ func TestElicitationAnswerNamesWhoGaveIt(t *testing.T) {
 	t.Run("through mcpclient", func(t *testing.T) {
 		s := roundTrip(t, newServer(t, "deployer", whoAnswered(q)), mcpclient.WithElicitation())
 		ctx := agenttool.ContextWithElicitor(context.Background(), func(context.Context, agenttool.Elicitation) (agenttool.Answer, error) {
-			return agenttool.Answer{Action: agenttool.ActionAccept, By: agenttool.ByAgent}, nil
+			return agenttool.Answer{Action: agenttool.ActionAccept, By: agenttool.ByAgent, Note: "after the release"}, nil
 		})
 		res, err := callVia(t, s, ctx)
-		if err != nil || res.Output.Text != "accept by agent" {
-			t.Errorf("res = %q, err = %v; want accept by agent", res.Output.Text, err)
+		if want := "accept by agent; note after the release"; err != nil || res.Output.Text != want {
+			t.Errorf("res = %q, err = %v; want %q", res.Output.Text, err, want)
 		}
 	})
 }

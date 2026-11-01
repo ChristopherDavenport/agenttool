@@ -518,15 +518,16 @@ func decided() *sdk.Server {
 
 // TestElicitationAnswerNamesWhoGaveIt: an answer that names who gave it
 // reaches the server with the name in its _meta under AnswerMetaKey,
-// since MCP's elicitation result has no field for it; one that names
-// nobody carries no _meta; and the cancel the client gives when there
+// since MCP's elicitation result has no field for it, and its note in
+// the same entry; one that names nobody and says nothing carries no
+// _meta; and the cancel the client gives when there
 // is nobody to ask names policy, the client having answered by rule
 // (agentturn#267). The same holds when the server asks on its own,
 // before 2026-07-28.
 func TestElicitationAnswerNamesWhoGaveIt(t *testing.T) {
-	answer := func(by string) agenttool.Elicitor {
+	answer := func(by string, note ...string) agenttool.Elicitor {
 		return func(context.Context, agenttool.Elicitation) (agenttool.Answer, error) {
-			return agenttool.Answer{Action: agenttool.ActionAccept, By: by}, nil
+			return agenttool.Answer{Action: agenttool.ActionAccept, By: by, Note: strings.Join(note, "")}, nil
 		}
 	}
 	for name, tc := range map[string]struct {
@@ -538,6 +539,9 @@ func TestElicitationAnswerNamesWhoGaveIt(t *testing.T) {
 		"by a person":      {answer(agenttool.ByHuman), `accept {"by":"human"}`},
 		"by nobody named":  {answer(""), `accept null`},
 		"nobody to ask":    {nil, `cancel {"by":"policy"}`},
+		// The note crosses in the same entry, with a decider or without.
+		"a note by another model": {answer(agenttool.ByAgent, "after the release"), `accept {"by":"agent","note":"after the release"}`},
+		"a note by nobody named":  {answer("", "after the release"), `accept {"note":"after the release"}`},
 	} {
 		for proto, opts := range map[string][]Option{"current": {WithElicitation()}, "older": {WithElicitation(), older}} {
 			t.Run(name+"/"+proto, func(t *testing.T) {

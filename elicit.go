@@ -51,8 +51,7 @@ type Answer struct {
 	// on an accept. It is for the asker, which may pass it on: an
 	// agent loop that asked whether a call may run tells the model.
 	// Empty when the user said nothing. MCP's elicitation result has
-	// no place for it, so mcpclient does not send it to a server and
-	// mcpserver's answers never carry one.
+	// no place for it, so it crosses in the result's _meta beside By.
 	Note string
 	// By names who gave the answer, in the session format's terms:
 	// [ByHuman], [ByPolicy] or [ByAgent]. Empty names nobody, and the

@@ -15,9 +15,10 @@ import (
 )
 
 // AnswerMetaKey is the _meta key of an elicitation result under which
-// the client says who gave the answer, {"by": …}, read into the
-// answer's [agenttool.Answer.By]; see [agenttool.ByHuman]. A result
-// without it names nobody, and the answer is the user's. It is
+// the client says who gave the answer and what was said with it,
+// {"by": …, "note": …}, read into the answer's [agenttool.Answer.By]
+// and [agenttool.Answer.Note]; see [agenttool.ByHuman]. A result
+// without a by names nobody, and the answer is the user's. It is
 // mcpclient.AnswerMetaKey byte for byte, spelt out here as
 // [RecordMetaKey] is.
 const AnswerMetaKey = "io.github.christopherdavenport.agenttool/answer"
@@ -116,14 +117,15 @@ func offered(caps *sdk.ElicitationCapabilities, mode string) bool {
 // it was asked with: the client is meant to, and the tool should not
 // have to trust that it did. An answer that fails is the elicitor's
 // error, which the tool sees, and never an accept. Who gave the
-// answer is read from the result's _meta under [AnswerMetaKey], and a
-// name the contract does not know is refused with the rest.
+// answer and its note are read from the result's _meta under
+// [AnswerMetaKey], and a name the contract does not know is refused
+// with the rest.
 func answerOf(q question, res *sdk.ElicitResult) (agenttool.Answer, error) {
-	by, err := deciderOf(res.Meta)
+	by, note, err := answerMetaOf(res.Meta)
 	if err != nil {
 		return agenttool.Answer{}, fmt.Errorf("mcpserver: elicitation answer: %w", err)
 	}
-	ans := agenttool.Answer{Action: agenttool.Action(res.Action), By: by}
+	ans := agenttool.Answer{Action: agenttool.Action(res.Action), By: by, Note: note}
 	if res.Content != nil {
 		content, err := json.Marshal(res.Content)
 		if err != nil {
@@ -135,7 +137,7 @@ func answerOf(q question, res *sdk.ElicitResult) (agenttool.Answer, error) {
 		return agenttool.Answer{}, fmt.Errorf("mcpserver: elicitation answer: %w", err)
 	}
 	if ans.Action != agenttool.ActionAccept || ans.Content == nil {
-		return agenttool.Answer{Action: ans.Action, By: ans.By}, nil
+		return agenttool.Answer{Action: ans.Action, By: ans.By, Note: ans.Note}, nil
 	}
 	if q.schema != nil {
 		if err := q.schema.Validate(res.Content); err != nil {
@@ -149,29 +151,38 @@ func answerOf(q question, res *sdk.ElicitResult) (agenttool.Answer, error) {
 	return ans, nil
 }
 
-// deciderOf returns who an answer names as having given it, from the
-// entry under [AnswerMetaKey] in its result's _meta: "" when there is
-// none, or it has no by. An entry that is not an object, or a by that
-// is not a string, is an error rather than an answer that names nobody,
-// which would be read as the user's.
-func deciderOf(meta sdk.Meta) (string, error) {
+// answerMetaOf returns who an answer names as having given it and its
+// note, from the entry under [AnswerMetaKey] in its result's _meta,
+// each "" when the entry or the member is absent. An entry that is not
+// an object, or a member that is not a string, is an error rather than
+// an answer that names nobody, which would be read as the user's.
+func answerMetaOf(meta sdk.Meta) (by, note string, err error) {
 	raw, ok := meta[AnswerMetaKey]
 	if !ok {
-		return "", nil
+		return "", "", nil
 	}
 	entry, ok := raw.(map[string]any)
 	if !ok {
-		return "", fmt.Errorf("_meta %q is not an object", AnswerMetaKey)
+		return "", "", fmt.Errorf("_meta %q is not an object", AnswerMetaKey)
 	}
-	v, ok := entry["by"]
-	if !ok {
-		return "", nil
+	member := func(name string) (string, error) {
+		v, ok := entry[name]
+		if !ok {
+			return "", nil
+		}
+		s, ok := v.(string)
+		if !ok {
+			return "", fmt.Errorf("_meta %q: %s is not a string", AnswerMetaKey, name)
+		}
+		return s, nil
 	}
-	by, ok := v.(string)
-	if !ok {
-		return "", fmt.Errorf("_meta %q: by is not a string", AnswerMetaKey)
+	if by, err = member("by"); err != nil {
+		return "", "", err
 	}
-	return by, nil
+	if note, err = member("note"); err != nil {
+		return "", "", err
+	}
+	return by, note, nil
 }
 
 // askDirectly is the elicitor for a client before 2026-07-28, which the
