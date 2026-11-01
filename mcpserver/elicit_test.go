@@ -582,3 +582,107 @@ func TestElicitationEsc(t *testing.T) {
 		})
 	}
 }
+
+// whoAnswered is a tool that asks q and reports the answer's action and
+// who it names as having given it.
+func whoAnswered(q agenttool.Elicitation) agenttool.Tool {
+	return agenttool.NewFunc("deploy", "asks before it deploys", nil, func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
+		ask, ok := agenttool.ElicitorFrom(ctx)
+		if !ok {
+			return agenttool.Text("nobody to ask"), nil
+		}
+		ans, err := ask(ctx, q)
+		if err != nil {
+			return agenttool.Result{}, err
+		}
+		by := ans.By
+		if by == "" {
+			by = "nobody named"
+		}
+		return agenttool.Text(string(ans.Action) + " by " + by), nil
+	})
+}
+
+// TestElicitationAnswerNamesWhoGaveIt: the name an answer gives of who
+// gave it comes back in the result's _meta under AnswerMetaKey and
+// reaches the tool as the answer's By; a name the contract does not
+// know, or one that is not a string, is refused rather than read as the
+// user's; and an answer the server gives itself, for a question the
+// client left out, names policy (agentturn#267).
+func TestElicitationAnswerNamesWhoGaveIt(t *testing.T) {
+	q := agenttool.Elicitation{Message: "delete it?"}
+	cases := []struct {
+		name    string
+		answer  sdk.InputResponse
+		want    string
+		wantErr string
+	}{
+		{name: "by another model", answer: &sdk.ElicitResult{Action: "accept", Meta: sdk.Meta{AnswerMetaKey: map[string]any{"by": "agent"}}}, want: "accept by agent"},
+		{name: "by a rule", answer: &sdk.ElicitResult{Action: "decline", Meta: sdk.Meta{AnswerMetaKey: map[string]any{"by": "policy"}}}, want: "decline by policy"},
+		{name: "by a person", answer: &sdk.ElicitResult{Action: "accept", Meta: sdk.Meta{AnswerMetaKey: map[string]any{"by": "human"}}}, want: "accept by human"},
+		{name: "no _meta", answer: &sdk.ElicitResult{Action: "accept"}, want: "accept by nobody named"},
+		{name: "_meta of another key", answer: &sdk.ElicitResult{Action: "accept", Meta: sdk.Meta{"example.com/x": 1}}, want: "accept by nobody named"},
+		{name: "no by", answer: &sdk.ElicitResult{Action: "accept", Meta: sdk.Meta{AnswerMetaKey: map[string]any{}}}, want: "accept by nobody named"},
+		{name: "left out", want: "cancel by policy"},
+		{name: "an unknown decider", answer: &sdk.ElicitResult{Action: "accept", Meta: sdk.Meta{AnswerMetaKey: map[string]any{"by": "system"}}}, wantErr: `unknown decider "system"`},
+		{name: "a decider not a string", answer: &sdk.ElicitResult{Action: "accept", Meta: sdk.Meta{AnswerMetaKey: map[string]any{"by": 1}}}, wantErr: "elicitation answer"},
+		{name: "an entry not an object", answer: &sdk.ElicitResult{Action: "accept", Meta: sdk.Meta{AnswerMetaKey: "agent"}}, wantErr: "elicitation answer"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cs, first := manual(t, whoAnswered(q))
+			responses := sdk.InputResponseMap{}
+			if tc.answer != nil {
+				responses[only(first)] = tc.answer
+			}
+			res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: "deploy", InputResponses: responses, RequestState: first.RequestState})
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case tc.wantErr != "":
+				if !res.IsError || !strings.Contains(text(res), tc.wantErr) {
+					t.Errorf("res = %q, isError %v; want an error with %q", text(res), res.IsError, tc.wantErr)
+				}
+			case res.IsError || text(res) != tc.want:
+				t.Errorf("res = %q, isError %v; want %q", text(res), res.IsError, tc.want)
+			}
+		})
+	}
+
+	t.Run("an older client", func(t *testing.T) {
+		cs := rawClient(t, newServer(t, "deployer", whoAnswered(q)), &sdk.ClientOptions{
+			ElicitationHandler: func(context.Context, *sdk.ElicitRequest) (*sdk.ElicitResult, error) {
+				return &sdk.ElicitResult{Action: "accept", Meta: sdk.Meta{AnswerMetaKey: map[string]any{"by": "agent"}}}, nil
+			},
+		}, &sdk.ClientSessionOptions{ProtocolVersion: "2025-11-25"})
+		res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: "deploy"})
+		if err != nil || text(res) != "accept by agent" {
+			t.Errorf("res = %q, err = %v; want accept by agent", text(res), err)
+		}
+	})
+
+	t.Run("a mode the client does not take", func(t *testing.T) {
+		url := agenttool.Elicitation{Message: "sign in", URL: "https://example.com/auth"}
+		cs := rawClient(t, newServer(t, "deployer", whoAnswered(url)), &sdk.ClientOptions{
+			ElicitationHandler: func(context.Context, *sdk.ElicitRequest) (*sdk.ElicitResult, error) {
+				return &sdk.ElicitResult{Action: "accept"}, nil
+			},
+		}, nil)
+		res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: "deploy"})
+		if err != nil || text(res) != "cancel by policy" {
+			t.Errorf("res = %q, err = %v; want cancel by policy", text(res), err)
+		}
+	})
+
+	t.Run("through mcpclient", func(t *testing.T) {
+		s := roundTrip(t, newServer(t, "deployer", whoAnswered(q)), mcpclient.WithElicitation())
+		ctx := agenttool.ContextWithElicitor(context.Background(), func(context.Context, agenttool.Elicitation) (agenttool.Answer, error) {
+			return agenttool.Answer{Action: agenttool.ActionAccept, By: agenttool.ByAgent}, nil
+		})
+		res, err := callVia(t, s, ctx)
+		if err != nil || res.Output.Text != "accept by agent" {
+			t.Errorf("res = %q, err = %v; want accept by agent", res.Output.Text, err)
+		}
+	})
+}

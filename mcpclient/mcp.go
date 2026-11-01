@@ -161,6 +161,16 @@ type options struct {
 // predates it; a test on that side holds the two together.
 const RecordMetaKey = "io.github.christopherdavenport.agenttool/record"
 
+// AnswerMetaKey is the _meta key of an elicitation result under which
+// an answer says who gave it, since MCP's result has no field for it:
+// {"by": …}, [agenttool.ByHuman], [agenttool.ByPolicy] or
+// [agenttool.ByAgent], as the answer's By. The client writes it only
+// for an answer that names someone, and an answer without it is the
+// user's; mcpserver reads it back into the answer its tool is given.
+// mcpserver spells the same string as its own AnswerMetaKey, as it does
+// [RecordMetaKey].
+const AnswerMetaKey = "io.github.christopherdavenport.agenttool/answer"
+
 // RemoteRecord is the record a served tool returned with its result,
 // made the local Details so that [agenttool.RecordOf] writes it under
 // the namespace the tool chose. Result is the SDK result it came with,
@@ -436,7 +446,8 @@ func WithRefreshError(fn func(error)) Option {
 // the server's question is cancelled. A call whose context carries no
 // elicitor has nobody to ask, and the server is answered
 // [agenttool.ActionCancel], which says nobody chose, rather than
-// [agenttool.ActionDecline], which says somebody did.
+// [agenttool.ActionDecline], which says somebody did; the client gave
+// that answer by rule, so it names [agenttool.ByPolicy].
 //
 // A call that ends while its server's question is with the elicitor,
 // because the user pressed Esc or the harness gave up, returns at once,
@@ -471,7 +482,10 @@ func WithRefreshError(fn func(error)) Option {
 // [agenttool.Elicitation.Check]: content the question did not ask for,
 // a member its form does not define or content with a decline, is
 // refused rather than sent, the server is answered with an error, and
-// the call returns the reason.
+// the call returns the reason. An answer that names who gave it,
+// [agenttool.Answer.By], carries the name in the result's _meta under
+// [AnswerMetaKey]; its note does not cross, since MCP has no place for
+// it.
 func WithElicitation() Option {
 	return func(o *options) { o.elicitation = true }
 }
@@ -1290,7 +1304,8 @@ func (c *ownCall) answeringCancel() bool {
 // elicit answers a server's elicitation through the elicitor of the
 // call that asked; see [WithElicitation].
 func (s *Remote) elicit(ctx context.Context, req *sdk.ElicitRequest) (*sdk.ElicitResult, error) {
-	nobody := &sdk.ElicitResult{Action: string(agenttool.ActionCancel)}
+	// Nobody to ask is the client answering by rule, and it says so.
+	nobody := &sdk.ElicitResult{Action: string(agenttool.ActionCancel), Meta: answerMeta(agenttool.ByPolicy)}
 	if req == nil || req.Params == nil {
 		return nobody, nil
 	}
@@ -1351,7 +1366,7 @@ func (s *Remote) elicit(ctx context.Context, req *sdk.ElicitRequest) (*sdk.Elici
 	if err := q.Check(ans); err != nil {
 		return nil, fmt.Errorf("mcp: elicitation answer refused: %w", err)
 	}
-	res := &sdk.ElicitResult{Action: string(ans.Action)}
+	res := &sdk.ElicitResult{Action: string(ans.Action), Meta: answerMeta(ans.By)}
 	switch ans.Action {
 	case agenttool.ActionAccept:
 		if len(ans.Content) > 0 {
@@ -1364,6 +1379,15 @@ func (s *Remote) elicit(ctx context.Context, req *sdk.ElicitRequest) (*sdk.Elici
 		return nil, fmt.Errorf("mcp: elicitation answer: unknown action %q", ans.Action)
 	}
 	return res, nil
+}
+
+// answerMeta is the _meta of an elicitation result whose answer names
+// by as who gave it, under [AnswerMetaKey]; nil when it names nobody.
+func answerMeta(by string) sdk.Meta {
+	if by == "" {
+		return nil
+	}
+	return sdk.Meta{AnswerMetaKey: map[string]any{"by": by}}
 }
 
 // soleCall returns the call in flight when there is exactly one.

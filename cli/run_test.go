@@ -777,3 +777,47 @@ func TestRefusedAnswerAfterEffect(t *testing.T) {
 		t.Errorf("stderr = %q; want it to say the command ran", errb.String())
 	}
 }
+
+// TestRunAnswerNamesWhoGaveIt: an --answer object with an action may
+// name who gave it, as by, in the session format's terms; a name the
+// contract does not know ends the run before the call; and the cancel
+// the program gives when no --answer is left names policy, since the
+// program answered by rule (agentturn#267).
+func TestRunAnswerNamesWhoGaveIt(t *testing.T) {
+	who := agenttool.New("who", "Ask, then say who answered.",
+		func(ctx context.Context, _ agenttool.NoArgs) (string, error) {
+			ask, _ := agenttool.ElicitorFrom(ctx)
+			a, err := ask(ctx, agenttool.Elicitation{Message: "Go?"})
+			if err != nil {
+				return "", err
+			}
+			by := a.By
+			if by == "" {
+				by = "nobody named"
+			}
+			return string(a.Action) + " by " + by, nil
+		})
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		code   int
+		stdout string
+	}{
+		{"by another model", []string{"--answer", `{"action":"accept","by":"agent"}`, "who"}, cli.ExitOK, "accept by agent"},
+		{"by a rule", []string{"--answer", `{"action":"decline","by":"policy","note":"not on Fridays"}`, "who"}, cli.ExitOK, "decline by policy"},
+		{"by a person", []string{"--answer", `{"action":"accept","by":"human"}`, "who"}, cli.ExitOK, "accept by human"},
+		{"by nobody named", []string{"--answer", "accept", "who"}, cli.ExitOK, "accept by nobody named"},
+		{"no answer left", []string{"who"}, cli.ExitNeedsAnswer, `"output":"cancel by policy"`},
+		{"an unknown decider", []string{"--answer", `{"action":"accept","by":"system"}`, "who"}, cli.ExitUsage, ""},
+		{"a decider not a string", []string{"--answer", `{"action":"accept","by":1}`, "who"}, cli.ExitUsage, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr strings.Builder
+			r := cli.Runner{Name: "kit", Tools: agenttool.Set{who}, Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr}
+			code := r.Run(context.Background(), tc.args)
+			if code != tc.code || !strings.Contains(stdout.String(), tc.stdout) {
+				t.Errorf("exit %d, stdout %q, stderr %q; want exit %d with %q", code, stdout.String(), stderr.String(), tc.code, tc.stdout)
+			}
+		})
+	}
+}

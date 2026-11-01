@@ -188,8 +188,10 @@ func (o Options) NewServer(name, version string, tools ...agenttool.Tool) (*sdk.
 // one. A client before 2026-07-28 is asked with
 // elicitation/create while the call runs. A form's answer is checked
 // against its schema, a question of a mode the client does not offer is
-// answered [agenttool.ActionCancel], and a client that offers no
-// elicitation leaves the context as the host set it.
+// answered [agenttool.ActionCancel] by [agenttool.ByPolicy], and a
+// client that offers no elicitation leaves the context as the host set
+// it. Who gave an answer comes from the result's _meta under
+// [AnswerMetaKey], into [agenttool.Answer.By].
 //
 // When the request carries a progress token, Call.OnUpdate forwards each
 // update as a progress notification whose message is the update's text.

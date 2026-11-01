@@ -1,6 +1,6 @@
 # RFC 0001: Agent Tool Contract
 
-Status: draft 0.8
+Status: draft 0.9
 Author: Christopher Davenport
 Discussion: to be opened against this repository. The Go module at its
 root is the reference binding; agentturn is the reference harness.
@@ -454,9 +454,9 @@ elicitor on its context and waits for the **answer**.
   **confirmation**: yes or no. A form that defines no members is a
   confirmation too.
 - An answer is an **action**, `accept`, `decline` or `cancel`, with
-  **content** and a **note**. *Accept* is the user's yes, or the form
-  submitted; *decline* is an explicit no; *cancel* is no answer, the
-  user dismissed it or nobody was asked. A reader MUST treat an action
+  **content**, a **note** and a **decider**. *Accept* is the user's
+  yes, or the form submitted; *decline* is an explicit no; *cancel* is
+  no answer, the user dismissed it or nobody was asked. A reader MUST treat an action
   it does not know as an error, never as *accept*.
 - **Content** is present only on *accept*, and is a JSON object of
   members the question's form defines; with any action an empty object
@@ -482,9 +482,18 @@ elicitor on its context and waits for the **answer**.
   declined or what to bear in mind, for the asker, which MAY pass it
   on: a harness that asked whether a call may run tells the model. It
   is not checked against the form.
+- An answer MAY name who gave it, in the session format's terms
+  (`human`, `policy`, `agent`): `human` is a person, `policy` is a rule
+  the harness evaluated without waiting, `agent` is another model. A
+  harness that answers by rule MUST name `policy` or `agent`. An answer
+  that names nobody is the user's. A reader MUST treat a decider it does
+  not know as an error, never as the user's, as it treats an action it
+  does not know, and a harness refuses an answer that names one as it
+  refuses content the question did not ask for.
 - A harness with nobody to ask, or a tool with no elicitor, answers
   *cancel*, which says nobody chose, and never *decline*, which says
-  someone did. Failing to ask is an error from the elicitor, and is not
+  someone did. That answer is the harness's, by rule, so it names
+  `policy`. Failing to ask is an error from the elicitor, and is not
   an answer.
 - A tool MAY ask several questions at once; the harness answers each.
 
@@ -723,7 +732,7 @@ and everything else is optional.
 | progress info | `ProgressInfo{Progress, Total, Message}`; `Progress(ctx, r)` sends from a typed tool |
 | record | `Recordable` (`RecordNS() string`), `Record{NS, Data}`, `RecordOf(details)` |
 | recorder on the context | `RecordFunc`, `ContextWithRecorder`, `RecorderFrom`, `WriteRecord`; `Executor.Recorder` installs it per batch |
-| elicitor on the context | `Elicitor` answers an `Elicitation{Message, Schema, URL}` with an `Answer{Action, Content, Note}`, `ActionAccept`, `ActionDecline` or `ActionCancel`; `ContextWithElicitor`, `ElicitorFrom`; the harness installs it, and a tool with none has nobody to ask; `Elicitation.Check(answer)` applies the [Questions](#questions) rules to an answer before a harness gives it |
+| elicitor on the context | `Elicitor` answers an `Elicitation{Message, Schema, URL}` with an `Answer{Action, Content, Note, By}`, `ActionAccept`, `ActionDecline` or `ActionCancel`, and `By` one of `ByHuman`, `ByPolicy` and `ByAgent`, or empty for nobody named; `ContextWithElicitor`, `ElicitorFrom`; the harness installs it, and a tool with none has nobody to ask; `Elicitation.Check(answer)` applies the [Questions](#questions) rules to an answer before a harness gives it |
 | arguments validation | `New` validates a reflected schema with `Schema.ValidateJSON`; `ValidationError{Path, Msg}` |
 | executor | `Executor{MaxParallel, Sequential, Recorder, OnStart}`; `Execute` yields `Event{Index, Final, Result, Err}`; `Results` collects in job order |
 | a call starts | `Executor.OnStart(ctx, job) error`, on the job's goroutine, after the slot and the turn, with the call on `ctx`, before `Execute`; an error completes the job without running the tool |
@@ -778,7 +787,7 @@ set on the local side by the host and does not cross.
 | timeout | the consuming side MAY bound a call by a host-set idle time and maximum time, per server or per tool, `mcpclient.WithCallTimeout`, as [Stopping a call](#stopping-a-call) says; a progress notification for the call resets the idle time, so the consuming side asks for progress under an idle limit whether or not its caller takes updates; expiry cancels the request, which sends `notifications/cancelled`, and the call is not sent again | consume |
 | roots | no field in the contract. The consuming side offers the roots capability only when the host supplies roots, `mcpclient.WithRoots`, and answers `roots/list` with them; without them it MUST NOT advertise roots, so a server that scopes itself to its client's roots is not told it has some and then given none | consume |
 | logging | no field in the contract. The consuming side asks for log messages only when the host takes them, `mcpclient.WithLogging`: from 2026-07-28 by the log level in each call's `_meta`, `io.modelcontextprotocol/logLevel`, and before it by `logging/setLevel` when the session starts. It hands each message to the host, with the call on the context when the message belongs to a call it can name, and a log message never reaches a call's output, its details or the model | consume |
-| elicitation | `elicitation/create` ↔ the elicitor on the call's context. The client offers it only with `mcpclient.WithElicitation`; from 2026-07-28 the question returns with its call and is that call's, and before it a question the server sends on its own is put to the one call in flight, and to nobody when there is none or several; nobody to ask answers `cancel`. A note does not cross, since MCP's elicitation result has no place for it. Each side checks an answer as [Questions](#questions) says before it takes it: the consuming side refuses an answer from its elicitor that does not fit the question and answers the server with an error, never the answer, and the call returns that reason; the serving side refuses a client's answer that does not fit, and the tool's elicitor returns it as an error, never as *accept*. The server installs an elicitor on a served call's context when the client offers elicitation: from 2026-07-28 a question goes back as the call's input request, the tool running on while the client asks, and before it as `elicitation/create`; a question of a mode the client does not take answers `cancel` | both |
+| elicitation | `elicitation/create` ↔ the elicitor on the call's context. The client offers it only with `mcpclient.WithElicitation`; from 2026-07-28 the question returns with its call and is that call's, and before it a question the server sends on its own is put to the one call in flight, and to nobody when there is none or several; nobody to ask answers `cancel`. A note does not cross, since MCP's elicitation result has no place for it. The decider has no field in MCP either, and crosses in the elicitation result's `_meta` under `AnswerMetaKey`, `io.github.christopherdavenport.agenttool/answer`, as `{"by": …}`: the consuming side writes it for an answer that names a decider and leaves it out for one that names nobody, and the serving side reads it into the answer its tool is given, an entry that is not an object or a `by` that is not a string being refused as an answer that does not fit. The *cancel* either side gives without asking anyone, for nobody to ask, a call that ended while its question was open, a mode the client does not take or a question the client's answers left out, names `policy`. Each side checks an answer as [Questions](#questions) says before it takes it: the consuming side refuses an answer from its elicitor that does not fit the question and answers the server with an error, never the answer, and the call returns that reason; the serving side refuses a client's answer that does not fit, and the tool's elicitor returns it as an error, never as *accept*. The server installs an elicitor on a served call's context when the client offers elicitation: from 2026-07-28 a question goes back as the call's input request, the tool running on while the client asks, and before it as `elicitation/create`; a question of a mode the client does not take answers `cancel` | both |
 
 #### Content
 
@@ -929,12 +938,13 @@ The program answers the call's questions in order from the
 - a JSON object without an `action` member, which is the form's
   content and *accept*;
 - a JSON object with an `action` member, `{"action": …, "note": …,
-  "content": …}`, with no other members, which gives the action, the
-  note, and on *accept* the content. A form whose own field is named
-  `action` is answered in this form.
+  "content": …, "by": …}`, with no other members, which gives the
+  action, the note, the decider, and on *accept* the content. A form
+  whose own field is named `action` is answered in this form.
 
-An `--answer` that is not one of these forms, or has content with an
-action other than *accept*, ends the run with status 2 before the call
+An `--answer` that is not one of these forms, has content with an
+action other than *accept*, or names a decider other than `human`,
+`policy` or `agent`, ends the run with status 2 before the call
 runs. Each answer is then checked against its question, when the tool
 asks it, as [Questions](#questions) says. One that fails, content a
 confirmation did not ask for, a member the form does not define, a
@@ -943,8 +953,8 @@ could not be given, as an error from its elicitor, and runs on, so the
 run reports its outcome with status 4 rather than status 2, which
 says the call did not run. A caller checks what the call did before it
 runs it again. A question after the last
-`--answer` is answered *cancel*, or asked of a person at the terminal
-when the program has one.
+`--answer` is answered *cancel*, naming `policy`, or asked of a person
+at the terminal when the program has one.
 
 ## Schema generation
 
@@ -1132,9 +1142,10 @@ it gives keys, and a call it runs again the key it first carried; runs
 an ambiguous call again only when replay allows it, and otherwise
 completes it saying the outcome is unknown; refuses an answer whose
 content the question did not ask for rather than taking it as
-*accept*; takes facts from a source it does not trust only as hints,
-and replay from one as *unknown*; and closes nothing that the host
-built.
+*accept*; names `policy` or `agent` on an answer it gives by rule, and
+reads a decider it does not know as an error; takes facts from a
+source it does not trust only as hints, and replay from one as
+*unknown*; and closes nothing that the host built.
 
 **A conforming adapter** maps each row of its binding table and adds
 nothing the contract cannot express.
@@ -1219,6 +1230,18 @@ module and is listed in the changelog as one.
   differ, `retryable` with a not-before time in a `_meta` block, a
   rate-limit error code, so it waits for one to settle. The MCP
   client handles its own transport failures meanwhile.
+
+## Changes since 0.8
+
+- An answer gains a **decider**, who gave it, in the session format's
+  terms (`human`, `policy`, `agent`) (agentturn#267). It MAY be named;
+  a harness that answers by rule MUST name `policy` or `agent`, and an
+  answer that names nobody is the user's. A decider a reader does not
+  know is an error, as an unknown action is. The *cancel* a harness
+  gives with nobody to ask names `policy`. The Go binding is
+  `Answer.By`; over MCP it crosses in the elicitation result's `_meta`
+  under `AnswerMetaKey`, since MCP has no field for it; the command
+  line's object answer takes it as `by`.
 
 ## Changes since 0.7
 

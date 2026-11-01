@@ -5,6 +5,35 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Added: `Answer.By`, who gave an answer, in the session format's terms:
+  `ByHuman`, `ByPolicy` or `ByAgent`, or empty for nobody named, which
+  is the user's (agentturn#267). An answer passes through MCP, child
+  agents and fronts, so a harness that answered by rule could only say
+  so beside the answer, and every hop that dropped the context recorded
+  a rule's answer, and its note, as the user's. `Elicitation.Check`
+  refuses a decider it does not know rather than read it as the user's,
+  as it refuses an unknown action. RFC 0001 draft 0.9 states the rule
+  under Questions: an answer MAY name who gave it, a harness that
+  answers by rule MUST name `policy` or `agent`.
+- Added: the decider crosses MCP in the elicitation result's `_meta`
+  under `AnswerMetaKey`, `io.github.christopherdavenport.agenttool/answer`,
+  as `{"by": …}`, since MCP's result has no field for it. mcpclient
+  writes it for an answer that names a decider, and mcpserver reads it
+  into the answer its tool is given, refusing an entry that is not an
+  object, a `by` that is not a string or a decider it does not know.
+- Added: the command line's object answer takes `by`, `{"action": …,
+  "by": "agent"}`; a decider other than `human`, `policy` or `agent`
+  ends the run with status 2 before the call runs.
+- Changed: a *cancel* the library gives without asking anyone names
+  `policy`: mcpclient's for a call with no elicitor, or one that ended
+  while its question was open; mcpserver's for a mode the client does
+  not take or a question the client's answers left out; and the command
+  line's for a question after the last `--answer` with no `Ask`. A
+  reader can now tell a cancel nobody was asked for from a user's
+  dismissal.
+
 ## v0.0.27 - 2026-10-27
 
 - Added: `mcpserver.Options.Instructions`, served by `Options.NewServer`

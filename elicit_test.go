@@ -54,6 +54,15 @@ func TestCheckAnswer(t *testing.T) {
 		{"content for a confirmation", confirm, Answer{Action: ActionAccept, Content: json.RawMessage(`{"note":"not before Friday"}`)}, `"note"`},
 		{"a form with no fields", empty, Answer{Action: ActionAccept, Content: json.RawMessage(`{"x":1}`)}, `"x"`},
 		{"an unknown action", confirm, Answer{Action: "maybe"}, "unknown action"},
+		// agentturn#267: an answer names who gave it, in the session
+		// format's terms, and a name a reader does not know is refused
+		// rather than read as the user's.
+		{"by a person", confirm, Answer{Action: ActionAccept, By: ByHuman}, ""},
+		{"by a rule", form, Answer{Action: ActionAccept, Content: json.RawMessage(`{"reason":"merged"}`), By: ByPolicy}, ""},
+		{"by another model", confirm, Answer{Action: ActionDecline, By: ByAgent, Note: "not yet"}, ""},
+		{"a cancel by a rule", confirm, Answer{Action: ActionCancel, By: ByPolicy}, ""},
+		{"an unknown decider", confirm, Answer{Action: ActionAccept, By: "system"}, `unknown decider "system"`},
+		{"a decider spelt in capitals", confirm, Answer{Action: ActionAccept, By: "Human"}, `unknown decider "Human"`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -420,10 +420,11 @@ func (v *value) entries() ([]entry, error) {
 
 // answerList is the --answer option: each one an [agenttool.Answer],
 // given as an action alone, as the JSON object a form asks for, which
-// accepts with it, or as {"action": …, "note": …, "content": …}, which
-// says the action and what the user said with it. An object with an
-// "action" member is the last; a form whose own field is named action
-// is answered in that form, with the field in its content.
+// accepts with it, or as {"action": …, "note": …, "content": …, "by": …},
+// which says the action, what the user said with it and who gave it,
+// [agenttool.ByHuman], [agenttool.ByPolicy] or [agenttool.ByAgent]. An
+// object with an "action" member is the last; a form whose own field is
+// named action is answered in that form, with the field in its content.
 type answerList []agenttool.Answer
 
 func (a *answerList) String() string { return "" }
@@ -436,7 +437,7 @@ func (a *answerList) Set(s string) error {
 	}
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(s), &obj); err != nil || obj == nil {
-		return errors.New(`an answer is accept, decline, cancel, a JSON object of a form's fields, or {"action": …, "note": …, "content": …}`)
+		return errors.New(`an answer is accept, decline, cancel, a JSON object of a form's fields, or {"action": …, "note": …, "content": …, "by": …}`)
 	}
 	if _, ok := obj["action"]; !ok {
 		*a = append(*a, agenttool.Answer{Action: agenttool.ActionAccept, Content: json.RawMessage(s)})
@@ -452,8 +453,10 @@ func (a *answerList) Set(s string) error {
 			err = json.Unmarshal(v, &ans.Note)
 		case "content":
 			ans.Content = v
+		case "by":
+			err = json.Unmarshal(v, &ans.By)
 		default:
-			return fmt.Errorf(`an answer object with an action has the members action, note and content, not %q`, k)
+			return fmt.Errorf(`an answer object with an action has the members action, note, content and by, not %q`, k)
 		}
 		if err != nil {
 			return fmt.Errorf("an answer's %s is a string", k)
@@ -465,6 +468,11 @@ func (a *answerList) Set(s string) error {
 	case agenttool.ActionAccept, agenttool.ActionDecline, agenttool.ActionCancel:
 	default:
 		return fmt.Errorf("an answer's action is accept, decline or cancel, not %q", ans.Action)
+	}
+	switch ans.By {
+	case "", agenttool.ByHuman, agenttool.ByPolicy, agenttool.ByAgent:
+	default:
+		return fmt.Errorf("an answer's by is human, policy or agent, not %q", ans.By)
 	}
 	if ans.Action != agenttool.ActionAccept {
 		// An empty object is no content, with any action.
@@ -614,7 +622,8 @@ type question struct {
 
 // elicitor answers a call's questions from --answer in the order the
 // tool asks them, then from Ask, and otherwise answers
-// [agenttool.ActionCancel], as a harness with nobody to ask does, and
+// [agenttool.ActionCancel] by [agenttool.ByPolicy], as a harness with
+// nobody to ask does, and
 // keeps the first question it answered so. Two questions a tool asks
 // at once take the answers in whichever order they arrive, so such a
 // tool is better answered by Ask.
@@ -663,7 +672,8 @@ func (e *elicitor) elicit(ctx context.Context, q agenttool.Elicitation) (agentto
 	}
 	e.mu.Unlock()
 	if ask == nil {
-		return agenttool.Answer{Action: agenttool.ActionCancel}, nil
+		// Nobody chose, and the program says it gave the answer by rule.
+		return agenttool.Answer{Action: agenttool.ActionCancel, By: agenttool.ByPolicy}, nil
 	}
 	return ask(ctx, q)
 }
