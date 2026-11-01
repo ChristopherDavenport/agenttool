@@ -683,6 +683,20 @@ func TestElicitationAnswerNamesWhoGaveIt(t *testing.T) {
 		}
 	})
 
+	t.Run("a mode an older client does not take", func(t *testing.T) {
+		url := agenttool.Elicitation{Message: "sign in", URL: "https://example.com/auth"}
+		cs := rawClient(t, newServer(t, "deployer", whoAnswered(url)), &sdk.ClientOptions{
+			ElicitationHandler: func(context.Context, *sdk.ElicitRequest) (*sdk.ElicitResult, error) {
+				t.Error("the client was sent a question it does not take")
+				return &sdk.ElicitResult{Action: "accept"}, nil
+			},
+		}, &sdk.ClientSessionOptions{ProtocolVersion: "2025-11-25"})
+		res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: "deploy"})
+		if err != nil || text(res) != "cancel by policy" {
+			t.Errorf("res = %q, err = %v; want cancel by policy", text(res), err)
+		}
+	})
+
 	t.Run("through mcpclient", func(t *testing.T) {
 		s := roundTrip(t, newServer(t, "deployer", whoAnswered(q)), mcpclient.WithElicitation())
 		ctx := agenttool.ContextWithElicitor(context.Background(), func(context.Context, agenttool.Elicitation) (agenttool.Answer, error) {

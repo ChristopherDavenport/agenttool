@@ -371,6 +371,28 @@ func TestElicitationEscAnswersCancel(t *testing.T) {
 	hear(t, heard, "cancel")
 }
 
+// The cancel a call that ended mid-question sends names policy: whoever
+// stopped the call never answered the question (agentturn#267).
+func TestElicitationEscCancelNamesPolicy(t *testing.T) {
+	heard := make(chan string, 1)
+	s := sdk.NewServer(&sdk.Implementation{Name: "roller", Version: "1"}, nil)
+	s.AddTool(&sdk.Tool{Name: "rollout", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			answer, ok := req.Params.InputResponses["confirm"].(*sdk.ElicitResult)
+			if !ok {
+				return &sdk.CallToolResult{InputRequests: sdk.InputRequestMap{"confirm": &sdk.ElicitParams{
+					Message:         "roll out?",
+					RequestedSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+				}}}, nil
+			}
+			meta, _ := json.Marshal(answer.Meta[AnswerMetaKey])
+			heard <- answer.Action + " " + string(meta)
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "rollout: " + answer.Action}}}, nil
+		})
+	escape(t, connect(t, s, WithElicitation()))
+	hear(t, heard, `cancel {"by":"policy"}`)
+}
+
 // A server that does not return when told nobody chose is stopped by
 // the request being cancelled after the grace.
 func TestElicitationEscCancelsTheLastRequest(t *testing.T) {
