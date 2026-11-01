@@ -1351,6 +1351,8 @@ func (s *Remote) elicit(ctx context.Context, req *sdk.ElicitRequest) (*sdk.Elici
 	if own != nil {
 		// Ended by the call rather than by the server's question: nobody
 		// chose, and the server is told so on the call's next request.
+		// The cancel names policy: whoever stopped the call, the person
+		// pressing Esc among them, never answered the question.
 		ended := callCtx.Err() != nil && ctx.Err() == nil
 		own.done(ended)
 		if ended {

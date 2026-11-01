@@ -494,8 +494,11 @@ elicitor on its context and waits for the **answer**.
   it refuses content the question did not ask for.
 - A harness with nobody to ask answers *cancel*, which says nobody
   chose, and never *decline*, which says someone did. That answer is
-  the harness's, by rule, so it names `policy`. A tool with no elicitor
-  is given no answer at all, and treats the question as *cancel*.
+  the harness's, by rule, so it names `policy`. So does the *cancel* a
+  harness gives a question still open when its call ends, even when a
+  person stopped the call: the person stopped the call and never
+  answered the question. A tool with no elicitor is given no answer at
+  all, and treats the question as *cancel*.
   Failing to ask is an error from the elicitor, and is not an answer.
 - A tool MAY ask several questions at once; the harness answers each.
 
@@ -789,7 +792,7 @@ set on the local side by the host and does not cross.
 | timeout | the consuming side MAY bound a call by a host-set idle time and maximum time, per server or per tool, `mcpclient.WithCallTimeout`, as [Stopping a call](#stopping-a-call) says; a progress notification for the call resets the idle time, so the consuming side asks for progress under an idle limit whether or not its caller takes updates; expiry cancels the request, which sends `notifications/cancelled`, and the call is not sent again | consume |
 | roots | no field in the contract. The consuming side offers the roots capability only when the host supplies roots, `mcpclient.WithRoots`, and answers `roots/list` with them; without them it MUST NOT advertise roots, so a server that scopes itself to its client's roots is not told it has some and then given none | consume |
 | logging | no field in the contract. The consuming side asks for log messages only when the host takes them, `mcpclient.WithLogging`: from 2026-07-28 by the log level in each call's `_meta`, `io.modelcontextprotocol/logLevel`, and before it by `logging/setLevel` when the session starts. It hands each message to the host, with the call on the context when the message belongs to a call it can name, and a log message never reaches a call's output, its details or the model | consume |
-| elicitation | `elicitation/create` ↔ the elicitor on the call's context. The client offers it only with `mcpclient.WithElicitation`; from 2026-07-28 the question returns with its call and is that call's, and before it a question the server sends on its own is put to the one call in flight, and to nobody when there is none or several; nobody to ask answers `cancel`. MCP's elicitation result has no place for the decider or the note, so both cross in its `_meta` under `AnswerMetaKey`, `io.github.christopherdavenport.agenttool/answer`, as `{"by": …, "note": …}`: the consuming side writes each member only when the answer has it, and no entry for an answer that names nobody and says nothing, and the serving side reads them into the answer its tool is given, an entry that is not an object, or a `by` or a `note` that is not a string, being refused as an answer that does not fit. The *cancel* either side gives without asking anyone, for nobody to ask, a call that ended while its question was open, a mode the client does not take or a question the client's answers left out, names `policy`. Each side checks an answer as [Questions](#questions) says before it takes it: the consuming side refuses an answer from its elicitor that does not fit the question and answers the server with an error, never the answer, and the call returns that reason; the serving side refuses a client's answer that does not fit, and the tool's elicitor returns it as an error, never as *accept*. The server installs an elicitor on a served call's context when the client offers elicitation: from 2026-07-28 a question goes back as the call's input request, the tool running on while the client asks, and before it as `elicitation/create`; a question of a mode the client does not take answers `cancel` | both |
+| elicitation | `elicitation/create` ↔ the elicitor on the call's context. The client offers it only with `mcpclient.WithElicitation`; from 2026-07-28 the question returns with its call and is that call's, and before it a question the server sends on its own is put to the one call in flight, and to nobody when there is none or several; nobody to ask answers `cancel`. MCP's elicitation result has no place for the decider or the note, so both cross in its `_meta` under `AnswerMetaKey`, `io.github.christopherdavenport.agenttool/answer`, as `{"by": …, "note": …}`: the consuming side writes each member only when the answer has it, and no entry for an answer that names nobody and says nothing, and the serving side reads them into the answer its tool is given, an entry that is not an object, or a `by` or a `note` that is not a string, being refused as an answer that does not fit. The *cancel* either side gives without asking anyone, for nobody to ask, a call that ended while its question was open, a mode the client does not take or a question the client's answers left out, names `policy`; for the ended call too, since whoever stopped it, a person pressing Esc among them, never answered the question. Each side checks an answer as [Questions](#questions) says before it takes it: the consuming side refuses an answer from its elicitor that does not fit the question and answers the server with an error, never the answer, and the call returns that reason; the serving side refuses a client's answer that does not fit, and the tool's elicitor returns it as an error, never as *accept*. The server installs an elicitor on a served call's context when the client offers elicitation: from 2026-07-28 a question goes back as the call's input request, the tool running on while the client asks, and before it as `elicitation/create`; a question of a mode the client does not take answers `cancel` | both |
 
 #### Content
 
@@ -1242,8 +1245,10 @@ module and is listed in the changelog as one.
   know is an error, as an unknown action is, and a harness MUST refuse
   an answer that names one. *Accept* and the note are the decider's,
   the user's when the answer names nobody or `human`. The *cancel* a
-  harness gives with nobody to ask names `policy`; a tool with no
-  elicitor is given no answer. The Go binding is
+  harness gives with nobody to ask names `policy`, and so does one for
+  a question still open when its call ends, since whoever stopped the
+  call never answered the question; a tool with no elicitor is given
+  no answer. The Go binding is
   `Answer.By`; the command line's object answer takes it as `by`.
 - The decider and the note cross MCP in the elicitation result's
   `_meta` under `AnswerMetaKey`, as `{"by": …, "note": …}`, since MCP
