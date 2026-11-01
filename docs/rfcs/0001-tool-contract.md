@@ -454,10 +454,12 @@ elicitor on its context and waits for the **answer**.
   **confirmation**: yes or no. A form that defines no members is a
   confirmation too.
 - An answer is an **action**, `accept`, `decline` or `cancel`, with
-  **content**, a **note** and a **decider**. *Accept* is the user's
-  yes, or the form submitted; *decline* is an explicit no; *cancel* is
-  no answer, the user dismissed it or nobody was asked. A reader MUST treat an action
-  it does not know as an error, never as *accept*.
+  **content**, a **note** and a **decider**, below. *Accept* is the
+  decider's yes, or the form submitted; *decline* is an explicit no;
+  *cancel* is no answer, the decider dismissed it or nobody was asked.
+  The decider is the user when the answer names nobody or `human`. A
+  reader MUST treat an action it does not know as an error, never as
+  *accept*.
 - **Content** is present only on *accept*, and is a JSON object of
   members the question's form defines; with any action an empty object
   is the same as none. An answer to a confirmation has no content. On
@@ -478,7 +480,7 @@ elicitor on its context and waits for the **answer**.
   command line before it gives an `--answer`, the consuming side of MCP
   before it sends an answer, and the serving side before its tool sees
   one.
-- A **note** is the user's own words with any action, why they
+- A **note** is the decider's own words with any action, why it
   declined or what to bear in mind, for the asker, which MAY pass it
   on: a harness that asked whether a call may run tells the model. It
   is not checked against the form.
@@ -488,13 +490,13 @@ elicitor on its context and waits for the **answer**.
   harness that answers by rule MUST name `policy` or `agent`. An answer
   that names nobody is the user's. A reader MUST treat a decider it does
   not know as an error, never as the user's, as it treats an action it
-  does not know, and a harness refuses an answer that names one as it
-  refuses content the question did not ask for.
-- A harness with nobody to ask, or a tool with no elicitor, answers
-  *cancel*, which says nobody chose, and never *decline*, which says
-  someone did. That answer is the harness's, by rule, so it names
-  `policy`. Failing to ask is an error from the elicitor, and is not
-  an answer.
+  does not know, and a harness MUST refuse an answer that names one as
+  it refuses content the question did not ask for.
+- A harness with nobody to ask answers *cancel*, which says nobody
+  chose, and never *decline*, which says someone did. That answer is
+  the harness's, by rule, so it names `policy`. A tool with no elicitor
+  is given no answer at all, and treats the question as *cancel*.
+  Failing to ask is an error from the elicitor, and is not an answer.
 - A tool MAY ask several questions at once; the harness answers each.
 
 ### Records
@@ -1237,12 +1239,17 @@ module and is listed in the changelog as one.
   terms (`human`, `policy`, `agent`) (agentturn#267). It MAY be named;
   a harness that answers by rule MUST name `policy` or `agent`, and an
   answer that names nobody is the user's. A decider a reader does not
-  know is an error, as an unknown action is. The *cancel* a harness
-  gives with nobody to ask names `policy`. The Go binding is
+  know is an error, as an unknown action is, and a harness MUST refuse
+  an answer that names one. *Accept* and the note are the decider's,
+  the user's when the answer names nobody or `human`. The *cancel* a
+  harness gives with nobody to ask names `policy`; a tool with no
+  elicitor is given no answer. The Go binding is
   `Answer.By`; the command line's object answer takes it as `by`.
 - The decider and the note cross MCP in the elicitation result's
   `_meta` under `AnswerMetaKey`, as `{"by": …, "note": …}`, since MCP
-  has no field for either; at 0.8 the note did not cross.
+  has no field for either; at 0.8 the note did not cross. The serving
+  side refuses a malformed entry, one that is not an object or whose
+  `by` or `note` is not a string, as an answer that does not fit.
 
 ## Changes since 0.7
 
