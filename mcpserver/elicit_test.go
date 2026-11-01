@@ -634,6 +634,12 @@ func TestElicitationAnswerNamesWhoGaveIt(t *testing.T) {
 		// The note crosses in the same entry, checked as by is.
 		{name: "a note with its decider", answer: &sdk.ElicitResult{Action: "decline", Meta: sdk.Meta{AnswerMetaKey: map[string]any{"by": "agent", "note": "after the release"}}}, want: "decline by agent; note after the release"},
 		{name: "a note alone", answer: &sdk.ElicitResult{Action: "accept", Meta: sdk.Meta{AnswerMetaKey: map[string]any{"note": "after the release"}}}, want: "accept by nobody named; note after the release"},
+		// null is absent, as an answer's null content is none, and as
+		// the command line reads it: the user's, which leaving it out
+		// says already.
+		{name: "a null decider", answer: &sdk.ElicitResult{Action: "accept", Meta: sdk.Meta{AnswerMetaKey: map[string]any{"by": nil}}}, want: "accept by nobody named"},
+		{name: "a null note", answer: &sdk.ElicitResult{Action: "accept", Meta: sdk.Meta{AnswerMetaKey: map[string]any{"by": "agent", "note": nil}}}, want: "accept by agent"},
+		{name: "a null entry", answer: &sdk.ElicitResult{Action: "accept", Meta: sdk.Meta{AnswerMetaKey: nil}}, want: "accept by nobody named"},
 		{name: "a note not a string", answer: &sdk.ElicitResult{Action: "accept", Meta: sdk.Meta{AnswerMetaKey: map[string]any{"note": 1}}}, wantErr: "note is not a string"},
 	}
 	for _, tc := range cases {

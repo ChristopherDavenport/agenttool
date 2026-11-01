@@ -24,7 +24,9 @@ versions may break the API.
   dropped at the client before. mcpclient writes each member only when
   the answer has it, and mcpserver reads them into the answer its tool
   is given, refusing an entry that is not an object, a `by` or `note`
-  that is not a string, or a decider it does not know.
+  that is not a string, or a decider it does not know. A `null` entry
+  or member is absent, as the command line reads `"by": null` and as an
+  answer's `null` content is none.
 - Added: the command line's object answer takes `by`, `{"action": …,
   "by": "agent"}`; a decider other than `human`, `policy` or `agent`
   ends the run with status 2 before the call runs.

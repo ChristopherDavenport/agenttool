@@ -454,6 +454,8 @@ func (a *answerList) Set(s string) error {
 		case "content":
 			ans.Content = v
 		case "by":
+			// null is absent, as it is for the note and the content, and
+			// as mcpserver reads it.
 			err = json.Unmarshal(v, &ans.By)
 		default:
 			return fmt.Errorf(`an answer object with an action has the members action, note, content and by, not %q`, k)

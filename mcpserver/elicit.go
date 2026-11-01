@@ -153,12 +153,14 @@ func answerOf(q question, res *sdk.ElicitResult) (agenttool.Answer, error) {
 
 // answerMetaOf returns who an answer names as having given it and its
 // note, from the entry under [AnswerMetaKey] in its result's _meta,
-// each "" when the entry or the member is absent. An entry that is not
-// an object, or a member that is not a string, is an error rather than
-// an answer that names nobody, which would be read as the user's.
+// each "" when the entry or the member is absent. A null entry or member
+// is absent, as an answer's null content is none: it says no more than
+// leaving it out. An entry that is not an object, or a member that is
+// not a string, is an error rather than an answer that names nobody,
+// which would be read as the user's.
 func answerMetaOf(meta sdk.Meta) (by, note string, err error) {
-	raw, ok := meta[AnswerMetaKey]
-	if !ok {
+	raw := meta[AnswerMetaKey]
+	if raw == nil {
 		return "", "", nil
 	}
 	entry, ok := raw.(map[string]any)
@@ -166,8 +168,8 @@ func answerMetaOf(meta sdk.Meta) (by, note string, err error) {
 		return "", "", fmt.Errorf("_meta %q is not an object", AnswerMetaKey)
 	}
 	member := func(name string) (string, error) {
-		v, ok := entry[name]
-		if !ok {
+		v := entry[name]
+		if v == nil {
 			return "", nil
 		}
 		s, ok := v.(string)

@@ -808,6 +808,8 @@ func TestRunAnswerNamesWhoGaveIt(t *testing.T) {
 		{"by a person", []string{"--answer", `{"action":"accept","by":"human"}`, "who"}, cli.ExitOK, "accept by human"},
 		{"by nobody named", []string{"--answer", "accept", "who"}, cli.ExitOK, "accept by nobody named"},
 		{"no answer left", []string{"who"}, cli.ExitNeedsAnswer, `"output":"cancel by policy"`},
+		// null is absent, as mcpserver reads it in _meta.
+		{"a null decider", []string{"--answer", `{"action":"accept","by":null}`, "who"}, cli.ExitOK, "accept by nobody named"},
 		{"an unknown decider", []string{"--answer", `{"action":"accept","by":"system"}`, "who"}, cli.ExitUsage, ""},
 		{"a decider not a string", []string{"--answer", `{"action":"accept","by":1}`, "who"}, cli.ExitUsage, ""},
 	} {
