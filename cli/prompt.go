@@ -18,8 +18,9 @@ import (
 // shows it and waits for Enter; a form asks for each field in turn,
 // converting each answer by the field's type; any other question,
 // including a form with no fields, which is how an MCP server asks
-// for a confirmation, is yes or no. An end of input is [agenttool.ActionCancel], since nobody
-// answered.
+// for a confirmation, is yes or no. An answer the person types names
+// them, [agenttool.ByHuman]. An end of input is
+// [agenttool.ActionCancel], since nobody answered, and names nobody.
 //
 // Questions are asked one at a time, in the order they arrive. A
 // question whose context ends while it waits for a line, as it does on
@@ -59,8 +60,14 @@ func (p *prompt) ask(ctx context.Context, q agenttool.Elicitation) (agenttool.An
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	a, err := p.answer(ctx, q)
-	if err != nil || !p.notes || a.Action == agenttool.ActionCancel {
+	if err != nil || a.Action == agenttool.ActionCancel {
 		return a, err
+	}
+	// The person at the terminal answered; a cancel here is input that
+	// ended, which nobody gave.
+	a.By = agenttool.ByHuman
+	if !p.notes {
+		return a, nil
 	}
 	fmt.Fprint(p.out, "Anything to add? (Enter for nothing) ")
 	note, _, err := p.line(ctx)

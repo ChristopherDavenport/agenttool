@@ -30,6 +30,9 @@ versions may break the API.
 - Added: the command line's object answer takes `by`, `{"action": …,
   "by": "agent"}`; a decider other than `human`, `policy` or `agent`
   ends the run with status 2 before the call runs.
+- Changed: `cli.Prompt` and `cli.PromptNotes` name `human` on an
+  answer the person at the terminal typed; the *cancel* an end of input
+  gives names nobody.
 - Changed: a *cancel* the library gives without asking anyone names
   `policy`: mcpclient's for a call with no elicitor, or one that ended
   while its question was open; mcpserver's for a mode the client does

@@ -960,7 +960,8 @@ run reports its outcome with status 4 rather than status 2, which
 says the call did not run. A caller checks what the call did before it
 runs it again. A question after the last
 `--answer` is answered *cancel*, naming `policy`, or asked of a person
-at the terminal when the program has one.
+at the terminal when the program has one, whose answer names `human`;
+input that ends before they answer is a *cancel* that names nobody.
 
 ## Schema generation
 

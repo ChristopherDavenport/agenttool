@@ -406,6 +406,12 @@ func TestPrompt(t *testing.T) {
 			if a.Action != tt.action {
 				t.Errorf("action %q, want %q", a.Action, tt.action)
 			}
+			// The person at the terminal answered, and the answer says so;
+			// input that ends is nobody's answer, and names nobody
+			// (agentturn#267).
+			if want := byOf(tt.action); a.By != want {
+				t.Errorf("by %q, want %q", a.By, want)
+			}
 			if tt.body != "" && string(a.Content) != tt.body {
 				t.Errorf("content %s, want %s", a.Content, tt.body)
 			}
@@ -734,11 +740,20 @@ func TestPromptNotes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if a.Action != tt.action || a.Note != tt.note {
-				t.Errorf("answer = %+v, want %s with note %q", a, tt.action, tt.note)
+			if a.Action != tt.action || a.Note != tt.note || a.By != byOf(tt.action) {
+				t.Errorf("answer = %+v, want %s by %q with note %q", a, tt.action, byOf(tt.action), tt.note)
 			}
 		})
 	}
+}
+
+// byOf is who a prompt's answer of action names: the person who typed
+// it, and nobody for the cancel an end of input gives.
+func byOf(action agenttool.Action) string {
+	if action == agenttool.ActionCancel {
+		return ""
+	}
+	return agenttool.ByHuman
 }
 
 // TestRefusedAnswerAfterEffect: a tool that acted before it asked, and
