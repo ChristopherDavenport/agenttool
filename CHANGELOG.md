@@ -5,7 +5,7 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
-## Unreleased
+## v0.0.28 - 2026-11-02
 
 - Added: `Answer.By`, who gave an answer, in the session format's terms:
   `ByHuman`, `ByPolicy` or `ByAgent`, or empty for nobody named, which
