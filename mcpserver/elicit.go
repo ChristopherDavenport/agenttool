@@ -14,6 +14,15 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// AnswerMetaKey is the _meta key of an elicitation result under which
+// the client says who gave the answer and what was said with it,
+// {"by": …, "note": …}, read into the answer's [agenttool.Answer.By]
+// and [agenttool.Answer.Note]; see [agenttool.ByHuman]. A result
+// without a by names nobody, and the answer is the user's. It is
+// mcpclient.AnswerMetaKey byte for byte, spelt out here as
+// [RecordMetaKey] is.
+const AnswerMetaKey = "io.github.christopherdavenport.agenttool/answer"
+
 // DefaultAbandonAfter is how long a call waits for the client to come
 // back with the answers to its questions before it is stopped; see
 // [Options.AbandonAfter]. The client comes back once the user has
@@ -107,9 +116,16 @@ func offered(caps *sdk.ElicitationCapabilities, mode string) bool {
 // the question's form defines, and a form's content against the schema
 // it was asked with: the client is meant to, and the tool should not
 // have to trust that it did. An answer that fails is the elicitor's
-// error, which the tool sees, and never an accept.
+// error, which the tool sees, and never an accept. Who gave the
+// answer and its note are read from the result's _meta under
+// [AnswerMetaKey], and a name the contract does not know is refused
+// with the rest.
 func answerOf(q question, res *sdk.ElicitResult) (agenttool.Answer, error) {
-	ans := agenttool.Answer{Action: agenttool.Action(res.Action)}
+	by, note, err := answerMetaOf(res.Meta)
+	if err != nil {
+		return agenttool.Answer{}, fmt.Errorf("mcpserver: elicitation answer: %w", err)
+	}
+	ans := agenttool.Answer{Action: agenttool.Action(res.Action), By: by, Note: note}
 	if res.Content != nil {
 		content, err := json.Marshal(res.Content)
 		if err != nil {
@@ -121,7 +137,7 @@ func answerOf(q question, res *sdk.ElicitResult) (agenttool.Answer, error) {
 		return agenttool.Answer{}, fmt.Errorf("mcpserver: elicitation answer: %w", err)
 	}
 	if ans.Action != agenttool.ActionAccept || ans.Content == nil {
-		return agenttool.Answer{Action: ans.Action}, nil
+		return agenttool.Answer{Action: ans.Action, By: ans.By, Note: ans.Note}, nil
 	}
 	if q.schema != nil {
 		if err := q.schema.Validate(res.Content); err != nil {
@@ -135,6 +151,42 @@ func answerOf(q question, res *sdk.ElicitResult) (agenttool.Answer, error) {
 	return ans, nil
 }
 
+// answerMetaOf returns who an answer names as having given it and its
+// note, from the entry under [AnswerMetaKey] in its result's _meta,
+// each "" when the entry or the member is absent. A null entry or member
+// is absent, as an answer's null content is none: it says no more than
+// leaving it out. An entry that is not an object, or a member that is
+// not a string, is an error rather than an answer that names nobody,
+// which would be read as the user's.
+func answerMetaOf(meta sdk.Meta) (by, note string, err error) {
+	raw := meta[AnswerMetaKey]
+	if raw == nil {
+		return "", "", nil
+	}
+	entry, ok := raw.(map[string]any)
+	if !ok {
+		return "", "", fmt.Errorf("_meta %q is not an object", AnswerMetaKey)
+	}
+	member := func(name string) (string, error) {
+		v := entry[name]
+		if v == nil {
+			return "", nil
+		}
+		s, ok := v.(string)
+		if !ok {
+			return "", fmt.Errorf("_meta %q: %s is not a string", AnswerMetaKey, name)
+		}
+		return s, nil
+	}
+	if by, err = member("by"); err != nil {
+		return "", "", err
+	}
+	if note, err = member("note"); err != nil {
+		return "", "", err
+	}
+	return by, note, nil
+}
+
 // askDirectly is the elicitor for a client before 2026-07-28, which the
 // server asks with a request of its own while the call runs. The SDK
 // checks the answer against the schema.
@@ -145,7 +197,7 @@ func askDirectly(session *sdk.ServerSession, caps *sdk.ElicitationCapabilities) 
 			return agenttool.Answer{}, err
 		}
 		if !offered(caps, mq.params.Mode) {
-			return agenttool.Answer{Action: agenttool.ActionCancel}, nil
+			return agenttool.Answer{Action: agenttool.ActionCancel, By: agenttool.ByPolicy}, nil
 		}
 		res, err := session.Elicit(ctx, mq.params)
 		if err != nil {
@@ -217,7 +269,7 @@ func (r *run) elicit(ctx context.Context, q agenttool.Elicitation) (agenttool.An
 		return agenttool.Answer{}, err
 	}
 	if !offered(r.caps, mq.params.Mode) {
-		return agenttool.Answer{Action: agenttool.ActionCancel}, nil
+		return agenttool.Answer{Action: agenttool.ActionCancel, By: agenttool.ByPolicy}, nil
 	}
 	a := &ask{q: mq, reply: make(chan reply, 1)}
 	select {
@@ -386,7 +438,8 @@ func ended(session *sdk.ServerSession) <-chan struct{} {
 
 // resume takes the answers a client came back with to the run they
 // belong to and waits on it again. A question the client left out is
-// answered cancel, since nobody chose.
+// answered cancel, since nobody chose, by policy, since the server gave
+// that answer by rule.
 func (p *parked) resume(ctx context.Context, name string, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
 	r := p.take(req.Params.RequestState, sessionID(req.Session))
 	if r == nil {
@@ -396,7 +449,7 @@ func (p *parked) resume(ctx context.Context, name string, req *sdk.CallToolReque
 		var rep reply
 		switch res := req.Params.InputResponses[id].(type) {
 		case nil:
-			rep.ans = agenttool.Answer{Action: agenttool.ActionCancel}
+			rep.ans = agenttool.Answer{Action: agenttool.ActionCancel, By: agenttool.ByPolicy}
 		case *sdk.ElicitResult:
 			rep.ans, rep.err = answerOf(a.q, res)
 		default:

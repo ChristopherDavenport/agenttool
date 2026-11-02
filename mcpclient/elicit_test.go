@@ -215,6 +215,9 @@ func TestElicitationAnswerChecked(t *testing.T) {
 		"content on decline":        {agenttool.Answer{Action: agenttool.ActionDecline, Content: json.RawMessage(`{"confirm":false}`)}, "only on accept"},
 		"a value of the wrong type": {agenttool.Answer{Action: agenttool.ActionAccept, Content: json.RawMessage(`{"confirm":"yes"}`)}, `"confirm"`},
 		"a required member missing": {agenttool.Answer{Action: agenttool.ActionAccept, Content: json.RawMessage(`{}`)}, `"confirm"`},
+		// agentturn#267: a decider the contract does not name is not sent
+		// as though it were one.
+		"an unknown decider": {agenttool.Answer{Action: agenttool.ActionAccept, Content: json.RawMessage(`{"confirm":true}`), By: "system"}, `unknown decider "system"`},
 	} {
 		for proto, opts := range map[string][]Option{"current": {WithElicitation()}, "older": {WithElicitation(), older}} {
 			t.Run(name+"/"+proto, func(t *testing.T) {
@@ -368,6 +371,28 @@ func TestElicitationEscAnswersCancel(t *testing.T) {
 	hear(t, heard, "cancel")
 }
 
+// The cancel a call that ended mid-question sends names policy: whoever
+// stopped the call never answered the question (agentturn#267).
+func TestElicitationEscCancelNamesPolicy(t *testing.T) {
+	heard := make(chan string, 1)
+	s := sdk.NewServer(&sdk.Implementation{Name: "roller", Version: "1"}, nil)
+	s.AddTool(&sdk.Tool{Name: "rollout", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			answer, ok := req.Params.InputResponses["confirm"].(*sdk.ElicitResult)
+			if !ok {
+				return &sdk.CallToolResult{InputRequests: sdk.InputRequestMap{"confirm": &sdk.ElicitParams{
+					Message:         "roll out?",
+					RequestedSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+				}}}, nil
+			}
+			meta, _ := json.Marshal(answer.Meta[AnswerMetaKey])
+			heard <- answer.Action + " " + string(meta)
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "rollout: " + answer.Action}}}, nil
+		})
+	escape(t, connect(t, s, WithElicitation()))
+	hear(t, heard, `cancel {"by":"policy"}`)
+}
+
 // A server that does not return when told nobody chose is stopped by
 // the request being cancelled after the grace.
 func TestElicitationEscCancelsTheLastRequest(t *testing.T) {
@@ -490,5 +515,68 @@ func TestElicitationCloseEndsTheQuestion(t *testing.T) {
 				t.Errorf("a call after Close: err = %v; want ErrClosed", err)
 			}
 		})
+	}
+}
+
+// decided is a server whose "ask" tool asks to confirm and reports the
+// action it was answered with and the _meta under [AnswerMetaKey] that
+// came with it, null when none did.
+func decided() *sdk.Server {
+	s := sdk.NewServer(&sdk.Implementation{Name: "asker", Version: "1"}, nil)
+	s.AddTool(&sdk.Tool{Name: "ask", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			answer, ok := req.Params.InputResponses["confirm"].(*sdk.ElicitResult)
+			if !ok {
+				return &sdk.CallToolResult{InputRequests: sdk.InputRequestMap{"confirm": &sdk.ElicitParams{
+					Message:         "delete the branch?",
+					RequestedSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+				}}}, nil
+			}
+			meta, _ := json.Marshal(answer.Meta[AnswerMetaKey])
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: answer.Action + " " + string(meta)}}}, nil
+		})
+	return s
+}
+
+// TestElicitationAnswerNamesWhoGaveIt: an answer that names who gave it
+// reaches the server with the name in its _meta under AnswerMetaKey,
+// since MCP's elicitation result has no field for it, and its note in
+// the same entry; one that names nobody and says nothing carries no
+// _meta; and the cancel the client gives when there
+// is nobody to ask names policy, the client having answered by rule
+// (agentturn#267). The same holds when the server asks on its own,
+// before 2026-07-28.
+func TestElicitationAnswerNamesWhoGaveIt(t *testing.T) {
+	answer := func(by string, note ...string) agenttool.Elicitor {
+		return func(context.Context, agenttool.Elicitation) (agenttool.Answer, error) {
+			return agenttool.Answer{Action: agenttool.ActionAccept, By: by, Note: strings.Join(note, "")}, nil
+		}
+	}
+	for name, tc := range map[string]struct {
+		ask  agenttool.Elicitor
+		want string
+	}{
+		"by another model": {answer(agenttool.ByAgent), `accept {"by":"agent"}`},
+		"by a rule":        {answer(agenttool.ByPolicy), `accept {"by":"policy"}`},
+		"by a person":      {answer(agenttool.ByHuman), `accept {"by":"human"}`},
+		"by nobody named":  {answer(""), `accept null`},
+		"nobody to ask":    {nil, `cancel {"by":"policy"}`},
+		// The note crosses in the same entry, with a decider or without.
+		"a note by another model": {answer(agenttool.ByAgent, "after the release"), `accept {"by":"agent","note":"after the release"}`},
+		"a note by nobody named":  {answer("", "after the release"), `accept {"note":"after the release"}`},
+	} {
+		for proto, opts := range map[string][]Option{"current": {WithElicitation()}, "older": {WithElicitation(), older}} {
+			t.Run(name+"/"+proto, func(t *testing.T) {
+				s := connect(t, decided(), opts...)
+				ctx := context.Background()
+				if tc.ask != nil {
+					ctx = agenttool.ContextWithElicitor(ctx, tc.ask)
+				}
+				res, err := lookup(t, s, "ask").Execute(ctx, agenttool.Call{ID: "c", Args: json.RawMessage(`{}`)})
+				if err != nil || res.Output.Text != tc.want {
+					t.Errorf("the server saw %q, err = %v; want %q", res.Output.Text, err, tc.want)
+				}
+			})
+		}
 	}
 }

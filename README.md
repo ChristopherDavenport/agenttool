@@ -171,7 +171,11 @@ harness's policy and its record as part of the call. mcpclient's
 `WithElicitation()` routes an MCP server's elicitation there, and a
 tool served by mcpserver asks through the same `Elicitor`, which
 mcpserver sends to the client, so a question survives the move out of
-process.
+process. An answer may name who gave it, `Answer.By`: `ByHuman`,
+`ByPolicy` or `ByAgent`, the session format's deciders. A harness that
+answers by rule names one of the last two, and an answer that names
+nobody is the user's. The name crosses MCP in the elicitation result's
+`_meta`, so a server's tool knows a rule's yes from a person's.
 
 ## Interrupting a call, closing a tool
 
@@ -633,7 +637,9 @@ together with the tool's output or error. The model asks the user and
 runs the command again with `--answer`. The second run is a second
 call, so this suits a tool that asks before it acts. An answer is an
 action, the form's fields as a JSON object, or `{"action": "decline",
-"note": "not before Friday"}` to pass on what the user said with it.
+"note": "not before Friday"}` to pass on what the user said with it;
+`"by"` in that object names who gave the answer, `human`, `policy` or
+`agent`, and an answer that names nobody is the user's.
 The question's `schema` is `null` when it asks only yes or no, and an
 answer is checked against it: fields the form does not define are
 refused rather than counted as yes, the tool is told, and the run ends

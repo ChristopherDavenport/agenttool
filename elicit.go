@@ -51,10 +51,29 @@ type Answer struct {
 	// on an accept. It is for the asker, which may pass it on: an
 	// agent loop that asked whether a call may run tells the model.
 	// Empty when the user said nothing. MCP's elicitation result has
-	// no place for it, so mcpclient does not send it to a server and
-	// mcpserver's answers never carry one.
+	// no place for it, so it crosses in the result's _meta beside By.
 	Note string
+	// By names who gave the answer, in the session format's terms:
+	// [ByHuman], [ByPolicy] or [ByAgent]. Empty names nobody, and the
+	// answer is the user's. A harness that answers by rule names
+	// ByPolicy or ByAgent, a cancel it gives because nobody was there
+	// to ask among them. It crosses MCP in the elicitation result's
+	// _meta, which mcpclient writes and mcpserver reads, and
+	// [Elicitation.Check] refuses a name it does not know rather than
+	// read it as the user's.
+	By string
 }
+
+// Deciders an [Answer] may name in its By, the values a decision's by
+// takes in the session format.
+const (
+	// ByHuman is a person.
+	ByHuman = "human"
+	// ByPolicy is a rule the harness evaluated without waiting.
+	ByPolicy = "policy"
+	// ByAgent is another model.
+	ByAgent = "agent"
+)
 
 // Elicitor answers a question a tool asks the user mid-call. A harness
 // installs one with [ContextWithElicitor] around a call, as it does a

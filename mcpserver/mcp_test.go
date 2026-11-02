@@ -679,7 +679,7 @@ func TestRecordMetaKeyMatchesClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var theirs string
+	theirs := map[string]string{}
 	for _, decl := range f.Decls {
 		gd, ok := decl.(*ast.GenDecl)
 		if !ok || gd.Tok != token.CONST {
@@ -688,19 +688,22 @@ func TestRecordMetaKeyMatchesClient(t *testing.T) {
 		for _, spec := range gd.Specs {
 			vs := spec.(*ast.ValueSpec)
 			for i, name := range vs.Names {
-				if name.Name == "RecordMetaKey" && i < len(vs.Values) {
+				if i < len(vs.Values) {
 					if lit, ok := vs.Values[i].(*ast.BasicLit); ok {
-						theirs, _ = strconv.Unquote(lit.Value)
+						theirs[name.Name], _ = strconv.Unquote(lit.Value)
 					}
 				}
 			}
 		}
 	}
-	if theirs == "" {
-		t.Fatal("mcpclient declares no RecordMetaKey string constant")
-	}
-	if RecordMetaKey != theirs {
-		t.Errorf("mcpserver key %q != mcpclient key %q", RecordMetaKey, theirs)
+	// AnswerMetaKey is held the same way: who gave an answer crosses
+	// under it (agentturn#267).
+	for name, ours := range map[string]string{"RecordMetaKey": RecordMetaKey, "AnswerMetaKey": AnswerMetaKey} {
+		if theirs[name] == "" {
+			t.Errorf("mcpclient declares no %s string constant", name)
+		} else if ours != theirs[name] {
+			t.Errorf("%s: mcpserver %q != mcpclient %q", name, ours, theirs[name])
+		}
 	}
 }
 

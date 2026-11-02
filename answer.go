@@ -26,7 +26,9 @@ import (
 // or anyOf of const); a number or an integer within minimum and
 // maximum; a boolean; or an array of the choices its items offer,
 // within minItems and maxItems. A question with no form, a
-// confirmation, takes no members.
+// confirmation, takes no members. An answer names who gave it, if
+// anyone, as [ByHuman], [ByPolicy] or [ByAgent]; a name this does not
+// know is refused, never read as the user's.
 //
 // A harness refuses an answer that fails rather than taking content the
 // question did not ask for as consent: a model that wrote
@@ -39,6 +41,11 @@ func (q Elicitation) Check(a Answer) error {
 	case ActionAccept, ActionDecline, ActionCancel:
 	default:
 		return fmt.Errorf("unknown action %q: an answer is accept, decline or cancel", a.Action)
+	}
+	switch a.By {
+	case "", ByHuman, ByPolicy, ByAgent:
+	default:
+		return fmt.Errorf("unknown decider %q: an answer is by human, policy or agent, or names nobody", a.By)
 	}
 	var content map[string]json.RawMessage
 	if c := bytes.TrimSpace(a.Content); len(c) > 0 && !bytes.Equal(c, []byte("null")) {
