@@ -184,7 +184,11 @@ var (
 // tool as it is when a client lists, and tells clients the list changed
 // when a call finds the tool changed since it was added, so a client
 // that took the old listing reads the new facts mark from its next
-// listing on.
+// listing on; a call from a client session listed the old tool is
+// refused rather than run on the old mark. It validates a call's
+// arguments against the schema of the tool in force at the call, so a
+// session that never listed, which is let through, is held to the new
+// schema, not the one the stand-in was added with.
 //
 // The stand-in owns nothing, and is not an [io.Closer]: the host built
 // the tools current returns and closes them. [Unwrap] returns the tool

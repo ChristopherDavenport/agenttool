@@ -728,3 +728,24 @@ func TestStaleSessionRefused(t *testing.T) {
 		t.Errorf("the re-listed session's call: %+v, %v; want it run", res, err)
 	}
 }
+
+// Arguments are validated against the schema of the tool in force, not
+// the one it was added with.
+func TestValidatesAgainstTheSchemaInForce(t *testing.T) {
+	run := func(context.Context, agenttool.Call) (agenttool.Result, error) { return agenttool.Text("ran"), nil }
+	byName := agenttool.NewFunc("skill", "", json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`), run)
+	byPath := agenttool.NewFunc("skill", "", json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`), run)
+	server, swap := swappable(t, byName)
+	client := roundTrip(t, server)
+	swap(byPath)
+	if err := client.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	tl, _ := agenttool.Set(client.Tools()).Lookup("skill")
+	if res, err := tl.Execute(context.Background(), agenttool.Call{ID: "c", Args: json.RawMessage(`{"path":"x"}`)}); err != nil || res.Output.Text != "ran" {
+		t.Errorf("a call that fits the new schema: %+v, %v", res, err)
+	}
+	if _, err := tl.Execute(context.Background(), agenttool.Call{ID: "d", Args: json.RawMessage(`{"name":"x"}`)}); err == nil {
+		t.Error("a call that fits only the old schema ran")
+	}
+}

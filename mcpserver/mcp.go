@@ -26,6 +26,7 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -35,6 +36,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -330,6 +332,44 @@ func SessionID(ctx context.Context) string {
 
 var callSeq atomic.Int64
 
+// schemaCache is a tool's schema resolved for validation, resolved again
+// when the schema the tool gives changes.
+type schemaCache struct {
+	tool   agenttool.Tool
+	logger *slog.Logger
+
+	mu     sync.Mutex
+	raw    json.RawMessage
+	schema *jsonschema.Resolved
+	done   bool
+}
+
+// resolved returns the tool's schema as it is now, resolved, or nil
+// for one the validator cannot read, which is served unvalidated, as
+// one whose schema is its author's and guards itself, and the host is
+// told.
+func (c *schemaCache) resolved() (*jsonschema.Resolved, error) {
+	raw := c.tool.Parameters()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.done && bytes.Equal(raw, c.raw) {
+		return c.schema, nil
+	}
+	resolved, err := resolveSchema(raw)
+	switch {
+	case errors.Is(err, errDialect):
+		log := c.logger
+		if log == nil {
+			log = slog.Default()
+		}
+		log.Warn("mcpserver: tool arguments not validated", "tool", c.tool.Name(), "err", err)
+	case err != nil:
+		return nil, fmt.Errorf("mcpserver: tool %q: schema: %w", c.tool.Name(), err)
+	}
+	c.raw, c.schema, c.done = append(json.RawMessage(nil), raw...), resolved, true
+	return resolved, nil
+}
+
 // Handler builds the SDK handler that runs tl. It fails when the tool's
 // schema cannot be resolved for validation.
 func Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
@@ -337,20 +377,16 @@ func Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
 }
 
 // Handler is [Handler] with o.
+//
+// Arguments are validated against the schema the tool gives at the
+// call, so a tool that stands in for whichever tool is in force,
+// [agenttool.Follow], is held to that tool's schema; a schema is
+// resolved again only when it changes. A schema that changed into one
+// that does not resolve fails the call that finds it.
 func (o Options) Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
-	resolved, err := resolveSchema(tl.Parameters())
-	switch {
-	case errors.Is(err, errDialect):
-		// The schema may be sound; the validator cannot read it. The tool
-		// is served unvalidated, as one whose schema is its author's and
-		// guards itself, and the host is told.
-		log := o.Logger
-		if log == nil {
-			log = slog.Default()
-		}
-		log.Warn("mcpserver: tool arguments not validated", "tool", tl.Name(), "err", err)
-	case err != nil:
-		return nil, fmt.Errorf("mcpserver: tool %q: schema: %w", tl.Name(), err)
+	schemas := &schemaCache{tool: tl, logger: o.Logger}
+	if _, err := schemas.resolved(); err != nil {
+		return nil, err
 	}
 	waiting := parked{abandonAfter: o.AbandonAfter, maxRequests: o.MaxRequests}
 	if waiting.abandonAfter <= 0 {
@@ -374,6 +410,10 @@ func (o Options) Handler(tl agenttool.Tool) (sdk.ToolHandler, error) {
 		}
 		if req.Session != nil {
 			ctx = ContextWithSession(ctx, req.Session)
+		}
+		resolved, err := schemas.resolved()
+		if err != nil {
+			return errorResult(err), nil
 		}
 		if err := validate(resolved, call.Args); err != nil {
 			return errorResult(err), nil

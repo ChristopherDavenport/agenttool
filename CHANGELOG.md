@@ -44,6 +44,10 @@ versions may break the API.
   result telling it to list again, and not run, since it was decided
   on that listing; the check is per session, and a session that never
   listed, as over stateless HTTP, runs.
+- Fixed: mcpserver validates a call's arguments against the schema the
+  tool gives at the call, resolved again only when it changes, not the
+  one it had when its handler was built. A served `Follow` tool whose
+  schema changed was held to the old one for every call.
 - Added: mcpclient's `Remote.InstructionsReads`, the labels a host
   records a server's instructions under (agentkit#112): always
   `untrusted`, since a third party wrote them. `WithClaims` does not
