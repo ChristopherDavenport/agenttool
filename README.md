@@ -423,7 +423,12 @@ A tool set has no description in the contract, but a server has
 instructions: what it is for and how its tools go together.
 `mcpserver.Options{Instructions: …}.NewServer` serves them at
 initialize, and `mcpclient.Remote.Instructions` reads them; the host
-decides whether the model does.
+decides whether the model does. A host that offers the server's tools
+gives the model the instructions for as long as it offers them. They
+are a third party's text, so a host that records them as a part labels
+it with `Remote.InstructionsReads`: `untrusted`, unless the host took
+the server's claims with `WithClaims`. `ReconnectInfo.InstructionsChanged`
+says a restarted server gave other instructions.
 
 Roots and logging are the host's too, and `mcpclient` offers neither
 unless the host takes part: `WithRoots` offers the directories a server

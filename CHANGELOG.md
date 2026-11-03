@@ -33,6 +33,17 @@ versions may break the API.
   package keeps unexported. It owns nothing and is not a closer;
   `Unwrap` returns the tool in force. RFC 0001 draft 0.10 states the
   rule under Binding and forwarding.
+- Added: mcpclient's `Remote.InstructionsReads`, the labels a host
+  records a server's instructions under (agentkit#112): `untrusted`,
+  since a third party wrote them, unless the host takes the server's
+  claims with `WithClaims`, its word that it trusts the server, and then
+  none. `ReconnectInfo.InstructionsChanged` says a restarted server gave
+  other instructions, so a host that gives the model them, or records
+  them as a part, takes the new ones. RFC 0001 draft 0.10 adds the
+  SHOULDs to the MCP `instructions` row: a host that offers a server's
+  tools gives the model its instructions while it offers them, and
+  records them as a part of their own, labelled `untrusted` unless it
+  trusts the server.
 
 ## v0.0.28 - 2026-11-02
 

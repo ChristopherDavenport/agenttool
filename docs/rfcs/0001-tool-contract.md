@@ -779,7 +779,7 @@ set on the local side by the host and does not cross.
 | Contract | MCP | Direction |
 | --- | --- | --- |
 | name, description | `name`, `description`; a consumed tool is named `<prefix>__<name>`, the prefix and two underscores before its name on the server, when the host gives a prefix, `mcpclient.WithPrefix`, and `<name>` otherwise, so two servers' tools of one name do not collide in a request | both |
-| instructions | no field in the contract: a tool set has no description. The serving host gives them when it builds the server, `mcpserver.Options.Instructions`; the consuming side exposes them to the host, `mcpclient.Remote.Instructions`, which decides whether the model reads them | both |
+| instructions | no field in the contract: a tool set has no description. The serving host gives them when it builds the server, `mcpserver.Options.Instructions`; the consuming side exposes them to the host, `mcpclient.Remote.Instructions`, which decides whether the model reads them. They are text the server's author wrote. A host that offers a consumed server's tools to a model SHOULD give the model the server's instructions for as long as it offers those tools, and SHOULD stop when it stops offering them. A host that records instructions as parts SHOULD record them as a part of their own, labelled `untrusted` unless the host trusts the server, so that whatever reads the record by trust reads them as it would a tool's untrusted output. The consuming side gives the label, `mcpclient.Remote.InstructionsReads`, `untrusted` unless the host takes the server's claims (`WithClaims`), its word that it trusts the server; and says when a restarted server gave other instructions, `ReconnectInfo.InstructionsChanged`, so the host gives the model the new ones | both |
 | parameters | `inputSchema`; a nil schema is served as an empty object schema | both |
 | strict | no field; not carried | — |
 | sequential, barrier, resource | no field in MCP; the serving side puts them in the tool's `_meta` under `ToolMetaKey` (`sequential`, `barrier`, `resource`), and the consuming side declares them from there. A barrier is served with `sequential` beside it, so a consumer that predates barriers runs its batch one call at a time, stricter and never looser; a consumer that reads `barrier` takes the tool as a barrier alone. `mcpclient.WithSequential(names…)` adds sequential, `WithBarrier(names…)` adds barrier, and `WithResource(resource, names…)` names a remote tool's state and wins over the server's, an empty resource withdrawing it, since the host sees every server it composes and the server only itself | both |
@@ -1297,6 +1297,13 @@ module and is listed in the changelog as one.
   decides a call. A harness that reads facts by default, as agentpolicy
   does from v0.0.18, otherwise decided a reloaded skill tool's calls on
   the catalogue it was first built from. The Go binding is `Follow`.
+- **MCP instructions** gain SHOULDs (agentkit#112): a host that
+  offers a consumed server's tools gives the model the server's
+  instructions for as long as it offers them, and stops when it stops;
+  and a host that records them does so as a part of their own, labelled
+  `untrusted` unless it trusts the server. At 0.9 the consuming host
+  only decided whether the model read them, so a host could drop them,
+  or record a third party's text as its own.
 
 ## Changes since 0.8
 

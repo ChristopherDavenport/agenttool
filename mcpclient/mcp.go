@@ -504,6 +504,9 @@ func WithElicitation() Option {
 // server with [FactsMethod]; a server that does not advertise it is
 // never asked either way.
 //
+// It is also the host's word that it trusts the server's instructions,
+// which [Remote.InstructionsReads] then labels with nothing.
+//
 // What the listing says of sequential, barrier and resource applies without it,
 // since it can only make calls run one after another. A host that does
 // not trust a server and still wants its facts, to hold its calls to
@@ -744,13 +747,26 @@ func (s *Remote) ServerInfo() sdk.Implementation { return s.current().serverInfo
 // Instructions returns the instructions the server gave at initialize,
 // its own account of how to use it and its tools, and "" when it gave
 // none. A host that composes servers puts them where the model reads
-// them; this package does not.
-func (s *Remote) Instructions() string {
-	res := s.current().session.InitializeResult()
-	if res == nil {
-		return ""
+// them; this package does not. They are text the server's author wrote,
+// so a host that offers the server's tools gives the model them for as
+// long as it offers the tools, and records them as a part of their own
+// labelled as [Remote.InstructionsReads] says. With [WithReconnect] they
+// are the restarted server's, and [ReconnectInfo.InstructionsChanged]
+// says when a restart changed them.
+func (s *Remote) Instructions() string { return s.current().instructions() }
+
+// InstructionsReads is the labels a host records the server's
+// instructions under, the reads of the part's trust in the session
+// format: [agenttool.LabelUntrusted], text a party the host does not
+// trust wrote, unless the host trusts the server, which it says with
+// [WithClaims], and then none, an empty list rather than nil, which
+// says the host judged them. [WithFactsHints] is no trust. A host that
+// records instructions it cannot label records them untrusted.
+func (s *Remote) InstructionsReads() []agenttool.Label {
+	if s.opts.claims {
+		return []agenttool.Label{}
 	}
-	return res.Instructions
+	return []agenttool.Label{agenttool.LabelUntrusted}
 }
 
 // Tools returns a snapshot of the server's tools as of the last listing.

@@ -834,3 +834,27 @@ func TestReconnectCutWaitIsBounded(t *testing.T) {
 		}
 	})
 }
+
+// agentkit#112: a restarted server may give other instructions, and the
+// hook says so, so a host that records them as a part updates it.
+func TestReconnectWithChangedInstructions(t *testing.T) {
+	instructions := []string{"First.", "First.", "Second."}
+	r := &restarter{t: t, serve: func(n int) *sdk.Server {
+		return sdk.NewServer(&sdk.Implementation{Name: "docs", Version: "1"}, &sdk.ServerOptions{Instructions: instructions[n]})
+	}}
+	var h hooked
+	s := r.connect(false, h.option())
+	for n := 1; n <= 2; n++ {
+		r.drop(s)
+		if err := s.Refresh(context.Background()); err != nil {
+			t.Fatalf("restart %d: %v", n, err)
+		}
+		if got := s.Instructions(); got != instructions[n] {
+			t.Errorf("restart %d: Instructions = %q, want %q", n, got, instructions[n])
+		}
+	}
+	infos := h.got()
+	if len(infos) != 2 || infos[0].InstructionsChanged || !infos[1].InstructionsChanged {
+		t.Errorf("hook got %+v; want the second restart alone to change the instructions", infos)
+	}
+}
