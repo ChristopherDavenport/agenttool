@@ -774,7 +774,13 @@ express. Where MCP has no field for a property, the serving side
 states it in the tool's `_meta` under one namespaced key, `ToolMetaKey`,
 as the server's statement rather than a hint, and the per-call claims
 are answered by a method of their own; a property neither carries is
-set on the local side by the host and does not cross.
+set on the local side by the host and does not cross. The serving side
+lists a tool's definition and `_meta` as the tool states them when the
+client lists, not when the tool was added, so a [stand-in that changes
+tools](#binding-and-forwarding) is listed as the tool in force, and it
+SHOULD tell its clients the tool list changed when it finds a tool
+changed since it last did, since a client lists only when it connects
+or is told to.
 
 | Contract | MCP | Direction |
 | --- | --- | --- |
@@ -1297,6 +1303,9 @@ module and is listed in the changelog as one.
   decides a call. A harness that reads facts by default, as agentpolicy
   does from v0.0.18, otherwise decided a reloaded skill tool's calls on
   the catalogue it was first built from. The Go binding is `Follow`.
+  Over MCP the serving side lists a tool as it is when the client
+  lists, and SHOULD say the list changed when it finds a tool changed,
+  so a served stand-in's facts mark is not the one it was added with.
 - **MCP instructions** gain SHOULDs (agentkit#112): a host that
   offers a consumed server's tools gives the model the server's
   instructions for as long as it offers them, and stops when it stops;

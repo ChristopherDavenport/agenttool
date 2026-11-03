@@ -180,10 +180,11 @@ var (
 // are made, so a swap between the two is a call decided on the claim of
 // a tool it does not run: a host that swaps tools while calls are
 // decided serialises the swap with its decisions. A listing taken from
-// the stand-in is as of when it was taken: mcpserver states the facts
-// mark when the tool is added, so a host that serves one adds it again
-// when the tool in force changes, and the server's list-changed
-// notification tells clients to read the new mark.
+// the stand-in is as of when it was taken: mcpserver lists a served
+// tool as it is when a client lists, and tells clients the list changed
+// when a call finds the tool changed since it was added, so a client
+// that took the old listing reads the new facts mark from its next
+// listing on.
 //
 // The stand-in owns nothing, and is not an [io.Closer]: the host built
 // the tools current returns and closes them. [Unwrap] returns the tool

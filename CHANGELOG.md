@@ -33,6 +33,14 @@ versions may break the API.
   package keeps unexported. It owns nothing and is not a closer;
   `Unwrap` returns the tool in force. RFC 0001 draft 0.10 states the
   rule under Binding and forwarding.
+- Fixed: mcpserver lists a tool as it is when a client lists, not as
+  it was when `AddTools` added it, and a call of a tool whose definition
+  or properties changed since adds it again, so the SDK tells every
+  client the list changed. A served `Follow` tool that gained a facts
+  claim kept the listing it was added with, so a client that takes the
+  server's claims never asked for it and decided the calls by name, the
+  agentkit#96 failure over MCP. The call that finds the change was
+  decided on the client's older listing.
 - Added: mcpclient's `Remote.InstructionsReads`, the labels a host
   records a server's instructions under (agentkit#112): always
   `untrusted`, since a third party wrote them. `WithClaims` does not

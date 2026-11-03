@@ -210,6 +210,16 @@ func (o Options) NewServer(name, version string, tools ...agenttool.Tool) (*sdk.
 // keys its state on [SessionFrom] answers for the client that asked. A
 // server that has tools added by several calls answers for all of
 // them, the one added last for a name that was added twice.
+//
+// A tool's definition and properties are listed as they are when a
+// client lists, not as they were when the tool was added, so a tool
+// that stands in for whichever tool is in force, [agenttool.Follow], is
+// listed with that tool's facts mark, sequential, barrier, resource,
+// flow and annotations. A call of a tool whose definition changed since
+// it was last added adds it again, which has the server tell every
+// client that the list changed, so a client that lists on the
+// notification asks for the new tool's claim on its next call. The call
+// that finds the change was decided on the listing the client had.
 func AddTools(s *sdk.Server, tools ...agenttool.Tool) error {
 	return Options{}.AddTools(s, tools...)
 }
@@ -224,11 +234,12 @@ func (o Options) AddTools(s *sdk.Server, tools ...agenttool.Tool) error {
 		}
 		handlers = append(handlers, h)
 	}
-	if err := serveFacts(s, tools); err != nil {
+	l := newListing(s, tools)
+	if err := serveFacts(s, tools, l); err != nil {
 		return err
 	}
 	for i, tl := range tools {
-		s.AddTool(Definition(tl), handlers[i])
+		l.add(tl, handlers[i])
 	}
 	return nil
 }
