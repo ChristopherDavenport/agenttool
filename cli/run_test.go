@@ -195,6 +195,8 @@ func noteRead(ran func()) agenttool.Tool {
 				return agenttool.Facts{Calls: []agenttool.FactCall{}}, nil
 			case "stamp":
 				return agenttool.Facts{Calls: read, Rewrite: json.RawMessage(`{"name":"stamp","stamp":"k"}`)}, nil
+			case "bad":
+				return agenttool.Facts{Calls: []agenttool.FactCall{{Tool: "read", Args: json.RawMessage(`{bad`)}}}, nil
 			case "hint":
 				return agenttool.Facts{Calls: read, Rewrite: json.RawMessage(`{"name":"hint","stamp":"k"}`), Hint: true}, nil
 			}
@@ -349,6 +351,7 @@ func TestRun(t *testing.T) {
 		{name: "facts with the call's replay", args: []string{"facts", "note_read", "--name", "safe"}, stdoutJSON: `{"facts":{"calls":[{"tool":"read","args":{"path":".notes/safe.json"},"text":"read .notes/safe.json"}]},"replay":"safe"}`},
 		{name: "facts read keyed as unknown", args: []string{"facts", "note_read", "--name", "keyed"}, stdoutJSON: `{"facts":{"calls":[{"tool":"read","args":{"path":".notes/keyed.json"},"text":"read .notes/keyed.json"}]},"replay":"unknown"}`},
 		{name: "facts that fail", args: []string{"facts", "note_read"}, code: cli.ExitFailed, stdoutJSON: `{"error":"no note named","replay":"unknown"}`, stderrHas: "Error: no note named"},
+		{name: "facts that are not JSON", args: []string{"facts", "note_read", "--name", "bad"}, code: cli.ExitFailed, stdoutHas: `"error":"the claim is not JSON`, stderrHas: "Error: the claim is not JSON"},
 		{name: "facts of a tool that makes no claim", args: []string{"facts", "read_file", "--path", "/etc/hosts"}, stdoutJSON: `{"replay":"unknown"}`},
 		{name: "facts after the program's options", args: []string{"--answer", "accept", "facts", "note_read", "--name", "a"}, stdoutHas: `.notes/a.json`},
 		{name: "facts before the program's options", args: []string{"facts", "--answer", "accept", "note_read", "--name", "a"}, stdoutHas: `.notes/a.json`},

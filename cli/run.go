@@ -206,7 +206,8 @@ func (r Runner) options(args []string) (programOptions, []string, error) {
 // makes no claim has neither, and the status is [ExitOK]. A claim that
 // failed has error in facts' place, the status [ExitFailed] and the
 // error on stderr, as a call's error is: nothing can be said about the
-// call, and a policy must not allow it. replay is "safe" or "unknown",
+// call, and a policy must not allow it. A claim whose arguments or
+// rewrite are not JSON is one that failed. replay is "safe" or "unknown",
 // the tool's answer for the call; "keyed" is "unknown", since a
 // command line carries no idempotency key. A command line Run would
 // not understand is [ExitUsage], with nothing on stdout.
@@ -245,8 +246,13 @@ func (r Runner) facts(ctx context.Context, args []string, cmds []Command) int {
 	ans := answerFacts(ctx, tool, callArgs)
 	data, err := json.Marshal(ans)
 	if err != nil {
-		fmt.Fprintf(r.Stderr, "%s: %v\n", r.Name, err)
-		return ExitFailed
+		// Arguments or a rewrite that are not JSON are a claim nothing
+		// can be read from, so it is answered as one that failed.
+		ans = factsAnswer{Error: "the claim is not JSON: " + err.Error(), Replay: ans.Replay}
+		if data, err = json.Marshal(ans); err != nil {
+			fmt.Fprintf(r.Stderr, "%s: %v\n", r.Name, err)
+			return ExitFailed
+		}
 	}
 	fmt.Fprintf(r.Stdout, "%s\n", data)
 	if ans.Error != "" {
