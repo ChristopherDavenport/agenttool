@@ -22,6 +22,17 @@ versions may break the API.
 - Changed: `cli.Commands` refuses a tool named `facts`, which is now a
   command of the program's own, as `help` and `schema` are. A breaking
   change for a set with a tool of that name.
+- Added: `Follow(current)`, a stand-in for whichever tool `current`
+  returns when it is asked (agentkit#96). Every property, the facts
+  claim and its presence above all, and every call resolve through
+  `current`, so a host that swaps a tool, as agentkit's `ReloadSkills`
+  swaps its skill tool, never has a call decided on the claim of a tool
+  it no longer runs. `Wrap` around the first tool with an exec that runs
+  the one in force answered from the first, and a stand-in written
+  outside the package could not follow facts presence, which the
+  package keeps unexported. It owns nothing and is not a closer;
+  `Unwrap` returns the tool in force. RFC 0001 draft 0.10 states the
+  rule under Binding and forwarding.
 
 ## v0.0.28 - 2026-11-02
 

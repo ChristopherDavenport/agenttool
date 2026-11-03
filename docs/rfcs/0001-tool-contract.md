@@ -315,6 +315,15 @@ use it. Dropping a property is the failure #33 describes: a wrapped
 `bash` that no longer reports sequential runs two shell commands at
 once in one working directory, and nothing fails.
 
+A tool that stands in for another and may change which tool it runs,
+such as a skill tool rebuilt when its catalogue reloads, MUST answer
+each property, facts above all, from the tool the call would run at
+that moment, never from one it ran before. Facts and execution resolve
+through the same lookup. A stand-in that answered from the tool it was
+built around would have a policy decide a call on the claim of a tool
+the call does not run: a file the new tool reads that the old one never
+claimed passes unchecked (agentkit#96).
+
 ## Arguments
 
 The model writes a call's arguments as a string. A harness MUST parse it
@@ -729,6 +738,7 @@ and everything else is optional.
 | flow | `Flowing` interface, `Flow{Reads, Sends, To, Carries}` and `Label` (`LabelUntrusted`, `LabelPrivate`), read by `FlowOf(t)`, which reports presence and reads an unknown label as `LabelUntrusted`, set by `WithFlow(f)` |
 | closer | `io.Closer`; `Set.Close()` closes a list in order and joins errors; `WithCloser(fn)` makes a `New` or `NewFunc` tool one, and without it the tool is not |
 | forwarding wrapper | `Wrap(t, exec)` forwards every property of `t` and closes it; `Unwrap(t)` returns it |
+| a stand-in that changes tools | `Follow(current)` answers every property and runs every call through `current()`, the tool in force when it is asked, facts presence included; it owns nothing and closes nothing; `Unwrap` returns the tool in force |
 | call | `Call{ID, Args, IdempotencyKey, OnUpdate}`; `Call.Update` sends progress |
 | call on the context | `WithCall`, `CallFrom`; `Executor` installs it for every job |
 | result | `Result{Output, Details, Terminate}`; `Text`, `Parts`, `Output` build one |
@@ -750,10 +760,12 @@ the annotations default is the zero `Annotations` value, which a reader
 cannot tell from a tool that declared every hint false. The doc comment
 says so, and it is an open question below.
 
-The forwarding rule is bound by `Wrap`, and a test in the package reads
-its exported interfaces and refuses a new optional interface `Wrap`
-does not forward, which is how the binding stays right as properties
-are added.
+The forwarding rule is bound by `Wrap` and `Follow`, and a test in the
+package reads its exported interfaces and refuses a new optional
+interface either does not forward, which is how the binding stays right
+as properties are added. Facts presence is a method the binding keeps
+unexported, so a stand-in written outside it cannot report a claim
+that comes and goes with the tool in force; `Follow` is how one does.
 
 ### MCP
 
@@ -1152,7 +1164,8 @@ owns; declares sequential or a resource if two of its calls must not
 overlap; declares a closer if it owns something beyond a call; answers
 *safe* only for a call whose second run has no further effect, and
 *keyed* only when it deduplicates on the key; acts on nothing while it
-answers facts; and reports every property of a tool it wraps.
+answers facts; and reports every property of a tool it wraps, from
+the tool a call would run when it may change which tool that is.
 
 **A conforming harness** offers a set of tools with distinct names;
 hands each call its arguments as a JSON object, `{}` when empty, and
@@ -1277,6 +1290,13 @@ module and is listed in the changelog as one.
   different answer through a shell than in process or over MCP.
   `facts` joins `help` and `schema` as a command of the program's own.
   Conformance gains a conforming command-line program.
+- **Binding and forwarding** gains a MUST for a stand-in that may change
+  which tool it runs (agentkit#96): it answers each property, facts
+  above all, from the tool the call would run at that moment, and facts
+  and execution resolve through the same lookup, so a stale claim never
+  decides a call. A harness that reads facts by default, as agentpolicy
+  does from v0.0.18, otherwise decided a reloaded skill tool's calls on
+  the catalogue it was first built from. The Go binding is `Follow`.
 
 ## Changes since 0.8
 

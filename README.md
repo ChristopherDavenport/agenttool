@@ -112,6 +112,22 @@ audited := agenttool.Wrap(bash, func(ctx context.Context, call agenttool.Call) (
 // all answer as they do for bash; Unwrap(audited) is bash.
 ```
 
+`Wrap` stands in for one tool. A stand-in that runs whichever tool is
+in force, such as a skill tool a host rebuilds when its catalogue
+reloads, is built with `Follow`, which answers every property and runs
+every call through the tool its function returns at that moment. A
+`Wrap` around the first tool would keep answering that tool's facts
+claim, and a policy that reads facts would decide the new tool's calls
+on it:
+
+```go
+skill := agenttool.Follow(func() agenttool.Tool {
+	mu.Lock()
+	defer mu.Unlock()
+	return current // replaced on reload
+})
+```
+
 The contract itself, language-neutral, is
 [RFC 0001](docs/rfcs/0001-tool-contract.md): what a definition is and
 how it is hashed, which properties a tool may declare and what each
