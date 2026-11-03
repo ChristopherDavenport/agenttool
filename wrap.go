@@ -32,6 +32,12 @@ import (
 // the wrapper as making the claim exactly when t does, and [FactsOf]
 // asks t. [Unwrap] returns t. A nil exec panics, like a nil function
 // in [NewFunc].
+//
+// Wrap stands in for t alone: exec runs t, or what t would run. A
+// stand-in that may run a different tool from one call to the next,
+// one it looks up at each call, is built with [Follow], since Wrap
+// answers every property from t and a claim from a tool the call no
+// longer runs would decide it.
 func Wrap(t Tool, exec func(ctx context.Context, call Call) (Result, error)) Tool {
 	if t == nil {
 		panic("agenttool.Wrap: nil tool")
@@ -46,8 +52,8 @@ func Wrap(t Tool, exec func(ctx context.Context, call Call) (Result, error)) Too
 	return w
 }
 
-// Unwrap returns the tool t was built around by [Wrap], and nil when t
-// is not a wrapper. A host that needs the concrete tool behind a chain
+// Unwrap returns the tool t was built around by [Wrap], or the tool in
+// force for one from [Follow], and nil when t is not a wrapper. A host that needs the concrete tool behind a chain
 // of wrappers calls it until it returns nil.
 func Unwrap(t Tool) Tool {
 	switch w := t.(type) {
@@ -55,6 +61,8 @@ func Unwrap(t Tool) Tool {
 		return w.Tool
 	case *wrappedCloser:
 		return w.Tool
+	case *followed:
+		return w.current()
 	}
 	return nil
 }
@@ -107,8 +115,9 @@ func (w *wrapped) Replay(ctx context.Context, args json.RawMessage) Replay {
 
 // Facts forwards the tool's claim, which is exec's to keep: a wrapper
 // whose exec runs something other than what the tool claims reports
-// that, and is built without Wrap. A tool that makes no claim answers
-// the call itself.
+// that, and is built without Wrap: one that runs whichever tool is in
+// force is built with [Follow]. A tool that makes no claim answers the
+// call itself.
 func (w *wrapped) Facts(ctx context.Context, args json.RawMessage) (Facts, error) {
 	f, _, err := FactsOf(ctx, w.Tool, args)
 	return f, err
@@ -147,6 +156,107 @@ var (
 	_ Replayable = (*wrapped)(nil)
 	_ Factual    = (*wrapped)(nil)
 	_ Flowing    = (*wrapped)(nil)
+	_ Factual    = (*followed)(nil)
+	_ Flowing    = (*followed)(nil)
 	_ Tool       = (*wrappedCloser)(nil)
 	_ io.Closer  = (*wrappedCloser)(nil)
 )
+
+// Follow returns a tool that stands in for whichever tool current
+// returns at the moment it is asked: a skill tool a host rebuilds when
+// its catalogue reloads, or a tool it swaps for another of the same
+// name. Every property and every call resolves through current, so the
+// facts claim a policy decides a call on is the claim of the tool that
+// call runs, and a claim never outlives the tool that made it. A
+// wrapper built with [Wrap] around the first tool, whose exec runs the
+// one in force, answers every property from the first tool, which is
+// what the contract's forwarding rule forbids of a stand-in that may
+// change which tool it runs.
+//
+// The name, description and parameters are current's too, so a host
+// that swaps tools of different definitions sends the model the one in
+// force; every tool current returns has the name the stand-in is looked
+// up by. A claim and the call it decides are each resolved when they
+// are made, so a swap between the two is a call decided on the claim of
+// a tool it does not run: a host that swaps tools while calls are
+// decided serialises the swap with its decisions. A listing taken from
+// the stand-in is as of when it was taken: mcpserver lists a served
+// tool as it is when a client lists, and tells clients the list changed
+// when a call finds the tool changed since it was added, so a client
+// that took the old listing reads the new facts mark from its next
+// listing on; a call from a client session listed the old tool is
+// refused rather than run on the old mark. It validates a call's
+// arguments against the schema of the tool in force at the call, so a
+// session that never listed, which is let through, is held to the new
+// schema, not the one the stand-in was added with.
+//
+// The stand-in owns nothing, and is not an [io.Closer]: the host built
+// the tools current returns and closes them. [Unwrap] returns the tool
+// in force. current must never return nil, and a nil current panics.
+func Follow(current func() Tool) Tool {
+	if current == nil {
+		panic("agenttool.Follow: nil function")
+	}
+	return &followed{current: current}
+}
+
+// followed answers each method from the tool in force, through the
+// package's readers, as [wrapped] does from the tool it embeds.
+type followed struct {
+	current func() Tool
+}
+
+func (f *followed) Name() string                { return f.current().Name() }
+func (f *followed) Description() string         { return f.current().Description() }
+func (f *followed) Parameters() json.RawMessage { return f.current().Parameters() }
+
+func (f *followed) Execute(ctx context.Context, call Call) (Result, error) {
+	return f.current().Execute(ctx, call)
+}
+
+func (f *followed) Strict() bool             { return IsStrict(f.current()) }
+func (f *followed) Sequential() bool         { return IsSequential(f.current()) }
+func (f *followed) Annotations() Annotations { return AnnotationsOf(f.current()) }
+
+func (f *followed) Barrier() bool {
+	b, ok := f.current().(Barrier)
+	return ok && b.Barrier()
+}
+
+func (f *followed) Resource() string {
+	r, ok := f.current().(Resource)
+	if !ok {
+		return ""
+	}
+	return r.Resource()
+}
+
+func (f *followed) Confined(ctx context.Context, args json.RawMessage) (bool, string) {
+	return ConfinedBy(ctx, f.current(), args)
+}
+
+func (f *followed) Replay(ctx context.Context, args json.RawMessage) Replay {
+	return ReplayOf(ctx, f.current(), args)
+}
+
+// Facts asks the tool in force. [FactsOf] reads presence through
+// factsDeclared and then calls Facts, each asking current, so a swap
+// between the two can pair one tool's presence with another's answer,
+// as a swap between a claim and its call can decide the call on the
+// claim of a tool it does not run. Neither is made safe here: a host
+// that swaps the tool in force serialises the swap with its decisions
+// and calls, as [Follow] says.
+func (f *followed) Facts(ctx context.Context, args json.RawMessage) (Facts, error) {
+	fs, _, err := FactsOf(ctx, f.current(), args)
+	return fs, err
+}
+
+func (f *followed) factsDeclared() bool { return IsFactual(f.current()) }
+
+func (f *followed) Flow() (Flow, bool) {
+	fl, ok := f.current().(Flowing)
+	if !ok {
+		return Flow{}, false
+	}
+	return fl.Flow()
+}

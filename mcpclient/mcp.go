@@ -744,13 +744,24 @@ func (s *Remote) ServerInfo() sdk.Implementation { return s.current().serverInfo
 // Instructions returns the instructions the server gave at initialize,
 // its own account of how to use it and its tools, and "" when it gave
 // none. A host that composes servers puts them where the model reads
-// them; this package does not.
-func (s *Remote) Instructions() string {
-	res := s.current().session.InitializeResult()
-	if res == nil {
-		return ""
-	}
-	return res.Instructions
+// them; this package does not. They are text the server's author wrote,
+// so a host that offers the server's tools gives the model them for as
+// long as it offers the tools, and records them as a part of their own
+// labelled as [Remote.InstructionsReads] says. With [WithReconnect] they
+// are the restarted server's, and [ReconnectInfo.InstructionsChanged]
+// says when a restart changed them.
+func (s *Remote) Instructions() string { return s.current().instructions() }
+
+// InstructionsReads is the labels a host records the server's
+// instructions under, the reads of the part's trust in the session
+// format: [agenttool.LabelUntrusted], always, since a party other than
+// the host wrote them. Neither [WithClaims] nor [WithFactsHints] changes
+// it: taking a server's claims is believing it about what its calls
+// touch, which says nothing of whether its prose may instruct the model.
+// A host that trusts a server's instructions says so from its own
+// configuration and labels the part itself.
+func (s *Remote) InstructionsReads() []agenttool.Label {
+	return []agenttool.Label{agenttool.LabelUntrusted}
 }
 
 // Tools returns a snapshot of the server's tools as of the last listing.

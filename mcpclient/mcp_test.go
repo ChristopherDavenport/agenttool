@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1022,5 +1023,31 @@ func TestServerInfoAndInstructions(t *testing.T) {
 	}
 	if got := b.Instructions(); got != "" {
 		t.Errorf("b.Instructions = %q, want none", got)
+	}
+}
+
+// agentkit#112: a server's instructions are text a third party wrote,
+// so they are labelled untrusted whatever the host takes of the
+// server's claims: WithClaims believes what its calls touch, not its
+// prose, and a host that trusts the prose relabels from its own config.
+func TestInstructionsReads(t *testing.T) {
+	dial := func(opts ...Option) *Remote {
+		t.Helper()
+		server := sdk.NewServer(&sdk.Implementation{Name: "docs", Version: "1"}, &sdk.ServerOptions{Instructions: "Search before you read."})
+		return connect(t, server, opts...)
+	}
+	untrusted := []agenttool.Label{agenttool.LabelUntrusted}
+	for name, tc := range map[string]struct {
+		opts []Option
+		want []agenttool.Label
+	}{
+		"by default":           {want: untrusted},
+		"facts taken as hints": {opts: []Option{WithFactsHints()}, want: untrusted},
+		"claims taken":         {opts: []Option{WithClaims()}, want: untrusted},
+	} {
+		got := dial(tc.opts...).InstructionsReads()
+		if got == nil || !slices.Equal(got, tc.want) {
+			t.Errorf("%s: InstructionsReads = %#v, want %#v", name, got, tc.want)
+		}
 	}
 }

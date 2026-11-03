@@ -11,6 +11,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -365,5 +366,63 @@ func TestWrapOfAToolWithoutFactsClaimsNone(t *testing.T) {
 	f, err = w.(Factual).Facts(context.Background(), json.RawMessage(`{}`))
 	if err != nil || f.Calls != nil || f.Rewrite != nil {
 		t.Errorf("Facts = %+v, %v; want the call itself", f, err)
+	}
+}
+
+// agentkit#96: a stand-in that may change which tool it runs answers
+// every property, facts above all, from the tool a call would run at the
+// moment it is asked, never from the one it was built around.
+func TestFollowAnswersFromTheToolInForce(t *testing.T) {
+	ctx := context.Background()
+	first := &everythingTool{}
+	ran := ""
+	second := NewFunc("all", "the second", json.RawMessage(`{"type":"object","properties":{}}`),
+		func(context.Context, Call) (Result, error) { ran = "second"; return Text("second"), nil },
+		WithResource("container:2"))
+	var mu sync.Mutex
+	cur := Tool(first)
+	f := Follow(func() Tool {
+		mu.Lock()
+		defer mu.Unlock()
+		return cur
+	})
+	without := func(m map[string]any) map[string]any { delete(m, "closer"); return m }
+
+	if got, want := without(readers(ctx, f)), without(readers(ctx, first)); !reflect.DeepEqual(got, want) {
+		t.Errorf("before the swap the stand-in reads differently from the first tool\n got: %v\nwant: %v", got, want)
+	}
+	mu.Lock()
+	cur = second
+	mu.Unlock()
+	if got, want := without(readers(ctx, f)), without(readers(ctx, second)); !reflect.DeepEqual(got, want) {
+		t.Errorf("after the swap the stand-in reads differently from the tool in force\n got: %v\nwant: %v", got, want)
+	}
+	if IsFactual(f) {
+		t.Error("IsFactual follows the first tool's claim after the swap")
+	}
+	if res, err := f.Execute(ctx, Call{}); err != nil || res.Output.Text != "second" || ran != "second" {
+		t.Errorf("Execute = %+v, %v; want the tool in force run", res, err)
+	}
+	if Unwrap(f) != second {
+		t.Error("Unwrap should return the tool in force")
+	}
+	if _, ok := f.(io.Closer); ok {
+		t.Error("the stand-in owns nothing, so it is not a closer")
+	}
+	if first.closed != 0 {
+		t.Error("the stand-in closed a tool the host owns")
+	}
+}
+
+// TestFollowForwardsEveryOptionalInterface holds Follow to the promise
+// Wrap keeps: every optional interface the package declares.
+func TestFollowForwardsEveryOptionalInterface(t *testing.T) {
+	f := reflect.TypeOf(Follow(func() Tool { return &everythingTool{} }))
+	for iface, methods := range toolProperties(t) {
+		for _, m := range methods {
+			if _, ok := f.MethodByName(m); !ok {
+				t.Errorf("optional interface %s is not forwarded by Follow: it has no %s", iface, m)
+			}
+		}
 	}
 }

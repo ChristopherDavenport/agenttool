@@ -162,7 +162,55 @@ func tools() agenttool.Set {
 			func(ctx context.Context, call agenttool.Call) (agenttool.Result, error) {
 				return agenttool.Text("ok"), nil
 			}),
+		noteRead(func() {}),
 	}
+}
+
+// noteRead is a tool that makes the facts claim: a read of the note's
+// file, or, by the note's name, the call itself, nothing it can state, a
+// rewrite, a hint, or an error. ran is called when the tool runs.
+func noteRead(ran func()) agenttool.Tool {
+	type noteArgs struct {
+		Name string `json:"name,omitempty" desc:"The note's name"`
+	}
+	nameOf := func(args json.RawMessage) string {
+		var a noteArgs
+		_ = json.Unmarshal(args, &a)
+		return a.Name
+	}
+	return agenttool.New("note_read", "Read a note.",
+		func(ctx context.Context, a noteArgs) (string, error) {
+			ran()
+			return "note " + a.Name, nil
+		},
+		agenttool.WithFacts(func(_ context.Context, args json.RawMessage) (agenttool.Facts, error) {
+			name := nameOf(args)
+			read := []agenttool.FactCall{{Tool: "read", Args: json.RawMessage(`{"path":".notes/` + name + `.json"}`), Text: "read .notes/" + name + ".json"}}
+			switch name {
+			case "":
+				return agenttool.Facts{}, errors.New("no note named")
+			case "self":
+				return agenttool.Facts{}, nil
+			case "none":
+				return agenttool.Facts{Calls: []agenttool.FactCall{}}, nil
+			case "stamp":
+				return agenttool.Facts{Calls: read, Rewrite: json.RawMessage(`{"name":"stamp","stamp":"k"}`)}, nil
+			case "bad":
+				return agenttool.Facts{Calls: []agenttool.FactCall{{Tool: "read", Args: json.RawMessage(`{bad`)}}}, nil
+			case "hint":
+				return agenttool.Facts{Calls: read, Rewrite: json.RawMessage(`{"name":"hint","stamp":"k"}`), Hint: true}, nil
+			}
+			return agenttool.Facts{Calls: read}, nil
+		}),
+		agenttool.WithReplay(func(_ context.Context, args json.RawMessage) agenttool.Replay {
+			switch nameOf(args) {
+			case "safe":
+				return agenttool.ReplaySafe
+			case "keyed":
+				return agenttool.ReplayKeyed
+			}
+			return agenttool.ReplayUnknown
+		}))
 }
 
 func run(t *testing.T, stdin string, args ...string) (int, string, string) {
@@ -291,6 +339,29 @@ func TestRun(t *testing.T) {
 		{name: "a field under null", args: []string{"deploy", "--backup.host", "a", `{"target":{"host":"h"},"backup":null}`}, code: cli.ExitUsage, stderrHas: `"backup", which is not an object`},
 		{name: "a field whose name holds a dot has no flag", args: []string{"deploy", "--target.a.b", "x"}, code: cli.ExitUsage, stderrHas: "flag provided but not defined"},
 		{name: "a map of objects has no flag", args: []string{"deploy", "--extra", "a=b"}, code: cli.ExitUsage, stderrHas: "flag provided but not defined"},
+		// toolbundle#4: a command line's facts, in the shape of an
+		// execution/facts answer, without running the call.
+		{name: "facts", args: []string{"facts", "note_read", "--name", "standup"}, stdoutJSON: `{"facts":{"calls":[{"tool":"read","args":{"path":".notes/standup.json"},"text":"read .notes/standup.json"}]},"replay":"unknown"}`},
+		{name: "facts from JSON", args: []string{"facts", "note_read", `{"name":"standup"}`}, stdoutJSON: `{"facts":{"calls":[{"tool":"read","args":{"path":".notes/standup.json"},"text":"read .notes/standup.json"}]},"replay":"unknown"}`},
+		{name: "facts from stdin", stdin: `{"name":"standup"}`, args: []string{"facts", "note_read", "-"}, stdoutJSON: `{"facts":{"calls":[{"tool":"read","args":{"path":".notes/standup.json"},"text":"read .notes/standup.json"}]},"replay":"unknown"}`},
+		{name: "facts of the call itself", args: []string{"facts", "note_read", "--name", "self"}, stdoutJSON: `{"facts":{"calls":null},"replay":"unknown"}`},
+		{name: "facts of nothing the tool can state", args: []string{"facts", "note_read", "--name", "none"}, stdoutJSON: `{"facts":{"calls":[]},"replay":"unknown"}`},
+		{name: "facts with a rewrite", args: []string{"facts", "note_read", "--name", "stamp"}, stdoutJSON: `{"facts":{"calls":[{"tool":"read","args":{"path":".notes/stamp.json"},"text":"read .notes/stamp.json"}],"rewrite":{"name":"stamp","stamp":"k"}},"replay":"unknown"}`},
+		{name: "facts that are hints have no rewrite", args: []string{"facts", "note_read", "--name", "hint"}, stdoutJSON: `{"facts":{"calls":[{"tool":"read","args":{"path":".notes/hint.json"},"text":"read .notes/hint.json"}]},"hint":true,"replay":"unknown"}`},
+		{name: "facts with the call's replay", args: []string{"facts", "note_read", "--name", "safe"}, stdoutJSON: `{"facts":{"calls":[{"tool":"read","args":{"path":".notes/safe.json"},"text":"read .notes/safe.json"}]},"replay":"safe"}`},
+		{name: "facts read keyed as unknown", args: []string{"facts", "note_read", "--name", "keyed"}, stdoutJSON: `{"facts":{"calls":[{"tool":"read","args":{"path":".notes/keyed.json"},"text":"read .notes/keyed.json"}]},"replay":"unknown"}`},
+		{name: "facts that fail", args: []string{"facts", "note_read"}, code: cli.ExitFailed, stdoutJSON: `{"error":"no note named","replay":"unknown"}`, stderrHas: "Error: no note named"},
+		{name: "facts that are not JSON", args: []string{"facts", "note_read", "--name", "bad"}, code: cli.ExitFailed, stdoutHas: `"error":"the claim is not JSON`, stderrHas: "Error: the claim is not JSON"},
+		{name: "facts of a tool that makes no claim", args: []string{"facts", "read_file", "--path", "/etc/hosts"}, stdoutJSON: `{"replay":"unknown"}`},
+		{name: "facts after the program's options", args: []string{"--answer", "accept", "facts", "note_read", "--name", "a"}, stdoutHas: `.notes/a.json`},
+		{name: "facts before the program's options", args: []string{"facts", "--answer", "accept", "note_read", "--name", "a"}, stdoutHas: `.notes/a.json`},
+		{name: "facts of no command", args: []string{"facts"}, code: cli.ExitUsage, stderrHas: "facts takes a command line"},
+		{name: "facts of an unknown command", args: []string{"facts", "nope"}, code: cli.ExitUsage, stderrHas: `unknown command "nope"`},
+		{name: "facts of the program's own command", args: []string{"facts", "help"}, code: cli.ExitUsage, stderrHas: `unknown command "help"`},
+		{name: "facts of a line not understood", args: []string{"facts", "note_read", "--bogus"}, code: cli.ExitUsage, stderrHas: "-bogus"},
+		{name: "facts of a help request", args: []string{"facts", "note_read", "--help"}, code: cli.ExitUsage, stderrHas: "asks for usage"},
+		{name: "usage marks a command that claims", args: []string{"help", "note_read"}, stdoutHas: "kit facts note_read"},
+		{name: "the index marks a command that claims", args: []string{"help"}, stdoutHas: "- `note_read`: Read a note. Makes a facts claim.\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -589,10 +660,46 @@ func TestCommandsRefuses(t *testing.T) {
 		"reserved":     {ping("help")},
 		"empty name":   {ping("")},
 		"schema named": {ping("schema")},
+		"facts named":  {ping("facts")},
 	} {
 		if _, err := cli.Commands(set); err == nil {
 			t.Errorf("%s: no error", name)
 		}
+	}
+}
+
+// Answering facts never runs the tool, whatever the answer, and
+// Runner.Facts answers as the facts command does.
+func TestFactsNeverRuns(t *testing.T) {
+	ran := false
+	set := agenttool.Set{
+		noteRead(func() { ran = true }),
+		agenttool.New("plain", "", func(ctx context.Context, _ agenttool.NoArgs) (string, error) {
+			ran = true
+			return "", nil
+		}),
+	}
+	for _, args := range [][]string{
+		{"note_read", "--name", "standup"},
+		{"note_read", "--name", "self"},
+		{"note_read"},
+		{"plain"},
+	} {
+		var stdout, stderr strings.Builder
+		r := cli.Runner{Name: "kit", Tools: set, Stdin: strings.NewReader(""), Stdout: &stdout, Stderr: &stderr}
+		viaMethod := r.Facts(context.Background(), args)
+		methodOut := stdout.String()
+		stdout.Reset()
+		viaCommand := r.Run(context.Background(), append([]string{"facts"}, args...))
+		if ran {
+			t.Fatalf("%q: answering facts ran the tool", args)
+		}
+		if viaMethod != viaCommand || methodOut != stdout.String() {
+			t.Errorf("%q: Facts = %d %q, the facts command %d %q", args, viaMethod, methodOut, viaCommand, stdout.String())
+		}
+	}
+	if !cli.Describe(set[0]).Facts || cli.Describe(set[1]).Facts {
+		t.Error("Describe does not say which tool makes the facts claim")
 	}
 }
 

@@ -1,6 +1,6 @@
 # RFC 0001: Agent Tool Contract
 
-Status: draft 0.9
+Status: draft 0.10
 Author: Christopher Davenport
 Discussion: to be opened against this repository. The Go module at its
 root is the reference binding; agentturn is the reference harness.
@@ -314,6 +314,15 @@ a binding SHOULD therefore provide the wrapper, and a harness SHOULD
 use it. Dropping a property is the failure #33 describes: a wrapped
 `bash` that no longer reports sequential runs two shell commands at
 once in one working directory, and nothing fails.
+
+A tool that stands in for another and may change which tool it runs,
+such as a skill tool rebuilt when its catalogue reloads, MUST answer
+each property, facts above all, from the tool the call would run at
+that moment, never from one it ran before. Facts and execution resolve
+through the same lookup. A stand-in that answered from the tool it was
+built around would have a policy decide a call on the claim of a tool
+the call does not run: a file the new tool reads that the old one never
+claimed passes unchecked (agentkit#96).
 
 ## Arguments
 
@@ -729,6 +738,7 @@ and everything else is optional.
 | flow | `Flowing` interface, `Flow{Reads, Sends, To, Carries}` and `Label` (`LabelUntrusted`, `LabelPrivate`), read by `FlowOf(t)`, which reports presence and reads an unknown label as `LabelUntrusted`, set by `WithFlow(f)` |
 | closer | `io.Closer`; `Set.Close()` closes a list in order and joins errors; `WithCloser(fn)` makes a `New` or `NewFunc` tool one, and without it the tool is not |
 | forwarding wrapper | `Wrap(t, exec)` forwards every property of `t` and closes it; `Unwrap(t)` returns it |
+| a stand-in that changes tools | `Follow(current)` answers every property and runs every call through `current()`, the tool in force when it is asked, facts presence included; it owns nothing and closes nothing; `Unwrap` returns the tool in force |
 | call | `Call{ID, Args, IdempotencyKey, OnUpdate}`; `Call.Update` sends progress |
 | call on the context | `WithCall`, `CallFrom`; `Executor` installs it for every job |
 | result | `Result{Output, Details, Terminate}`; `Text`, `Parts`, `Output` build one |
@@ -750,10 +760,12 @@ the annotations default is the zero `Annotations` value, which a reader
 cannot tell from a tool that declared every hint false. The doc comment
 says so, and it is an open question below.
 
-The forwarding rule is bound by `Wrap`, and a test in the package reads
-its exported interfaces and refuses a new optional interface `Wrap`
-does not forward, which is how the binding stays right as properties
-are added.
+The forwarding rule is bound by `Wrap` and `Follow`, and a test in the
+package reads its exported interfaces and refuses a new optional
+interface either does not forward, which is how the binding stays right
+as properties are added. Facts presence is a method the binding keeps
+unexported, so a stand-in written outside it cannot report a claim
+that comes and goes with the tool in force; `Follow` is how one does.
 
 ### MCP
 
@@ -762,12 +774,24 @@ express. Where MCP has no field for a property, the serving side
 states it in the tool's `_meta` under one namespaced key, `ToolMetaKey`,
 as the server's statement rather than a hint, and the per-call claims
 are answered by a method of their own; a property neither carries is
-set on the local side by the host and does not cross.
+set on the local side by the host and does not cross. The serving side
+lists a tool's definition and `_meta` as the tool states them when the
+client lists, not when the tool was added, so a [stand-in that changes
+tools](#binding-and-forwarding) is listed as the tool in force, and it
+SHOULD tell its clients the tool list changed when it finds a tool
+changed since it last did, since a client lists only when it connects
+or is told to. A call from a client session that was last listed the
+tool as it was before it changed was decided on that listing, which may
+lack a claim the tool now makes; the serving side SHOULD refuse it, with
+an error telling the client to list again, and not run it. The check
+is per session: another client's listing says nothing of this one's,
+and a session that never listed the tool has nothing to be stale
+against.
 
 | Contract | MCP | Direction |
 | --- | --- | --- |
 | name, description | `name`, `description`; a consumed tool is named `<prefix>__<name>`, the prefix and two underscores before its name on the server, when the host gives a prefix, `mcpclient.WithPrefix`, and `<name>` otherwise, so two servers' tools of one name do not collide in a request | both |
-| instructions | no field in the contract: a tool set has no description. The serving host gives them when it builds the server, `mcpserver.Options.Instructions`; the consuming side exposes them to the host, `mcpclient.Remote.Instructions`, which decides whether the model reads them | both |
+| instructions | no field in the contract: a tool set has no description. The serving host gives them when it builds the server, `mcpserver.Options.Instructions`; the consuming side exposes them to the host, `mcpclient.Remote.Instructions`, which decides whether the model reads them. They are text the server's author wrote. A host that offers a consumed server's tools to a model SHOULD give the model the server's instructions for as long as it offers those tools, and SHOULD stop when it stops offering them. A host that records instructions as parts SHOULD record them as a part of their own, labelled `untrusted` unless the host trusts the server, so that whatever reads the record by trust reads them as it would a tool's untrusted output. Taking a server's claims is believing it about what its calls touch, and is not trusting its instructions: a host trusts those by its own configuration, never because it takes the claims. The consuming side gives the label, `mcpclient.Remote.InstructionsReads`, always `untrusted`, for the host to keep or relabel; and says when a restarted server gave other instructions, `ReconnectInfo.InstructionsChanged`, so the host gives the model the new ones | both |
 | parameters | `inputSchema`; a nil schema is served as an empty object schema | both |
 | strict | no field; not carried | — |
 | sequential, barrier, resource | no field in MCP; the serving side puts them in the tool's `_meta` under `ToolMetaKey` (`sequential`, `barrier`, `resource`), and the consuming side declares them from there. A barrier is served with `sequential` beside it, so a consumer that predates barriers runs its batch one call at a time, stricter and never looser; a consumer that reads `barrier` takes the tool as a barrier alone. `mcpclient.WithSequential(names…)` adds sequential, `WithBarrier(names…)` adds barrier, and `WithResource(resource, names…)` names a remote tool's state and wins over the server's, an empty resource withdrawing it, since the host sees every server it composes and the server only itself | both |
@@ -963,6 +987,27 @@ runs it again. A question after the last
 at the terminal when the program has one, whose answer names `human`;
 input that ends before they answer is a *cancel* that names nobody.
 
+A program SHOULD answer a command line's [facts](#properties) without
+running it: `facts` followed by a command line the program would run,
+its options included, parses that line as the command does, never runs
+the tool, and writes on stdout one JSON object in the shape of an
+`execution/facts` answer ([MCP](#mcp)). It holds `facts`, with `calls`,
+`null` for the call itself and `[]` for nothing the tool can state, and
+`rewrite` when there is one; `hint: true` beside it when the facts are
+hints, whose rewrite is never written; `error` in its place when the
+claim failed, with status 1 and the error on stderr as the error
+convention renders it, since nothing can be said about the call;
+neither for a tool that makes no claim, with status 0; and `replay`, the
+tool's answer for the call, *keyed* written as *unknown* since a
+command line carries no idempotency key. A line the program does not
+understand ends with status 2 and nothing on stdout. A program's usage
+MUST mark each command whose tool makes the facts claim, which is the
+presence a reader sees without asking about a call, whether or not the
+program answers `facts`. `facts` is a command of the program's own, as
+`help` and `schema` are, and no tool takes its name. A host that reads
+the shell can then decide a call through a program on what it touches,
+as it would the same tool in process or over MCP.
+
 ## Schema generation
 
 A binding that builds a tool from a typed function generates the
@@ -1131,7 +1176,8 @@ owns; declares sequential or a resource if two of its calls must not
 overlap; declares a closer if it owns something beyond a call; answers
 *safe* only for a call whose second run has no further effect, and
 *keyed* only when it deduplicates on the key; acts on nothing while it
-answers facts; and reports every property of a tool it wraps.
+answers facts; and reports every property of a tool it wraps, from
+the tool a call would run when it may change which tool that is.
 
 **A conforming harness** offers a set of tools with distinct names;
 hands each call its arguments as a JSON object, `{}` when empty, and
@@ -1156,6 +1202,12 @@ source it does not trust only as hints, and replay from one as
 
 **A conforming adapter** maps each row of its binding table and adds
 nothing the contract cannot express.
+
+**A conforming command-line program** runs one call per process and
+reports it with the exit statuses of [Command line](#command-line);
+marks in its usage each command whose tool makes the facts claim; and,
+when it answers `facts`, answers in the shape of an `execution/facts`
+answer and never runs the tool to do so.
 
 **A conforming schema generator** produces, for every fixture in
 `testdata/schema/manifest.json`, the bytes of that fixture's golden
@@ -1237,6 +1289,39 @@ module and is listed in the changelog as one.
   differ, `retryable` with a not-before time in a `_meta` block, a
   rate-limit error code, so it waits for one to settle. The MCP
   client handles its own transport failures meanwhile.
+
+## Changes since 0.9
+
+- The command line carries **facts** (toolbundle#4). A program SHOULD
+  answer `facts <command line>` without running the call, on stdout in
+  the shape of an `execution/facts` answer, with status 1 and `error`
+  for a claim that failed and status 2 for a line not understood; its
+  usage MUST mark each command whose tool makes the claim, the presence
+  the [facts](#properties) property requires a binding to show. At 0.9
+  the binding carried no facts at all, so one tool set gave a policy a
+  different answer through a shell than in process or over MCP.
+  `facts` joins `help` and `schema` as a command of the program's own.
+  Conformance gains a conforming command-line program.
+- **Binding and forwarding** gains a MUST for a stand-in that may change
+  which tool it runs (agentkit#96): it answers each property, facts
+  above all, from the tool the call would run at that moment, and facts
+  and execution resolve through the same lookup, so a stale claim never
+  decides a call. A harness that reads facts by default, as agentpolicy
+  does from v0.0.18, otherwise decided a reloaded skill tool's calls on
+  the catalogue it was first built from. The Go binding is `Follow`.
+  Over MCP the serving side lists a tool as it is when the client
+  lists, SHOULD say the list changed when it finds a tool changed, and
+  SHOULD refuse a call from a session last listed the tool as it was
+  before, so a served stand-in's calls are not decided on the facts
+  mark it was added with.
+- **MCP instructions** gain SHOULDs (agentkit#112): a host that
+  offers a consumed server's tools gives the model the server's
+  instructions for as long as it offers them, and stops when it stops;
+  and a host that records them does so as a part of their own, labelled
+  `untrusted` unless it trusts the server, which taking the server's
+  claims does not say. At 0.9 the consuming host
+  only decided whether the model read them, so a host could drop them,
+  or record a third party's text as its own.
 
 ## Changes since 0.8
 

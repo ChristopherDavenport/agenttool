@@ -5,6 +5,62 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Added: the command line answers a call's facts without running it
+  (toolbundle#4). `program facts <command line>`, or `cli.Runner.Facts`
+  for a program that dispatches its own commands, parses the line as the
+  call would and prints the tool's claim as one JSON object in the shape
+  of an `execution/facts` answer, `{"facts": {"calls": …, "rewrite": …},
+  "hint": …, "replay": …}`; a tool that makes no claim has no `facts`, a
+  claim that failed has `error` and status 1, and a line not understood
+  status 2. `cli.Command.Facts` says whether a command's tool makes the
+  claim, and the usage marks each one that does. Before, the command
+  line carried no facts, so a host reading the shell decided a bundle's
+  calls by name. RFC 0001 draft 0.10 states the rule under Command line
+  and adds a conforming command-line program.
+- Changed: `cli.Commands` refuses a tool named `facts`, which is now a
+  command of the program's own, as `help` and `schema` are. A breaking
+  change for a set with a tool of that name.
+- Added: `Follow(current)`, a stand-in for whichever tool `current`
+  returns when it is asked (agentkit#96). Every property, the facts
+  claim and its presence above all, and every call resolve through
+  `current`, so a host that swaps a tool, as agentkit's `ReloadSkills`
+  swaps its skill tool, never has a call decided on the claim of a tool
+  it no longer runs. `Wrap` around the first tool with an exec that runs
+  the one in force answered from the first, and a stand-in written
+  outside the package could not follow facts presence, which the
+  package keeps unexported. It owns nothing and is not a closer;
+  `Unwrap` returns the tool in force. RFC 0001 draft 0.10 states the
+  rule under Binding and forwarding.
+- Fixed: mcpserver lists a tool as it is when a client lists, not as
+  it was when `AddTools` added it, and a call of a tool whose definition
+  or properties changed since adds it again, so the SDK tells every
+  client the list changed. A served `Follow` tool that gained a facts
+  claim kept the listing it was added with, so a client that takes the
+  server's claims never asked for it and decided the calls by name, the
+  agentkit#96 failure over MCP. A call from a client session last
+  listed the tool as it was before the change is refused, as an error
+  result telling it to list again, and not run, since it was decided
+  on that listing; the check is per session, and a session that never
+  listed, as over stateless HTTP, runs.
+- Fixed: mcpserver validates a call's arguments against the schema the
+  tool gives at the call, resolved again only when it changes, not the
+  one it had when its handler was built. A served `Follow` tool whose
+  schema changed was held to the old one for every call.
+- Added: mcpclient's `Remote.InstructionsReads`, the labels a host
+  records a server's instructions under (agentkit#112): always
+  `untrusted`, since a third party wrote them. `WithClaims` does not
+  change it, since believing a server about what its calls touch is not
+  trusting its prose; a host that trusts the instructions relabels them
+  from its own configuration. `ReconnectInfo.InstructionsChanged` says a restarted server gave
+  other instructions, so a host that gives the model them, or records
+  them as a part, takes the new ones. RFC 0001 draft 0.10 adds the
+  SHOULDs to the MCP `instructions` row: a host that offers a server's
+  tools gives the model its instructions while it offers them, and
+  records them as a part of their own, labelled `untrusted` unless it
+  trusts the server.
+
 ## v0.0.28 - 2026-11-02
 
 - Added: `Answer.By`, who gave an answer, in the session format's terms:

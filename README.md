@@ -112,6 +112,22 @@ audited := agenttool.Wrap(bash, func(ctx context.Context, call agenttool.Call) (
 // all answer as they do for bash; Unwrap(audited) is bash.
 ```
 
+`Wrap` stands in for one tool. A stand-in that runs whichever tool is
+in force, such as a skill tool a host rebuilds when its catalogue
+reloads, is built with `Follow`, which answers every property and runs
+every call through the tool its function returns at that moment. A
+`Wrap` around the first tool would keep answering that tool's facts
+claim, and a policy that reads facts would decide the new tool's calls
+on it:
+
+```go
+skill := agenttool.Follow(func() agenttool.Tool {
+	mu.Lock()
+	defer mu.Unlock()
+	return current // replaced on reload
+})
+```
+
 The contract itself, language-neutral, is
 [RFC 0001](docs/rfcs/0001-tool-contract.md): what a definition is and
 how it is hashed, which properties a tool may declare and what each
@@ -407,7 +423,13 @@ A tool set has no description in the contract, but a server has
 instructions: what it is for and how its tools go together.
 `mcpserver.Options{Instructions: …}.NewServer` serves them at
 initialize, and `mcpclient.Remote.Instructions` reads them; the host
-decides whether the model does.
+decides whether the model does. A host that offers the server's tools
+gives the model the instructions for as long as it offers them. They
+are a third party's text, so a host that records them as a part labels
+it with `Remote.InstructionsReads`, which is `untrusted` whatever the
+host takes of the server's claims: a host that trusts the prose
+relabels it from its own configuration. `ReconnectInfo.InstructionsChanged`
+says a restarted server gave other instructions.
 
 Roots and logging are the host's too, and `mcpclient` offers neither
 unless the host takes part: `WithRoots` offers the directories a server
@@ -647,6 +669,18 @@ with status 4 and the tool's outcome, since it has run. A program that knows a
 person is at the terminal sets `Ask: cli.Prompt(os.Stdin, os.Stderr)`
 instead, or `cli.PromptNotes` to ask for a note with each answer. `--record` appends the call's records to a file
 as JSON lines.
+
+A tool's facts claim crosses the shell too. `file-tools facts read_file
+--path go.mod` parses the rest of the line as the call would, never runs
+the tool, and prints the claim as one JSON object in the shape of MCP's
+`execution/facts` answer: `{"facts": {"calls": […], "rewrite": …},
+"replay": "unknown"}`, with no `facts` for a tool that makes no claim
+and status 1 with `error` for a claim that failed. A host that reads the
+shell decides the call on what it touches, as it would in process or
+over MCP, rather than on the command's name. The usage marks each
+command whose tool makes the claim. `cli.Runner.Facts` is the same
+answer for a program that dispatches its own commands, and `facts`, like
+`help` and `schema`, is a name no tool may take.
 
 `cli.Markdown` renders how to call each command, from the same
 description the parser reads. A skill that teaches a model the program

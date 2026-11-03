@@ -100,6 +100,11 @@ type ReconnectInfo struct {
 	// Before and After are the local names of the tools before and
 	// after the restart, sorted.
 	Before, After []string
+	// InstructionsChanged says the restarted server gave other
+	// instructions at initialize than the session before it, so a host
+	// that gives the model [Remote.Instructions], or records them, takes
+	// the new ones.
+	InstructionsChanged bool
 }
 
 // WithReconnected sets the function called after each attempt to
@@ -178,6 +183,16 @@ func (l *link) endedWithin(ctx context.Context, d time.Duration) bool {
 	case <-ctx.Done():
 	}
 	return l.isEnded()
+}
+
+// instructions are the server's instructions as it gave them at
+// initialize, "" for none.
+func (l *link) instructions() string {
+	res := l.session.InitializeResult()
+	if res == nil {
+		return ""
+	}
+	return res.Instructions
 }
 
 // serverInfo is the server's implementation as it gave it at initialize.
@@ -349,10 +364,11 @@ func (s *Remote) reconnect(ctx context.Context, old *link) (*link, ReconnectInfo
 		return nil, ReconnectInfo{}, err
 	}
 	return l, ReconnectInfo{
-		Server:  l.serverInfo(),
-		Changed: !maps.Equal(before, after),
-		Before:  slices.Sorted(maps.Keys(before)),
-		After:   slices.Sorted(maps.Keys(after)),
+		Server:              l.serverInfo(),
+		Changed:             !maps.Equal(before, after),
+		Before:              slices.Sorted(maps.Keys(before)),
+		After:               slices.Sorted(maps.Keys(after)),
+		InstructionsChanged: l.instructions() != old.instructions(),
 	}, nil
 }
 

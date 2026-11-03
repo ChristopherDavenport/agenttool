@@ -59,7 +59,7 @@ func writeCalling(b *strings.Builder, program string) {
 	fmt.Fprintf(b, "- 2: the command did not run, because the command line was not understood or the program could not start it, and stderr says why.\n")
 	fmt.Fprintf(b, "- 3: the tool asked the user a question that nobody answered, and was told it was cancelled. Stdout holds the question as JSON, with what the tool returned; its `schema` is the form it asks for, and null when it asks only yes or no. Ask the user, then run the same command again with `--answer` before the command name: `--answer accept`, `--answer decline`, `--answer '{...}'` with the fields the form defines and no others, or `--answer '{\"action\": \"decline\", \"note\": \"...\"}'` to pass on what the user said with their answer, with `\"content\"` holding the form's fields on an accept. A command that asks again needs every earlier answer again, in the order given.\n")
 	fmt.Fprintf(b, "- 4: an `--answer` did not answer its question: it gave a field the question's schema does not define, or a value it refuses. The command ran, and the tool was told the answer could not be given and may have acted. Stdout holds the question as JSON with `refused`, why, and what the tool returned. Check what it did before running the command again with an answer that fits.\n\n")
-	fmt.Fprintf(b, "A file a command produces, such as an image, is written to disk and its path printed. `%s help <command>` prints one command's usage and `%s schema <command>` its JSON Schema.\n", program, program)
+	fmt.Fprintf(b, "A file a command produces, such as an image, is written to disk and its path printed. `%s help <command>` prints one command's usage and `%s schema <command>` its JSON Schema. `%s facts <command> ...`, with the command line you would run, prints as JSON what that call would touch, without running it, for a command that makes a facts claim.\n", program, program, program)
 }
 
 // writeCommand writes one command's section: its description and
@@ -67,11 +67,14 @@ func writeCalling(b *strings.Builder, program string) {
 func writeCommand(b *strings.Builder, program string, c Command) {
 	fmt.Fprintf(b, "### `%s`\n\n", c.Name)
 	desc := strings.TrimSpace(c.Description)
-	if hints := hintsOf(c.Annotations); hints != "" {
+	for _, extra := range []string{hintsOf(c.Annotations), factsOf(program, c)} {
+		if extra == "" {
+			continue
+		}
 		if desc != "" {
 			desc += "\n\n"
 		}
-		desc += hints
+		desc += extra
 	}
 	if desc != "" {
 		b.WriteString(desc)
@@ -88,17 +91,35 @@ func writeCommand(b *strings.Builder, program string, c Command) {
 }
 
 // writeIndex writes the list of commands with the first line of each
-// description, for help with no command named.
+// description, for help with no command named, marking each that makes
+// the facts claim.
 func writeIndex(b *strings.Builder, cmds []Command) {
 	b.WriteString("\n## Commands\n\n")
 	for _, c := range cmds {
 		line, _, _ := strings.Cut(strings.TrimSpace(c.Description), "\n")
+		if c.Facts {
+			line = strings.TrimSpace(line + " " + factsMark)
+		}
 		if line == "" {
 			fmt.Fprintf(b, "- `%s`\n", c.Name)
 			continue
 		}
 		fmt.Fprintf(b, "- `%s`: %s\n", c.Name, line)
 	}
+}
+
+// factsMark is how the usage marks a command whose tool makes the facts
+// claim, which is the presence a reader of the usage sees without
+// asking about a call.
+const factsMark = "Makes a facts claim."
+
+// factsOf marks a command whose tool makes the facts claim and says how
+// to ask, or is empty for one that does not.
+func factsOf(program string, c Command) string {
+	if !c.Facts {
+		return ""
+	}
+	return fmt.Sprintf("%s `%s facts %s ...`, with the rest of the command line, prints what the call would touch without running it.", factsMark, program, c.Name)
 }
 
 // synopsis is the command line with every flag: required ones bare,
