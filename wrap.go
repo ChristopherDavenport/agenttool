@@ -235,8 +235,12 @@ func (f *followed) Replay(ctx context.Context, args json.RawMessage) Replay {
 	return ReplayOf(ctx, f.current(), args)
 }
 
-// Facts asks the tool in force once, so its presence and its answer
-// come from one tool even if current changes meanwhile.
+// Facts asks the tool in force. [FactsOf] reads presence through
+// factsDeclared and then calls Facts, each asking current, so a swap
+// between the two can pair one tool's presence with another's answer.
+// Either way is safe: a tool in force that makes no claim answers the
+// zero Facts, which reads as the call itself, as no claim does, and a
+// presence of false is a call decided on its own arguments.
 func (f *followed) Facts(ctx context.Context, args json.RawMessage) (Facts, error) {
 	fs, _, err := FactsOf(ctx, f.current(), args)
 	return fs, err
