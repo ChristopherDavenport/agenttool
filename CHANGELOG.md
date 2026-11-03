@@ -34,10 +34,11 @@ versions may break the API.
   `Unwrap` returns the tool in force. RFC 0001 draft 0.10 states the
   rule under Binding and forwarding.
 - Added: mcpclient's `Remote.InstructionsReads`, the labels a host
-  records a server's instructions under (agentkit#112): `untrusted`,
-  since a third party wrote them, unless the host takes the server's
-  claims with `WithClaims`, its word that it trusts the server, and then
-  none. `ReconnectInfo.InstructionsChanged` says a restarted server gave
+  records a server's instructions under (agentkit#112): always
+  `untrusted`, since a third party wrote them. `WithClaims` does not
+  change it, since believing a server about what its calls touch is not
+  trusting its prose; a host that trusts the instructions relabels them
+  from its own configuration. `ReconnectInfo.InstructionsChanged` says a restarted server gave
   other instructions, so a host that gives the model them, or records
   them as a part, takes the new ones. RFC 0001 draft 0.10 adds the
   SHOULDs to the MCP `instructions` row: a host that offers a server's

@@ -1027,9 +1027,9 @@ func TestServerInfoAndInstructions(t *testing.T) {
 }
 
 // agentkit#112: a server's instructions are text a third party wrote,
-// so a host records them labelled untrusted unless it trusts the
-// server, which it says with WithClaims. Facts taken as hints are no
-// trust.
+// so they are labelled untrusted whatever the host takes of the
+// server's claims: WithClaims believes what its calls touch, not its
+// prose, and a host that trusts the prose relabels from its own config.
 func TestInstructionsReads(t *testing.T) {
 	dial := func(opts ...Option) *Remote {
 		t.Helper()
@@ -1043,7 +1043,7 @@ func TestInstructionsReads(t *testing.T) {
 	}{
 		"by default":           {want: untrusted},
 		"facts taken as hints": {opts: []Option{WithFactsHints()}, want: untrusted},
-		"a trusted server":     {opts: []Option{WithClaims()}, want: []agenttool.Label{}},
+		"claims taken":         {opts: []Option{WithClaims()}, want: untrusted},
 	} {
 		got := dial(tc.opts...).InstructionsReads()
 		if got == nil || !slices.Equal(got, tc.want) {

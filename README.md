@@ -426,8 +426,9 @@ initialize, and `mcpclient.Remote.Instructions` reads them; the host
 decides whether the model does. A host that offers the server's tools
 gives the model the instructions for as long as it offers them. They
 are a third party's text, so a host that records them as a part labels
-it with `Remote.InstructionsReads`: `untrusted`, unless the host took
-the server's claims with `WithClaims`. `ReconnectInfo.InstructionsChanged`
+it with `Remote.InstructionsReads`, which is `untrusted` whatever the
+host takes of the server's claims: a host that trusts the prose
+relabels it from its own configuration. `ReconnectInfo.InstructionsChanged`
 says a restarted server gave other instructions.
 
 Roots and logging are the host's too, and `mcpclient` offers neither
