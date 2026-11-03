@@ -780,7 +780,13 @@ client lists, not when the tool was added, so a [stand-in that changes
 tools](#binding-and-forwarding) is listed as the tool in force, and it
 SHOULD tell its clients the tool list changed when it finds a tool
 changed since it last did, since a client lists only when it connects
-or is told to.
+or is told to. A call from a client session that was last listed the
+tool as it was before it changed was decided on that listing, which may
+lack a claim the tool now makes; the serving side SHOULD refuse it, with
+an error telling the client to list again, and not run it. The check
+is per session: another client's listing says nothing of this one's,
+and a session that never listed the tool has nothing to be stale
+against.
 
 | Contract | MCP | Direction |
 | --- | --- | --- |
@@ -1304,8 +1310,10 @@ module and is listed in the changelog as one.
   does from v0.0.18, otherwise decided a reloaded skill tool's calls on
   the catalogue it was first built from. The Go binding is `Follow`.
   Over MCP the serving side lists a tool as it is when the client
-  lists, and SHOULD say the list changed when it finds a tool changed,
-  so a served stand-in's facts mark is not the one it was added with.
+  lists, SHOULD say the list changed when it finds a tool changed, and
+  SHOULD refuse a call from a session last listed the tool as it was
+  before, so a served stand-in's calls are not decided on the facts
+  mark it was added with.
 - **MCP instructions** gain SHOULDs (agentkit#112): a host that
   offers a consumed server's tools gives the model the server's
   instructions for as long as it offers them, and stops when it stops;

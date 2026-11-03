@@ -218,8 +218,12 @@ func (o Options) NewServer(name, version string, tools ...agenttool.Tool) (*sdk.
 // flow and annotations. A call of a tool whose definition changed since
 // it was last added adds it again, which has the server tell every
 // client that the list changed, so a client that lists on the
-// notification asks for the new tool's claim on its next call. The call
-// that finds the change was decided on the listing the client had.
+// notification asks for the new tool's claim on its next call. A client
+// session that listed the tool before it changed decided its call on
+// that listing, so the call is refused, as an error result telling it
+// to list again, and is not run; one that listed since runs, and one
+// that never listed, as over stateless HTTP, has nothing to be stale
+// against and runs too.
 func AddTools(s *sdk.Server, tools ...agenttool.Tool) error {
 	return Options{}.AddTools(s, tools...)
 }

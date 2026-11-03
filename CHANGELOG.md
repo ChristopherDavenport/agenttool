@@ -39,8 +39,11 @@ versions may break the API.
   client the list changed. A served `Follow` tool that gained a facts
   claim kept the listing it was added with, so a client that takes the
   server's claims never asked for it and decided the calls by name, the
-  agentkit#96 failure over MCP. The call that finds the change was
-  decided on the client's older listing.
+  agentkit#96 failure over MCP. A call from a client session last
+  listed the tool as it was before the change is refused, as an error
+  result telling it to list again, and not run, since it was decided
+  on that listing; the check is per session, and a session that never
+  listed, as over stateless HTTP, runs.
 - Added: mcpclient's `Remote.InstructionsReads`, the labels a host
   records a server's instructions under (agentkit#112): always
   `untrusted`, since a third party wrote them. `WithClaims` does not

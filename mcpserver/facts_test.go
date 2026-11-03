@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -670,15 +671,16 @@ func TestListingReadsTheToolInForce(t *testing.T) {
 	}
 }
 
-// A request for a served tool whose properties changed since it was
-// listed tells clients the list changed, so a client that lists on the
+// A call of a served tool whose properties changed since it was listed
+// tells clients the list changed, so a client that lists on the
 // notification reads the tool in force without being told to refresh.
+// The call itself was decided on the old listing, and is refused.
 func TestDriftNotifiesListChanged(t *testing.T) {
 	client, swap := followServer(t)
 	swap()
 	tl, _ := agenttool.Set(client.Tools()).Lookup("skill")
-	if _, err := tl.Execute(context.Background(), agenttool.Call{ID: "c", Args: json.RawMessage(`{}`)}); err != nil {
-		t.Fatal(err)
+	if _, err := tl.Execute(context.Background(), agenttool.Call{ID: "c", Args: json.RawMessage(`{}`)}); err == nil {
+		t.Fatal("a call decided on the old listing ran")
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for !claimsRead(client) {
@@ -687,5 +689,42 @@ func TestDriftNotifiesListChanged(t *testing.T) {
 		}
 		_ = client.Await(context.Background())
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// swappable serves one Follow tool on server and returns the function
+// that puts next in force.
+func swappable(t *testing.T, first agenttool.Tool) (*sdk.Server, func(next agenttool.Tool)) {
+	t.Helper()
+	var cur atomic.Pointer[agenttool.Tool]
+	cur.Store(&first)
+	server := newServer(t, "skills", agenttool.Follow(func() agenttool.Tool { return *cur.Load() }))
+	return server, func(next agenttool.Tool) { cur.Store(&next) }
+}
+
+// A client session that listed a tool before it changed is refused a
+// call of it and told to list again, since it decided the call on the
+// old listing; one that listed since runs it. The check is per session,
+// not server-wide.
+func TestStaleSessionRefused(t *testing.T) {
+	run := func(context.Context, agenttool.Call) (agenttool.Result, error) { return agenttool.Text("ran"), nil }
+	plain := agenttool.NewFunc("skill", "Load a skill.", nil, run)
+	claiming := agenttool.NewFunc("skill", "Load a skill.", nil, run,
+		agenttool.WithFacts(func(context.Context, json.RawMessage) (agenttool.Facts, error) { return agenttool.Facts{}, nil }))
+	server, swap := swappable(t, plain)
+	stale := roundTrip(t, server, mcpclient.WithClaims())
+	fresh := roundTrip(t, server, mcpclient.WithClaims())
+	staleTool, _ := agenttool.Set(stale.Tools()).Lookup("skill")
+	swap(claiming)
+	if err := fresh.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	call := agenttool.Call{ID: "c", Args: json.RawMessage(`{}`)}
+	if _, err := staleTool.Execute(context.Background(), call); err == nil || !strings.Contains(err.Error(), "list") {
+		t.Errorf("the stale session's call: err = %v; want a refusal saying to list again", err)
+	}
+	freshTool, _ := agenttool.Set(fresh.Tools()).Lookup("skill")
+	if res, err := freshTool.Execute(context.Background(), call); err != nil || res.Output.Text != "ran" {
+		t.Errorf("the re-listed session's call: %+v, %v; want it run", res, err)
 	}
 }

@@ -199,7 +199,11 @@ func serveFacts(s *sdk.Server, tools []agenttool.Tool, l *listing) error {
 				case *sdk.DiscoverResult:
 					advertise(r.Capabilities)
 				case *sdk.ListToolsResult:
-					l.current(r)
+					var session *sdk.ServerSession
+					if lr, ok := req.(*sdk.ListToolsRequest); ok {
+						session = lr.Session
+					}
+					l.current(session, r)
 				}
 			}
 			return res, err
@@ -330,6 +334,14 @@ func claimOf(f agenttool.Facts) *factsClaim {
 // and, when it changed, adds it again, which has the SDK send every
 // client a tool-list-changed notification, since a client lists only
 // when it connects or is told to.
+//
+// A client session that listed a tool and calls it after it changed
+// decided the call on what it listed, which may lack the claim the tool
+// now makes, so the call is refused and the client told to list again.
+// The listing each session was last given is kept per session, so one
+// client's re-listing never stands for another's; a session that never
+// listed, as over stateless HTTP, where a session lasts one request, has
+// nothing to be stale against and is let through.
 type listing struct {
 	server *sdk.Server
 	byName map[string]agenttool.Tool
@@ -339,10 +351,13 @@ type listing struct {
 	// JSON, and handlers the handler it was added with.
 	added    map[string]string
 	handlers map[string]sdk.ToolHandler
+	// listed is, per client session, each tool's definition as that
+	// session was last listed it, dropped when the session ends.
+	listed map[*sdk.ServerSession]map[string]string
 }
 
 func newListing(s *sdk.Server, tools []agenttool.Tool) *listing {
-	l := &listing{server: s, byName: make(map[string]agenttool.Tool, len(tools)), added: map[string]string{}, handlers: map[string]sdk.ToolHandler{}}
+	l := &listing{server: s, byName: make(map[string]agenttool.Tool, len(tools)), added: map[string]string{}, handlers: map[string]sdk.ToolHandler{}, listed: map[*sdk.ServerSession]map[string]string{}}
 	for _, tl := range tools {
 		l.byName[tl.Name()] = tl
 	}
@@ -354,7 +369,12 @@ func newListing(s *sdk.Server, tools []agenttool.Tool) *listing {
 func (l *listing) add(tl agenttool.Tool, h sdk.ToolHandler) {
 	name := tl.Name()
 	checked := func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
-		l.check(name)
+		key := l.check(name)
+		if req.Params.RequestState == "" && l.stale(req.Session, name, key) {
+			// A call that resumes one already running was let in when
+			// it began.
+			return errorResult(fmt.Errorf("tool %q changed since this client listed it, so the call was decided on the old listing and was not run; list the tools again and decide the call anew", name)), nil
+		}
 		return h(ctx, req)
 	}
 	def := Definition(tl)
@@ -369,18 +389,53 @@ func (l *listing) add(tl agenttool.Tool, h sdk.ToolHandler) {
 // handler the server routes the name's calls to calls it, which is the
 // one added last, so a layer whose tool another AddTools replaced never
 // adds its own back.
-func (l *listing) check(name string) {
+// It returns the definition's key as it is now.
+func (l *listing) check(name string) string {
 	def := Definition(l.byName[name])
 	key := definitionKey(def)
 	l.mu.Lock()
 	if l.added[name] == key {
 		l.mu.Unlock()
-		return
+		return key
 	}
 	l.added[name] = key
 	h := l.handlers[name]
 	l.mu.Unlock()
 	l.server.AddTool(def, h)
+	return key
+}
+
+// stale reports whether session was last listed the tool name with a
+// definition other than key. A session that never listed it is not.
+func (l *listing) stale(session *sdk.ServerSession, name, key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	was, ok := l.listed[session][name]
+	return ok && was != key
+}
+
+// record keeps what session was listed, and forgets the session when it
+// ends.
+func (l *listing) record(session *sdk.ServerSession, keys map[string]string) {
+	if session == nil || len(keys) == 0 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	seen, ok := l.listed[session]
+	if !ok {
+		seen = map[string]string{}
+		l.listed[session] = seen
+		go func() {
+			_ = session.Wait()
+			l.mu.Lock()
+			delete(l.listed, session)
+			l.mu.Unlock()
+		}()
+	}
+	for name, key := range keys {
+		seen[name] = key
+	}
 }
 
 // current puts in r the definitions of the tools this layer serves as
@@ -388,7 +443,10 @@ func (l *listing) check(name string) {
 // it lists the same values again; what [Definition] does not set, an
 // output schema or icons, is kept. A layer added later wraps this one,
 // so it rewrites last and a name added twice is listed as added last.
-func (l *listing) current(r *sdk.ListToolsResult) {
+// What session is listed is recorded for [listing.stale].
+func (l *listing) current(session *sdk.ServerSession, r *sdk.ListToolsResult) {
+	keys := map[string]string{}
+	defer func() { l.record(session, keys) }()
 	for i, t := range r.Tools {
 		if t == nil {
 			continue
@@ -398,6 +456,7 @@ func (l *listing) current(r *sdk.ListToolsResult) {
 			continue
 		}
 		def := Definition(tl)
+		keys[t.Name] = definitionKey(def)
 		c := *t
 		c.Title, c.Description, c.InputSchema, c.Annotations, c.Meta = def.Title, def.Description, def.InputSchema, def.Annotations, def.Meta
 		r.Tools[i] = &c
