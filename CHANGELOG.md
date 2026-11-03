@@ -5,7 +5,7 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
-## Unreleased
+## v0.0.29 - 2026-11-03
 
 - Added: the command line answers a call's facts without running it
   (toolbundle#4). `program facts <command line>`, or `cli.Runner.Facts`
