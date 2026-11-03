@@ -241,10 +241,11 @@ func (f *followed) Replay(ctx context.Context, args json.RawMessage) Replay {
 
 // Facts asks the tool in force. [FactsOf] reads presence through
 // factsDeclared and then calls Facts, each asking current, so a swap
-// between the two can pair one tool's presence with another's answer.
-// Either way is safe: a tool in force that makes no claim answers the
-// zero Facts, which reads as the call itself, as no claim does, and a
-// presence of false is a call decided on its own arguments.
+// between the two can pair one tool's presence with another's answer,
+// as a swap between a claim and its call can decide the call on the
+// claim of a tool it does not run. Neither is made safe here: a host
+// that swaps the tool in force serialises the swap with its decisions
+// and calls, as [Follow] says.
 func (f *followed) Facts(ctx context.Context, args json.RawMessage) (Facts, error) {
 	fs, _, err := FactsOf(ctx, f.current(), args)
 	return fs, err
