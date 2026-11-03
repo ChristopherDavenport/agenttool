@@ -73,7 +73,8 @@ const (
 // appends every [agenttool.Record] the call writes to a file as JSON
 // lines; --out is where files the output carries are written. The
 // commands help and schema print a command's usage and its JSON
-// Schema.
+// Schema, and facts what a command line would touch without running
+// it; see [Runner.Facts].
 //
 // Run is one call, so it closes nothing: the program that built the
 // tools closes them when Run returns, with [agenttool.Set.Close].
@@ -103,35 +104,21 @@ type Runner struct {
 // signal.NotifyContext does on an interrupt, is the interrupt the tool
 // receives.
 func (r Runner) Run(ctx context.Context, args []string) int {
-	if r.Stdin == nil {
-		r.Stdin = os.Stdin
-	}
-	if r.Stdout == nil {
-		r.Stdout = os.Stdout
-	}
-	if r.Stderr == nil {
-		r.Stderr = os.Stderr
-	}
+	r = r.streams()
 	cmds, err := Commands(r.Tools)
 	if err != nil {
 		fmt.Fprintln(r.Stderr, err)
 		return ExitUsage
 	}
 
-	opts := flag.NewFlagSet(r.Name, flag.ContinueOnError)
-	opts.SetOutput(io.Discard)
-	var answers answerList
-	opts.Var(&answers, "answer", "")
-	record := opts.String("record", "", "")
-	out := opts.String("out", "", "")
-	if err := opts.Parse(args); err != nil {
+	opts, rest, err := r.options(args)
+	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			r.help(r.Stdout, cmds)
 			return ExitOK
 		}
 		return r.usage(err.Error())
 	}
-	rest := opts.Args()
 	if len(rest) == 0 {
 		r.help(r.Stderr, cmds)
 		return ExitUsage
@@ -140,6 +127,8 @@ func (r Runner) Run(ctx context.Context, args []string) int {
 	switch name := rest[0]; name {
 	case "help", "schema":
 		return r.own(name, rest[1:], cmds)
+	case "facts":
+		return r.facts(ctx, rest[1:], cmds)
 	}
 	c, ok := find(cmds, rest[0])
 	if !ok {
@@ -156,7 +145,171 @@ func (r Runner) Run(ctx context.Context, args []string) int {
 	case err != nil:
 		return r.usage(c.Name + ": " + err.Error())
 	}
-	return r.call(ctx, tool, callArgs, answers, *record, *out)
+	return r.call(ctx, tool, callArgs, opts.answers, opts.record, opts.out)
+}
+
+// streams returns r with each stream it leaves nil the process's own.
+func (r Runner) streams() Runner {
+	if r.Stdin == nil {
+		r.Stdin = os.Stdin
+	}
+	if r.Stdout == nil {
+		r.Stdout = os.Stdout
+	}
+	if r.Stderr == nil {
+		r.Stderr = os.Stderr
+	}
+	return r
+}
+
+// programOptions are the options a command line gives before its
+// command.
+type programOptions struct {
+	answers     answerList
+	record, out string
+}
+
+// options reads the program's options from the front of args and
+// returns them with the rest of the line, the command first.
+func (r Runner) options(args []string) (programOptions, []string, error) {
+	fs := flag.NewFlagSet(r.Name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var opts programOptions
+	fs.Var(&opts.answers, "answer", "")
+	fs.StringVar(&opts.record, "record", "", "")
+	fs.StringVar(&opts.out, "out", "", "")
+	if err := fs.Parse(args); err != nil {
+		return programOptions{}, nil, err
+	}
+	return opts, fs.Args(), nil
+}
+
+// Facts answers what the command line args would touch, without running
+// it: the line the program would run, its options, its command and the
+// command's flags and JSON argument, read as [Runner.Run] reads them,
+// and the tool asked [agenttool.FactsOf] and [agenttool.ReplayOf] about
+// the call. It is the program's facts command, which Run runs for
+// `program facts <command line>`, for a host that reaches the tools
+// through a shell and decides a call on what it touches, as a host does
+// in process and over MCP. It never runs the tool, and the options a
+// call would use, --answer, --record and --out, are read and do nothing.
+//
+// Stdout holds one JSON object in the shape of an execution/facts
+// answer, as mcpserver serves it:
+//
+//	{"facts": {"calls": [{"tool": "read", "args": {"path": ".env"}, "text": "read .env"}], "rewrite": {...}}, "replay": "unknown"}
+//
+// facts is the tool's claim, with calls null for the call itself and
+// an empty list for a call that amounts to nothing the tool can state,
+// and rewrite absent for none; hint is true when the facts are hints
+// ([agenttool.Facts.Hint]), whose rewrite is never given. A tool that
+// makes no claim has neither, and the status is [ExitOK]. A claim that
+// failed has error in facts' place, the status [ExitFailed] and the
+// error on stderr, as a call's error is: nothing can be said about the
+// call, and a policy must not allow it. replay is "safe" or "unknown",
+// the tool's answer for the call; "keyed" is "unknown", since a
+// command line carries no idempotency key. A command line Run would
+// not understand is [ExitUsage], with nothing on stdout.
+func (r Runner) Facts(ctx context.Context, args []string) int {
+	r = r.streams()
+	cmds, err := Commands(r.Tools)
+	if err != nil {
+		fmt.Fprintln(r.Stderr, err)
+		return ExitUsage
+	}
+	return r.facts(ctx, args, cmds)
+}
+
+func (r Runner) facts(ctx context.Context, args []string, cmds []Command) int {
+	_, rest, err := r.options(args)
+	switch {
+	case errors.Is(err, flag.ErrHelp):
+		return r.usage("facts: --help asks for usage, not a call")
+	case err != nil:
+		return r.usage("facts: " + err.Error())
+	case len(rest) == 0:
+		return r.usage("facts takes a command line: facts <command> [--<param> <value>]... [<json> | -]")
+	}
+	c, ok := find(cmds, rest[0])
+	if !ok {
+		return r.usage(fmt.Sprintf("facts: unknown command %q", rest[0]))
+	}
+	tool, _ := r.Tools.Lookup(c.Name)
+	callArgs, help, err := r.parse(c, rest[1:])
+	switch {
+	case help:
+		return r.usage("facts: " + c.Name + ": --help asks for usage, not a call")
+	case err != nil:
+		return r.usage("facts: " + c.Name + ": " + err.Error())
+	}
+	ans := answerFacts(ctx, tool, callArgs)
+	data, err := json.Marshal(ans)
+	if err != nil {
+		fmt.Fprintf(r.Stderr, "%s: %v\n", r.Name, err)
+		return ExitFailed
+	}
+	fmt.Fprintf(r.Stdout, "%s\n", data)
+	if ans.Error != "" {
+		fmt.Fprintf(r.Stderr, "Error: %s\n", ans.Error)
+		return ExitFailed
+	}
+	return ExitOK
+}
+
+// factsAnswer is the facts command's answer, an execution/facts answer
+// as mcpserver serves one.
+type factsAnswer struct {
+	Facts  *factsClaim `json:"facts,omitempty"`
+	Hint   bool        `json:"hint,omitempty"`
+	Error  string      `json:"error,omitempty"`
+	Replay string      `json:"replay"`
+}
+
+// factsClaim is an [agenttool.Facts]. Calls has no omitempty, so nil,
+// the call itself, is written as null and an empty list as [], which a
+// reader must not take for the call itself.
+type factsClaim struct {
+	Calls   []factCall      `json:"calls"`
+	Rewrite json.RawMessage `json:"rewrite,omitempty"`
+}
+
+// factCall is an [agenttool.FactCall].
+type factCall struct {
+	Tool string          `json:"tool"`
+	Args json.RawMessage `json:"args,omitempty"`
+	Text string          `json:"text,omitempty"`
+}
+
+// answerFacts asks tool's claims about one call, and never runs it. A
+// claim that panics is one nothing can be said about, an error, as a
+// call that panics is.
+func answerFacts(ctx context.Context, tool agenttool.Tool, args json.RawMessage) (a factsAnswer) {
+	defer func() {
+		if v := recover(); v != nil {
+			a = factsAnswer{Error: fmt.Sprintf("facts of tool %q panicked: %v", tool.Name(), v), Replay: agenttool.ReplayUnknown.String()}
+		}
+	}()
+	replay := agenttool.ReplayOf(ctx, tool, args)
+	if replay == agenttool.ReplayKeyed {
+		replay = agenttool.ReplayUnknown
+	}
+	a.Replay = replay.String()
+	f, claims, err := agenttool.FactsOf(ctx, tool, args)
+	switch {
+	case !claims:
+	case err != nil:
+		a.Error = err.Error()
+	default:
+		a.Facts = &factsClaim{Rewrite: f.Rewrite}
+		a.Hint = f.Hint
+		if f.Calls != nil {
+			a.Facts.Calls = make([]factCall, len(f.Calls))
+			for i, fc := range f.Calls {
+				a.Facts.Calls[i] = factCall{Tool: fc.Tool, Args: fc.Args, Text: fc.Text}
+			}
+		}
+	}
+	return a
 }
 
 // own runs the program's own commands: help, with or without a command

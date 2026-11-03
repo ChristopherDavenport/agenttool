@@ -648,6 +648,18 @@ person is at the terminal sets `Ask: cli.Prompt(os.Stdin, os.Stderr)`
 instead, or `cli.PromptNotes` to ask for a note with each answer. `--record` appends the call's records to a file
 as JSON lines.
 
+A tool's facts claim crosses the shell too. `file-tools facts read_file
+--path go.mod` parses the rest of the line as the call would, never runs
+the tool, and prints the claim as one JSON object in the shape of MCP's
+`execution/facts` answer: `{"facts": {"calls": […], "rewrite": …},
+"replay": "unknown"}`, with no `facts` for a tool that makes no claim
+and status 1 with `error` for a claim that failed. A host that reads the
+shell decides the call on what it touches, as it would in process or
+over MCP, rather than on the command's name. The usage marks each
+command whose tool makes the claim. `cli.Runner.Facts` is the same
+answer for a program that dispatches its own commands, and `facts`, like
+`help` and `schema`, is a name no tool may take.
+
 `cli.Markdown` renders how to call each command, from the same
 description the parser reads. A skill that teaches a model the program
 is that text under a frontmatter. It teaches the JSON argument

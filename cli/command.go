@@ -50,6 +50,11 @@ type Command struct {
 	// Schema is the tool's parameters schema, [agenttool.NoArgsSchema]
 	// when it has none.
 	Schema json.RawMessage
+	// Facts says the tool makes the facts claim, [agenttool.IsFactual]:
+	// the usage marks the command, and the program's facts command
+	// answers what a call of it would touch. A command without it is
+	// its own one fact, and facts answers it with no claim.
+	Facts bool
 }
 
 // Param is one property of a tool's arguments: a top-level one, or a
@@ -205,7 +210,7 @@ func scalar(typ string) bool {
 
 // Commands describes every tool of set, in order. A set the program
 // could not run is an error: two tools of one name, a tool with none,
-// one named as a command of the program's own, help or schema, or one
+// one named as a command of the program's own, help, schema or facts, or one
 // whose name begins with a dash, which the command line would read as
 // an option. A
 // schema is never an error, so one odd tool cannot take the program's
@@ -228,7 +233,7 @@ func Commands(set agenttool.Set) ([]Command, error) {
 }
 
 func reserved(name string) bool {
-	return name == "help" || name == "schema"
+	return name == "help" || name == "schema" || name == "facts"
 }
 
 // Describe describes one tool as a command. Its parameters are read
@@ -251,6 +256,7 @@ func Describe(t agenttool.Tool) Command {
 		Annotations: agenttool.AnnotationsOf(t),
 		Params:      paramsOf(schema),
 		Schema:      schema,
+		Facts:       agenttool.IsFactual(t),
 	}
 }
 

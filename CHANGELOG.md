@@ -5,6 +5,24 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Added: the command line answers a call's facts without running it
+  (toolbundle#4). `program facts <command line>`, or `cli.Runner.Facts`
+  for a program that dispatches its own commands, parses the line as the
+  call would and prints the tool's claim as one JSON object in the shape
+  of an `execution/facts` answer, `{"facts": {"calls": …, "rewrite": …},
+  "hint": …, "replay": …}`; a tool that makes no claim has no `facts`, a
+  claim that failed has `error` and status 1, and a line not understood
+  status 2. `cli.Command.Facts` says whether a command's tool makes the
+  claim, and the usage marks each one that does. Before, the command
+  line carried no facts, so a host reading the shell decided a bundle's
+  calls by name. RFC 0001 draft 0.10 states the rule under Command line
+  and adds a conforming command-line program.
+- Changed: `cli.Commands` refuses a tool named `facts`, which is now a
+  command of the program's own, as `help` and `schema` are. A breaking
+  change for a set with a tool of that name.
+
 ## v0.0.28 - 2026-11-02
 
 - Added: `Answer.By`, who gave an answer, in the session format's terms:

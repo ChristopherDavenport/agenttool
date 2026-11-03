@@ -1,6 +1,6 @@
 # RFC 0001: Agent Tool Contract
 
-Status: draft 0.9
+Status: draft 0.10
 Author: Christopher Davenport
 Discussion: to be opened against this repository. The Go module at its
 root is the reference binding; agentturn is the reference harness.
@@ -963,6 +963,27 @@ runs it again. A question after the last
 at the terminal when the program has one, whose answer names `human`;
 input that ends before they answer is a *cancel* that names nobody.
 
+A program SHOULD answer a command line's [facts](#properties) without
+running it: `facts` followed by a command line the program would run,
+its options included, parses that line as the command does, never runs
+the tool, and writes on stdout one JSON object in the shape of an
+`execution/facts` answer ([MCP](#mcp)). It holds `facts`, with `calls`,
+`null` for the call itself and `[]` for nothing the tool can state, and
+`rewrite` when there is one; `hint: true` beside it when the facts are
+hints, whose rewrite is never written; `error` in its place when the
+claim failed, with status 1 and the error on stderr as the error
+convention renders it, since nothing can be said about the call;
+neither for a tool that makes no claim, with status 0; and `replay`, the
+tool's answer for the call, *keyed* written as *unknown* since a
+command line carries no idempotency key. A line the program does not
+understand ends with status 2 and nothing on stdout. A program's usage
+MUST mark each command whose tool makes the facts claim, which is the
+presence a reader sees without asking about a call, whether or not the
+program answers `facts`. `facts` is a command of the program's own, as
+`help` and `schema` are, and no tool takes its name. A host that reads
+the shell can then decide a call through a program on what it touches,
+as it would the same tool in process or over MCP.
+
 ## Schema generation
 
 A binding that builds a tool from a typed function generates the
@@ -1157,6 +1178,12 @@ source it does not trust only as hints, and replay from one as
 **A conforming adapter** maps each row of its binding table and adds
 nothing the contract cannot express.
 
+**A conforming command-line program** runs one call per process and
+reports it with the exit statuses of [Command line](#command-line);
+marks in its usage each command whose tool makes the facts claim; and,
+when it answers `facts`, answers in the shape of an `execution/facts`
+answer and never runs the tool to do so.
+
 **A conforming schema generator** produces, for every fixture in
 `testdata/schema/manifest.json`, the bytes of that fixture's golden
 file after canonicalisation, and rejects the shapes the
@@ -1237,6 +1264,19 @@ module and is listed in the changelog as one.
   differ, `retryable` with a not-before time in a `_meta` block, a
   rate-limit error code, so it waits for one to settle. The MCP
   client handles its own transport failures meanwhile.
+
+## Changes since 0.9
+
+- The command line carries **facts** (toolbundle#4). A program SHOULD
+  answer `facts <command line>` without running the call, on stdout in
+  the shape of an `execution/facts` answer, with status 1 and `error`
+  for a claim that failed and status 2 for a line not understood; its
+  usage MUST mark each command whose tool makes the claim, the presence
+  the [facts](#properties) property requires a binding to show. At 0.9
+  the binding carried no facts at all, so one tool set gave a policy a
+  different answer through a shell than in process or over MCP.
+  `facts` joins `help` and `schema` as a command of the program's own.
+  Conformance gains a conforming command-line program.
 
 ## Changes since 0.8
 
