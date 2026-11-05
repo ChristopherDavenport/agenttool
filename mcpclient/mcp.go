@@ -144,6 +144,8 @@ type options struct {
 	dial        func(context.Context) (sdk.Transport, error)
 	onReconnect func(ReconnectInfo)
 	onEnded     func(error)
+	// restartNotice is the host's text for [WithRestartNotice].
+	restartNotice func(ReconnectInfo) string
 	// protocolVersion is the version the session offers, the SDK's
 	// latest when empty; tests set it to reach an older server's path.
 	protocolVersion string
@@ -585,6 +587,11 @@ type Remote struct {
 
 	token atomic.Int64
 
+	// told is the generation of the latest session the remote has
+	// returned a result from, so the first result after a restart is
+	// marked once; see [WithRestartNotice].
+	told atomic.Int64
+
 	// running holds each call in flight, by a sequence number, so Close
 	// can end them, and so that with elicitation on a question an older
 	// server sends on its own can be put to the call that asked it.
@@ -716,7 +723,7 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 	s.mu.Lock()
 	s.link = l
 	s.mu.Unlock()
-	if _, _, err := s.adopt(ctx, l); err != nil {
+	if err := s.adopt(ctx, l); err != nil {
 		// The host never had the remote, so its session's end is not
 		// reported.
 		s.mu.Lock()
@@ -1214,15 +1221,38 @@ func (s *Remote) call(ctx context.Context, ref toolRef, plan callPlan, call agen
 		// that outlives ctx is reflected after the next Await.
 		_ = s.Await(ctx)
 	}
-	r, err := ResultOf(res)
+	// The server answered, so this is the result a restart's notice
+	// goes on.
+	notice := s.restartNotice(l)
+	r, err := resultOf(res, notice)
 	if err == nil && plan.out != nil {
 		if err := plan.out.check(res); err != nil {
 			// Unprefixed, as an isError result's message is: it is phrased
-			// for the model, and the rule is that it begins so.
-			return agenttool.Result{Details: r.Details}, err
+			// for the model, and the rule is that it begins so, after a
+			// restart's notice when it carries one.
+			return agenttool.Result{Details: r.Details}, noticed(notice, err)
 		}
 	}
 	return r, err
+}
+
+// noticedError is an error whose message a restart's notice heads; see
+// [WithRestartNotice].
+type noticedError struct {
+	notice string
+	err    error
+}
+
+func (e *noticedError) Error() string { return e.notice + "\n" + e.err.Error() }
+func (e *noticedError) Unwrap() error { return e.err }
+
+// noticed returns err with notice at the head of its message, and err
+// itself when there is no notice.
+func noticed(notice string, err error) error {
+	if notice == "" {
+		return err
+	}
+	return &noticedError{notice, err}
 }
 
 // callTool makes the call on send and returns its outcome, or the end
@@ -1516,6 +1546,13 @@ func (s *Remote) onProgress(p *sdk.ProgressNotificationParams) {
 // on that side. An error result keeps its record too, since a failed
 // call is the one a reader most wants to trace.
 func ResultOf(res *sdk.CallToolResult) (agenttool.Result, error) {
+	return resultOf(res, "")
+}
+
+// resultOf is [ResultOf], with notice, when it is not "", heading what
+// the model reads: an input_text part before the content, or the head
+// of an error's message. Details are the result as the server sent it.
+func resultOf(res *sdk.CallToolResult, notice string) (agenttool.Result, error) {
 	if res == nil {
 		return agenttool.Result{}, errors.New("mcp: empty result")
 	}
@@ -1581,7 +1618,14 @@ func ResultOf(res *sdk.CallToolResult) (agenttool.Result, error) {
 		if text == "" {
 			text = "tool call failed"
 		}
-		return agenttool.Result{Details: details}, errors.New(text)
+		return agenttool.Result{Details: details}, noticed(notice, errors.New(text))
+	}
+	if notice != "" {
+		// The notice is one more text part, before the content, so text
+		// alone reads it joined as any other text is.
+		texts = append([]string{notice}, texts...)
+		parts = append(openresponses.Contents{&openresponses.InputText{Text: notice}}, parts...)
+		text = strings.Join(texts, "\n")
 	}
 	out := agenttool.Result{Details: details}
 	if textOnly {

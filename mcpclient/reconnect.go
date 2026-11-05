@@ -81,6 +81,9 @@ const endGrace = 500 * time.Millisecond
 // Without the option a session that ends stays ended, and every later
 // request fails, as before.
 //
+// The first result from a restarted server carries a notice for the
+// model that the server restarted; see [WithRestartNotice].
+//
 // [Remote.State] says where the session is in this, and [WithEnded]
 // tells the host when it ends, with or without the option.
 func WithReconnect(dial func(ctx context.Context) (sdk.Transport, error)) Option {
@@ -109,6 +112,52 @@ type ReconnectInfo struct {
 	// that gives the model [Remote.Instructions], or records them, takes
 	// the new ones.
 	InstructionsChanged bool
+}
+
+// RestartNotice is the text that marks the first result from a server
+// after it restarted, by default; see [WithRestartNotice].
+const RestartNotice = "Note: the MCP server behind this tool was restarted before this call, " +
+	"so whatever it held from earlier calls, open pages, sessions, transactions, processes or other state, is gone."
+
+// WithRestartNotice sets the text that marks the first result from the
+// server after [WithReconnect] restarted it, in place of
+// [RestartNotice], given the latest restart as [WithReconnected] was
+// told of it. A host that tells the model another way, with that
+// result, returns "", and the result is then left unmarked.
+//
+// The first result the remote returns from a restarted server, a
+// success or an error, whether or not its tools changed, is marked with
+// the text: a success's output gains it as an input_text part before
+// its content, so an output of text alone reads the notice, a newline,
+// then the text; an error's message is the notice, a newline, then the
+// message it would have had. The model reads it, and a session records
+// it as the model read it. Two restarts with no result between them
+// mark one result, and of several calls in flight one carries it. A
+// call refused unsent, [ErrToolChanged], or one the end of a session
+// cut, or that ended without the server's result, does not use the mark
+// up: the next result carries it.
+func WithRestartNotice(fn func(ReconnectInfo) string) Option {
+	return func(o *options) { o.restartNotice = fn }
+}
+
+// restartNotice returns the text to mark a result from l's session with,
+// and "" when it is not to be marked: the remote has returned a result
+// from that session, or from a later one, or the host's text is empty.
+// It uses the mark up, so of several results from l one carries it.
+func (s *Remote) restartNotice(l *link) string {
+	for {
+		told := s.told.Load()
+		if l.gen <= told {
+			return ""
+		}
+		if s.told.CompareAndSwap(told, l.gen) {
+			break
+		}
+	}
+	if s.opts.restartNotice != nil {
+		return s.opts.restartNotice(l.info)
+	}
+	return RestartNotice
 }
 
 // WithReconnected sets the function called after each attempt to
@@ -203,6 +252,9 @@ type link struct {
 	session *sdk.ClientSession
 	// gen counts the restarts before this session: 0 for the first.
 	gen int64
+	// info is the restart that made the session, set when the remote
+	// adopts it and read-only after; it is the zero value for the first.
+	info ReconnectInfo
 	// factsCap says the server advertises [FactsCapability], and
 	// listChanged that it sends tool-list-changed notifications.
 	factsCap    bool
@@ -487,42 +539,42 @@ func (s *Remote) reconnect(ctx context.Context, old *link) (*link, ReconnectInfo
 		return nil, ReconnectInfo{}, fmt.Errorf("connect: %w", err)
 	}
 	l := newLink(session, old.gen+1, s.sessionEnded)
-	before, after, err := s.adopt(ctx, l)
-	if err != nil {
+	if err := s.adopt(ctx, l); err != nil {
 		_ = session.Close()
 		return nil, ReconnectInfo{}, err
 	}
-	return l, ReconnectInfo{
-		Server:              l.serverInfo(),
-		Changed:             !maps.Equal(before, after),
-		Before:              slices.Sorted(maps.Keys(before)),
-		After:               slices.Sorted(maps.Keys(after)),
-		InstructionsChanged: l.instructions() != old.instructions(),
-	}, nil
+	return l, l.info, nil
 }
 
 // adopt lists l's tools and makes l the remote's session together with
 // them, so the session, the snapshot and its claims change in one step,
 // and settles every notification received so far, since the listing is
-// a whole one. It returns the tools before and after, by local name and
-// definition. It refuses once the remote is closed. With [WithLogging]
+// a whole one. It sets l's info against the session it replaces, before
+// any request can reach l. It refuses once the remote is closed. With [WithLogging]
 // it first asks an older server for its log messages, since a restarted
 // session starts without the level.
-func (s *Remote) adopt(ctx context.Context, l *link) (before, after map[string]string, err error) {
+func (s *Remote) adopt(ctx context.Context, l *link) error {
 	s.setLogLevel(ctx, l)
 	s.listing.Lock()
 	defer s.listing.Unlock()
 	gen := s.seen.Load()
 	tools, claims, err := s.list(ctx, l)
 	if err != nil {
-		return nil, nil, err
+		return err
 	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return nil, nil, ErrClosed
+		return ErrClosed
 	}
-	before = defs(s.claims)
+	before, after := defs(s.claims), defs(claims)
+	l.info = ReconnectInfo{
+		Server:              l.serverInfo(),
+		Changed:             !maps.Equal(before, after),
+		Before:              slices.Sorted(maps.Keys(before)),
+		After:               slices.Sorted(maps.Keys(after)),
+		InstructionsChanged: l.instructions() != s.link.instructions(),
+	}
 	s.link, s.tools, s.claims = l, tools, claims
 	s.restartErr = nil
 	s.settled = max(s.settled, gen)
@@ -534,7 +586,7 @@ func (s *Remote) adopt(ctx context.Context, l *link) (before, after map[string]s
 	if tell {
 		s.opts.onEnded(l.endError())
 	}
-	return before, defs(claims), nil
+	return nil
 }
 
 // defs maps each tool of a snapshot's claims to its definition.

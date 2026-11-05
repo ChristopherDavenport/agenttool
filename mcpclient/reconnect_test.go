@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ChristopherDavenport/agenttool"
+	"github.com/ChristopherDavenport/openresponses"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -154,6 +155,10 @@ func (h *hooked) got() []ReconnectInfo {
 	return slices.Clone(h.infos)
 }
 
+// restarted is text output as the first result after a restart reads
+// it, the default notice at its head (#105).
+func restarted(text string) string { return RestartNotice + "\n" + text }
+
 func execute(tl agenttool.Tool, args string) (agenttool.Result, error) {
 	return tl.Execute(context.Background(), agenttool.Call{ID: "c", Args: json.RawMessage(args)})
 }
@@ -168,7 +173,7 @@ func TestReconnectRestartsOnTheNextRequest(t *testing.T) {
 	}{
 		{name: "a call", do: func(s *Remote) error {
 			res, err := execute(lookup(t, s, "upper"), `{"text":"hi"}`)
-			if err == nil && res.Output.Text != "HI" {
+			if err == nil && res.Output.Text != restarted("HI") {
 				t.Errorf("result %q, want HI", res.Output.Text)
 			}
 			return err
@@ -376,7 +381,7 @@ func TestReconnectWithChangedTools(t *testing.T) {
 	}
 	r.drop(s)
 	// keep triggers the restart, and is sent: it is listed as it was.
-	if res, err := execute(old["keep"], `{}`); err != nil || res.Output.Text != "keep" {
+	if res, err := execute(old["keep"], `{}`); err != nil || res.Output.Text != restarted("keep") {
 		t.Fatalf("keep: %+v, %v", res, err)
 	}
 	if got, want := slices.Sorted(slices.Values(names(s.Tools()))), []string{"alter", "claimy", "fresh", "keep"}; !slices.Equal(got, want) {
@@ -439,7 +444,7 @@ func TestReconnectSharesOneDial(t *testing.T) {
 	if infos := h.got(); len(infos) != 1 || infos[0].Err == nil {
 		t.Errorf("hook got %+v; want the one failed attempt", infos)
 	}
-	if res, err := execute(upper, `{"text":"x"}`); err != nil || res.Output.Text != "X" {
+	if res, err := execute(upper, `{"text":"x"}`); err != nil || res.Output.Text != restarted("X") {
 		t.Fatalf("the next call: %+v, %v", res, err)
 	}
 	if got := r.dials.Load(); got != 2 {
@@ -615,7 +620,7 @@ func TestReconnectKeepsTheClientsHandlers(t *testing.T) {
 		return agenttool.Answer{Action: agenttool.ActionAccept, Content: json.RawMessage(`{"confirm":true}`)}, nil
 	})
 	res, err := lookup(t, s, "ask").Execute(ctx, agenttool.Call{ID: "c", Args: json.RawMessage(`{}`)})
-	if err != nil || res.Output.Text != `accept {"confirm":true}` {
+	if err != nil || res.Output.Text != restarted(`accept {"confirm":true}`) {
 		t.Errorf("elicitation on the restarted session: %q, %v", res.Output.Text, err)
 	}
 	got, err := sdk.CallCustomMethod[*startParams, *startResult](context.Background(), s.Session(), startMethod, &startParams{Command: "gopls"})
@@ -720,7 +725,8 @@ func TestReconnectRestartsOnTheCallAfterACut(t *testing.T) {
 			t.Errorf("run %d: the cut call returned before its session ended", i)
 		}
 		res, err := execute(lookup(t, hd.s, "upper"), `{"text":"x"}`)
-		if err != nil || res.Output.Text != "X" {
+		// The cut call left the restart's mark for this one (#105).
+		if err != nil || res.Output.Text != restarted("X") {
 			t.Logf("run %d: the call after the cut: %q, %v; want it to restart the server and run", i, res.Output.Text, err)
 			failed++
 			continue
@@ -793,7 +799,7 @@ func TestReconnectConcurrentCutsWaitForTheEnd(t *testing.T) {
 			t.Fatal("the cut calls did not all return")
 		}
 	}
-	if res, err := execute(upper, `{"text":"x"}`); err != nil || res.Output.Text != "X" {
+	if res, err := execute(upper, `{"text":"x"}`); err != nil || res.Output.Text != restarted("X") {
 		t.Fatalf("the next call: %q, %v", res.Output.Text, err)
 	}
 	if got := hd.r.dials.Load(); got != 1 {
@@ -982,5 +988,143 @@ func TestReconnectStateAfterTheServerExits(t *testing.T) {
 		_ = s.Close()
 		wantState(t, s, StateClosed, false)
 		e.none(t)
+	})
+}
+
+// After a restart the first result from the server, a success or an
+// error, carries the restart notice at its head, and the results after
+// it do not; two restarts with no result between them mark one result,
+// and a call refused unsent does not use the mark up (#105).
+func TestReconnectMarksTheFirstResultOnce(t *testing.T) {
+	newRemote := func(t *testing.T, opts ...Option) (*restarter, *Remote) {
+		r := &restarter{t: t, serve: func(int) *sdk.Server { return newServer(t) }}
+		return r, r.connect(false, opts...)
+	}
+	text := func(t *testing.T, tl agenttool.Tool, arg string) string {
+		t.Helper()
+		res, err := execute(tl, `{"text":"`+arg+`"}`)
+		if err != nil {
+			t.Fatalf("call %s: %v", arg, err)
+		}
+		return res.Output.Text
+	}
+	t.Run("once", func(t *testing.T) {
+		r, s := newRemote(t)
+		upper := lookup(t, s, "upper")
+		if got := text(t, upper, "a"); got != "A" {
+			t.Errorf("before the restart: %q", got)
+		}
+		r.drop(s)
+		if got, want := text(t, upper, "b"), RestartNotice+"\nB"; got != want {
+			t.Errorf("the first result after the restart: %q; want %q", got, want)
+		}
+		if got := text(t, upper, "c"); got != "C" {
+			t.Errorf("the second result after the restart: %q; want C", got)
+		}
+	})
+	t.Run("two restarts", func(t *testing.T) {
+		r, s := newRemote(t)
+		for range 2 {
+			r.drop(s)
+			if err := s.Refresh(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		upper := lookup(t, s, "upper")
+		if got, want := text(t, upper, "b"), RestartNotice+"\nB"; got != want {
+			t.Errorf("the first result: %q; want %q", got, want)
+		}
+		if got := text(t, upper, "c"); got != "C" {
+			t.Errorf("the second result: %q; want C", got)
+		}
+	})
+	t.Run("an error", func(t *testing.T) {
+		r, s := newRemote(t)
+		fails := lookup(t, s, "fails")
+		r.drop(s)
+		if _, err := execute(fails, `{}`); err == nil || err.Error() != RestartNotice+"\ndisk on fire" {
+			t.Errorf("the first error after the restart: %v", err)
+		}
+		if _, err := execute(fails, `{}`); err == nil || err.Error() != "disk on fire" {
+			t.Errorf("the second error: %v", err)
+		}
+	})
+	t.Run("parts", func(t *testing.T) {
+		r, s := newRemote(t)
+		image := lookup(t, s, "image")
+		r.drop(s)
+		res, err := execute(image, `{}`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := res.Output.Parts
+		if len(p) != 3 {
+			t.Fatalf("parts %d, want the notice and two", len(p))
+		}
+		if n, ok := p[0].(*openresponses.InputText); !ok || n.Text != RestartNotice {
+			t.Errorf("the first part is %#v; want the notice", p[0])
+		}
+		if n, ok := p[1].(*openresponses.InputText); !ok || n.Text != "here" {
+			t.Errorf("the second part is %#v; want the result's text", p[1])
+		}
+	})
+	t.Run("refused unsent", func(t *testing.T) {
+		var ran sync.Map
+		r := &restarter{t: t, serve: changing(t, &ran)}
+		s := r.connect(false)
+		old := map[string]agenttool.Tool{}
+		for _, tl := range s.Tools() {
+			old[tl.Name()] = tl
+		}
+		r.drop(s)
+		if _, err := execute(old["upper"], `{}`); !errors.Is(err, ErrToolChanged) {
+			t.Fatalf("upper: %v; want ErrToolChanged", err)
+		}
+		res, err := execute(old["keep"], `{}`)
+		if err != nil || res.Output.Text != RestartNotice+"\nkeep" {
+			t.Errorf("the first result after a refused call: %q, %v; want the notice", res.Output.Text, err)
+		}
+	})
+	t.Run("the host's text", func(t *testing.T) {
+		r, s := newRemote(t, WithRestartNotice(func(i ReconnectInfo) string { return "restarted " + i.Server.Name }))
+		upper := lookup(t, s, "upper")
+		r.drop(s)
+		if got := text(t, upper, "b"); got != "restarted fixture\nB" {
+			t.Errorf("the first result: %q", got)
+		}
+	})
+	t.Run("the host tells it another way", func(t *testing.T) {
+		r, s := newRemote(t, WithRestartNotice(func(ReconnectInfo) string { return "" }))
+		upper := lookup(t, s, "upper")
+		r.drop(s)
+		if got := text(t, upper, "b"); got != "B" {
+			t.Errorf("the first result: %q; want it unmarked", got)
+		}
+	})
+	t.Run("parallel", func(t *testing.T) {
+		r, s := newRemote(t)
+		r.drop(s)
+		if err := s.Refresh(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		upper := lookup(t, s, "upper")
+		var wg sync.WaitGroup
+		var marked atomic.Int32
+		for range 4 {
+			wg.Go(func() {
+				res, err := execute(upper, `{"text":"x"}`)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if strings.HasPrefix(res.Output.Text, RestartNotice) {
+					marked.Add(1)
+				}
+			})
+		}
+		wg.Wait()
+		if n := marked.Load(); n != 1 {
+			t.Errorf("%d results marked, want 1", n)
+		}
 	})
 }
