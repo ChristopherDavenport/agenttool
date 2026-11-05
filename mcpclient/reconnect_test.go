@@ -1100,6 +1100,29 @@ func TestReconnectMarksTheFirstResultOnce(t *testing.T) {
 		if got := text(t, upper, "b"); got != "B" {
 			t.Errorf("the first result: %q; want it unmarked", got)
 		}
+		if got := text(t, upper, "c"); got != "C" {
+			t.Errorf("the second result: %q; want it unmarked", got)
+		}
+	})
+	t.Run("an output-schema failure", func(t *testing.T) {
+		r := &restarter{t: t, serve: func(int) *sdk.Server {
+			sv := sdk.NewServer(&sdk.Implementation{Name: "weather", Version: "1"}, nil)
+			sv.AddTool(&sdk.Tool{Name: "bad", InputSchema: json.RawMessage(`{"type":"object"}`),
+				OutputSchema: json.RawMessage(`{"type":"object","properties":{"temp":{"type":"number"}},"required":["temp"]}`)},
+				func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+					return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: `{"temp":"hot"}`}}, StructuredContent: map[string]any{"temp": "hot"}}, nil
+				})
+			return sv
+		}}
+		s := r.connect(false)
+		bad := lookup(t, s, "bad")
+		r.drop(s)
+		if _, err := execute(bad, `{}`); err == nil || !strings.HasPrefix(err.Error(), RestartNotice+"\ninvalid result: the call ran") {
+			t.Errorf("the first result after the restart: %v; want the notice, then invalid result", err)
+		}
+		if _, err := execute(bad, `{}`); err == nil || !strings.HasPrefix(err.Error(), "invalid result: the call ran") {
+			t.Errorf("the second result: %v; want invalid result, unmarked", err)
+		}
 	})
 	t.Run("parallel", func(t *testing.T) {
 		r, s := newRemote(t)
@@ -1127,4 +1150,129 @@ func TestReconnectMarksTheFirstResultOnce(t *testing.T) {
 			t.Errorf("%d results marked, want 1", n)
 		}
 	})
+}
+
+// afterList returns the test seam that runs at adopt once a session's
+// tools are listed.
+func afterList(fn func(l *link, err error)) Option {
+	return func(o *options) { o.afterList = fn }
+}
+
+// A restarted session that ends while the remote adopts it is reported
+// once the restart is over and reported, with no lock held: a hook that
+// asks the remote to refresh restarts the server again rather than
+// waiting on the restart it is part of, and the host hears the restart
+// before the end of the session it made.
+func TestEndedWhileAdoptedIsReportedAfterTheRestart(t *testing.T) {
+	r := &restarter{t: t, serve: func(int) *sdk.Server { return newServer(t) }}
+	var (
+		mu     sync.Mutex
+		events []string
+		remote atomic.Pointer[Remote]
+	)
+	event := func(e string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, e)
+		n := 0
+		for _, x := range events {
+			if x == "ended" {
+				n++
+			}
+		}
+		return n
+	}
+	ends := make(chan struct{}, 4)
+	hooked := make(chan error, 1)
+	s := r.connect(false,
+		WithReconnected(func(i ReconnectInfo) {
+			if i.Err == nil {
+				event("reconnected")
+			}
+		}),
+		WithEnded(func(error) {
+			n := event("ended")
+			ends <- struct{}{}
+			if n == 2 {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				hooked <- remote.Load().Refresh(ctx)
+			}
+		}),
+		afterList(func(l *link, err error) {
+			// The first restarted server exits as soon as it has listed.
+			if l.gen == 1 && err == nil {
+				r.kill()
+				<-l.ended
+			}
+		}))
+	remote.Store(s)
+	r.drop(s)
+	select {
+	case <-ends:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first session's end was not heard")
+	}
+	outer := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		outer <- s.Refresh(ctx)
+	}()
+	select {
+	case err := <-hooked:
+		if err != nil {
+			t.Errorf("the hook's Refresh: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hook's Refresh did not return: it waits on the restart it is part of")
+	}
+	select {
+	case <-outer:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the Refresh that restarted the server did not return")
+	}
+	mu.Lock()
+	got := slices.Clone(events)
+	mu.Unlock()
+	if len(got) < 3 || !slices.Equal(got[:3], []string{"ended", "reconnected", "ended"}) {
+		t.Errorf("events %v; want the end, the restart, then the restarted session's end", got)
+	}
+	wantState(t, s, StateLive, false)
+}
+
+// A session Connect discards, because its server died during the first
+// listing, is never reported: the host never had the remote.
+func TestEndedNotHeardForASessionConnectDiscarded(t *testing.T) {
+	r := &restarter{t: t}
+	r.serve = func(int) *sdk.Server {
+		sv := newServer(t)
+		sv.AddReceivingMiddleware(func(next sdk.MethodHandler) sdk.MethodHandler {
+			return func(ctx context.Context, method string, req sdk.Request) (sdk.Result, error) {
+				if method == "tools/list" {
+					r.kill()
+					return nil, errors.New("gone")
+				}
+				return next(ctx, method, req)
+			}
+		})
+		return sv
+	}
+	tr, err := r.open(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newEnded()
+	s, err := Connect(context.Background(), tr, e.option(), afterList(func(l *link, err error) {
+		if err != nil {
+			// Give the watcher its chance before Connect gives up.
+			<-l.ended
+			time.Sleep(50 * time.Millisecond)
+		}
+	}))
+	if err == nil {
+		_ = s.Close()
+		t.Fatal("Connect succeeded; want the listing to fail")
+	}
+	e.none(t)
 }

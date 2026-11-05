@@ -122,7 +122,10 @@ const RestartNotice = "Note: the MCP server behind this tool was restarted befor
 // WithRestartNotice sets the text that marks the first result from the
 // server after [WithReconnect] restarted it, in place of
 // [RestartNotice], given the latest restart as [WithReconnected] was
-// told of it. A host that tells the model another way, with that
+// told of it. After two restarts with no result between them, that is
+// the second alone, so its Changed, Before and After compare the
+// session with the one just before it, not with the one the model last
+// had a result from. A host that tells the model another way, with that
 // result, returns "", and the result is then left unmarked.
 //
 // The first result the remote returns from a restarted server, a
@@ -238,9 +241,13 @@ func (s *Remote) State() (SessionState, error) {
 // called once per session, when the remote sees the session end and not
 // when a request next finds it ended, outside the remote's locks, with
 // or without [WithReconnect]; a restarted session that ends is another
-// session, and is reported again. It is not called for a session the
-// host ended with [Remote.Close], nor for one a failed restart or
-// [Connect] discarded before the remote used it.
+// session, and is reported again, after [WithReconnected] has reported
+// the restart that made it, and after that restart is over, so the hook
+// may send requests of its own. It is not called for a session the host
+// ended with [Remote.Close], nor for one a failed restart or [Connect]
+// discarded before the remote used it. A report the remote decided on
+// before Close may still reach the hook after Close returns: that
+// session had ended on its own.
 func WithEnded(fn func(error)) Option {
 	return func(o *options) { o.onEnded = fn }
 }
@@ -253,7 +260,8 @@ type link struct {
 	// gen counts the restarts before this session: 0 for the first.
 	gen int64
 	// info is the restart that made the session, set when the remote
-	// adopts it and read-only after; it is the zero value for the first.
+	// adopts it in place of another and read-only after; it is the zero
+	// value for the first session, which no restart made.
 	info ReconnectInfo
 	// factsCap says the server advertises [FactsCapability], and
 	// listChanged that it sends tool-list-changed notifications.
@@ -263,9 +271,16 @@ type link struct {
 	// is, is the error the session ended with.
 	ended  chan struct{}
 	endErr error
-	// told says [WithEnded] was called for this session. It is under the
-	// remote's mu.
-	told bool
+	// adopted says the remote made the session its own, and told that
+	// [WithEnded] was called for it. Both are under the remote's mu.
+	adopted, told bool
+	// ready is closed once whoever made the session is done with it:
+	// [Connect] when it returns, or a restart once it is over and
+	// reported. The watcher waits for it before it reports the session's
+	// end, so the end is never heard inside a restart, nor before the
+	// restart that made the session, nor for a session discarded unused.
+	ready     chan struct{}
+	readyOnce sync.Once
 
 	// closing makes the session's close happen once, whoever asks for
 	// it first, a restart releasing a session that ended or
@@ -275,9 +290,10 @@ type link struct {
 }
 
 // newLink wraps a session the client just connected, and watches it:
-// when the session ends, onEnd is called with the link, unless it is nil.
+// when the session ends and the link is released, onEnd is called with
+// the link, unless it is nil. Its maker releases it.
 func newLink(session *sdk.ClientSession, gen int64, onEnd func(*link)) *link {
-	l := &link{session: session, gen: gen, ended: make(chan struct{})}
+	l := &link{session: session, gen: gen, ended: make(chan struct{}), ready: make(chan struct{})}
 	if res := session.InitializeResult(); res != nil && res.Capabilities != nil {
 		if res.Capabilities.Tools != nil {
 			l.listChanged = res.Capabilities.Tools.ListChanged
@@ -287,11 +303,18 @@ func newLink(session *sdk.ClientSession, gen int64, onEnd func(*link)) *link {
 	go func() {
 		l.endErr = session.Wait()
 		close(l.ended)
+		<-l.ready
 		if onEnd != nil {
 			onEnd(l)
 		}
 	}()
 	return l
+}
+
+// release says the link's maker is done with it, so its end may be
+// reported. It may be called more than once.
+func (l *link) release() {
+	l.readyOnce.Do(func() { close(l.ready) })
 }
 
 // endError is what [WithEnded] is given for the session, which has
@@ -315,13 +338,12 @@ func (s *Remote) sessionEnded(l *link) {
 }
 
 // tellEnd reports whether the host is to hear that l's session ended,
-// and marks it told: l has ended and is the remote's session, the host
-// takes the report and was not told, and the remote is not closed. The
-// caller holds mu, and calls the hook once it lets go. Both the watcher
-// and adopt ask, so a session that ends while it is being adopted is
-// reported by whichever comes second.
+// and marks it told: l has ended and the remote adopted it, the host
+// takes the report and was not told, and the remote is not closed. A
+// session a restart has since replaced is still reported. The caller
+// holds mu, and calls the hook once it lets go.
 func (s *Remote) tellEnd(l *link) bool {
-	if s.opts.onEnded == nil || s.closed || s.link != l || l.told || !l.isEnded() {
+	if s.opts.onEnded == nil || s.closed || !l.adopted || l.told || !l.isEnded() {
 		return false
 	}
 	l.told = true
@@ -525,6 +547,11 @@ func (s *Remote) redial(ctx context.Context, old *link, a *attempt) {
 		s.opts.onReconnect(info)
 	}
 	close(a.done)
+	if l != nil {
+		// Only now may its end be heard: a hook that sends a request then
+		// starts a restart of its own, rather than joining this one.
+		l.release()
+	}
 }
 
 // reconnect opens a session on a transport from dial, initialised as
@@ -541,6 +568,7 @@ func (s *Remote) reconnect(ctx context.Context, old *link) (*link, ReconnectInfo
 	l := newLink(session, old.gen+1, s.sessionEnded)
 	if err := s.adopt(ctx, l); err != nil {
 		_ = session.Close()
+		l.release()
 		return nil, ReconnectInfo{}, err
 	}
 	return l, l.info, nil
@@ -550,15 +578,19 @@ func (s *Remote) reconnect(ctx context.Context, old *link) (*link, ReconnectInfo
 // them, so the session, the snapshot and its claims change in one step,
 // and settles every notification received so far, since the listing is
 // a whole one. It sets l's info against the session it replaces, before
-// any request can reach l. It refuses once the remote is closed. With [WithLogging]
-// it first asks an older server for its log messages, since a restarted
-// session starts without the level.
+// any request can reach l, and marks l adopted, so its end may be
+// reported once its maker releases it. It refuses once the remote is
+// closed. With [WithLogging] it first asks an older server for its log
+// messages, since a restarted session starts without the level.
 func (s *Remote) adopt(ctx context.Context, l *link) error {
 	s.setLogLevel(ctx, l)
 	s.listing.Lock()
 	defer s.listing.Unlock()
 	gen := s.seen.Load()
 	tools, claims, err := s.list(ctx, l)
+	if s.opts.afterList != nil {
+		s.opts.afterList(l, err)
+	}
 	if err != nil {
 		return err
 	}
@@ -567,25 +599,24 @@ func (s *Remote) adopt(ctx context.Context, l *link) error {
 		s.mu.Unlock()
 		return ErrClosed
 	}
-	before, after := defs(s.claims), defs(claims)
-	l.info = ReconnectInfo{
-		Server:              l.serverInfo(),
-		Changed:             !maps.Equal(before, after),
-		Before:              slices.Sorted(maps.Keys(before)),
-		After:               slices.Sorted(maps.Keys(after)),
-		InstructionsChanged: l.instructions() != s.link.instructions(),
+	if s.link != l {
+		before, after := defs(s.claims), defs(claims)
+		l.info = ReconnectInfo{
+			Server:              l.serverInfo(),
+			Changed:             !maps.Equal(before, after),
+			Before:              slices.Sorted(maps.Keys(before)),
+			After:               slices.Sorted(maps.Keys(after)),
+			InstructionsChanged: l.instructions() != s.link.instructions(),
+		}
 	}
+	l.adopted = true
 	s.link, s.tools, s.claims = l, tools, claims
 	s.restartErr = nil
 	s.settled = max(s.settled, gen)
 	s.settledErr = nil
 	close(s.settledCh)
 	s.settledCh = make(chan struct{})
-	tell := s.tellEnd(l)
 	s.mu.Unlock()
-	if tell {
-		s.opts.onEnded(l.endError())
-	}
 	return nil
 }
 

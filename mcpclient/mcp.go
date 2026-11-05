@@ -149,6 +149,10 @@ type options struct {
 	// protocolVersion is the version the session offers, the SDK's
 	// latest when empty; tests set it to reach an older server's path.
 	protocolVersion string
+	// afterList, when set, is called as adopt has listed a session's
+	// tools, with the listing's error; tests set it to end a session at
+	// that point.
+	afterList func(l *link, err error)
 }
 
 // RecordMetaKey is the _meta key under which a served tool's record
@@ -723,9 +727,10 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 	s.mu.Lock()
 	s.link = l
 	s.mu.Unlock()
+	// Released however Connect ends: a session it discards was never
+	// adopted, and its end is not reported.
+	defer l.release()
 	if err := s.adopt(ctx, l); err != nil {
-		// The host never had the remote, so its session's end is not
-		// reported.
 		s.mu.Lock()
 		s.closed = true
 		s.mu.Unlock()

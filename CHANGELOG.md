@@ -13,7 +13,10 @@ versions may break the API.
   restart's error, or closed, and `mcpclient.WithEnded` is called once
   per session when the remote sees it end, with an error wrapping
   `ErrSessionEnded`, with or without `WithReconnect`, and not for a
-  session the host closed. Before, a server that had exited read as
+  session the host closed or one `Connect` discarded. A restarted
+  session's end is reported after `WithReconnected` has reported its
+  restart and the restart is over, so the hook may send requests.
+  Before, a server that had exited read as
   running until a call failed or restarted it, and without
   `WithReconnect` nothing told the host. RFC 0001 draft 0.11 adds the
   MCP binding's `session` row.
