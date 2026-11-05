@@ -5,7 +5,7 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
-## Unreleased
+## v0.0.30 - 2026-11-05
 
 - Added: a host sees where an MCP server's session is, and hears when
   it ends (#104). `mcpclient.Remote.State` returns the session's
