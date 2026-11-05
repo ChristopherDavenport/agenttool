@@ -5,6 +5,36 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Added: a host sees where an MCP server's session is, and hears when
+  it ends (#104). `mcpclient.Remote.State` returns the session's
+  `SessionState`, live, ended, restarting, failed with the last
+  restart's error, or closed, and `mcpclient.WithEnded` is called once
+  per session when the remote sees it end, with an error wrapping
+  `ErrSessionEnded`, with or without `WithReconnect`, and not for a
+  session the host closed or one `Connect` discarded. A restarted
+  session's end is reported after `WithReconnected` has reported its
+  restart and the restart is over, so the hook may send requests.
+  Before, a server that had exited read as
+  running until a call failed or restarted it, and without
+  `WithReconnect` nothing told the host. RFC 0001 draft 0.11 adds the
+  MCP binding's `session` row.
+- Changed: the first result from an MCP server after `WithReconnect`
+  restarted it carries a notice at its head, for the model (#105): a
+  success's output gains an `input_text` part before its content, so
+  text alone reads the notice, a newline, then the text, and an error's
+  message is the notice, a newline, then the message. `RestartNotice`
+  is the default text, and `mcpclient.WithRestartNotice` gives the
+  host's, or "" to tell the model another way. Two restarts with no
+  result between them mark one result, of parallel calls one carries
+  it, and a call refused unsent with `ErrToolChanged` or cut does not
+  use it up. Details stay the server's result as sent. Before, only
+  `WithReconnected` heard of a restart, and a model that held a page, a
+  transaction or a REPL through the server read the next result as if
+  they still existed. RFC 0001 draft 0.11 states the rule in the
+  `session` row and under Content.
+
 ## v0.0.29 - 2026-11-03
 
 - Added: the command line answers a call's facts without running it

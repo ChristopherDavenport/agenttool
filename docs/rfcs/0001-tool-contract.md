@@ -1,6 +1,6 @@
 # RFC 0001: Agent Tool Contract
 
-Status: draft 0.10
+Status: draft 0.11
 Author: Christopher Davenport
 Discussion: to be opened against this repository. The Go module at its
 root is the reference binding; agentturn is the reference harness.
@@ -803,9 +803,10 @@ against.
 | read-only | the tool's `_meta` under `ToolMetaKey` carries `readOnly`, the served tool's annotation, as the server's statement rather than a hint; the consuming side reads it with `ToolMetaOf` | both |
 | idempotency key | no field; a consumed call's key is not sent, and a served call has none | — |
 | closer | not a closer: the remote session is closed through `mcpclient.Remote.Close` | consume |
+| session | no field in the contract: a server's session is the consuming side's, and the host is the one that can say a server stopped. The consuming side SHOULD let the host see whether a server's session is live, ended, being restarted, failed its last restart, with that attempt's error, or closed, `mcpclient.Remote.State`. It SHOULD tell the host when a session ends, a process that exited or a connection that dropped, once per session, when it ends and not when the next request finds it ended, `mcpclient.WithEnded`, whether or not it restarts servers; a session the host closed is not reported as ended. A restart, `mcpclient.WithReconnect`, is reported to the host after each attempt, `mcpclient.WithReconnected`. The model is told with the next result: a consuming side that restarts a server whose session ended MUST mark the first result it returns from that server afterwards, a success or an error, whether or not the tools changed, since whatever the model opened through the server, a page, a transaction, a process, is gone. Two restarts with no result between them are marked once, and of several calls in flight one result is marked; a call refused unsent because its tool changed, or cut by the end of a session, or that ended without the server's result, does not use the mark up. By default the mark is the notice [Content](#content) places, saying the server was restarted and that whatever it held is gone; the host MAY replace that text, `mcpclient.WithRestartNotice`, or tell the model another way with that result. The notice is recorded as the model read it | consume |
 | arguments | `arguments`; the server validates against `inputSchema` with a general validator. A `$schema` naming draft-07 or 2020-12 is read however its URI is spelt, `http` or `https`, with or without a trailing `#`. A schema of a dialect the validator does not handle is served without the check, which the serving host is told of, as a tool whose schema came from elsewhere guards itself; a schema that is not one, or does not resolve, is refused when the tool is added | both |
 | output | content blocks ↔ the output, as [Content](#content) states | both |
-| output schema | no property in the contract, and not served. A consumed tool that lists an `outputSchema` has a successful result's `structuredContent` validated against it with a general validator, and a result with none fails it. A failure completes the call with an error beginning `invalid result:` that says the call ran, since it did and may have had its effect: the outcome is known, not [ambiguous](#running-a-call-again), and the model is not told the call failed. A `$schema` naming draft-07 or 2020-12 is read however its URI is spelt, `http` or `https`, with or without a trailing `#`. A schema the validator cannot read, another dialect or one that does not resolve, leaves the tool unchecked, as a tool with no schema is, and the consuming side tells the host why; it does not fail the tool's calls for a fault in its listing | consume |
+| output schema | no property in the contract, and not served. A consumed tool that lists an `outputSchema` has a successful result's `structuredContent` validated against it with a general validator, and a result with none fails it. A failure completes the call with an error beginning `invalid result:`, after a restart's notice when the result carries one, that says the call ran, since it did and may have had its effect: the outcome is known, not [ambiguous](#running-a-call-again), and the model is not told the call failed. A `$schema` naming draft-07 or 2020-12 is read however its URI is spelt, `http` or `https`, with or without a trailing `#`. A schema the validator cannot read, another dialect or one that does not resolve, leaves the tool unchecked, as a tool with no schema is, and the consuming side tells the host why; it does not fail the tool's calls for a fault in its listing | consume |
 | error | `isError` with the message as text; the consuming side returns it as an error and the harness applies `Error:` once | both |
 | progress | `notifications/progress` when the request carries a token; `progress`, `total`, `message` ↔ progress info | both |
 | details | the consuming side sets the raw `CallToolResult` as details | consume |
@@ -855,6 +856,12 @@ differently send different requests and record different sessions.
   hold equals nothing.
 - **An error result** is consumed as an error whose message is the
   text the result would have had.
+- **A restart's notice**, on the first result after the server
+  [restarted](#mcp), is an `input_text` part before the result's
+  content, so a result of text alone reads the notice, a newline, then
+  its text; on an error, the notice, a newline, then the message the
+  error would have had, an output-schema failure's included. A tool
+  result has no other place the model reads: details never reach it.
 - **A served blob's URI** is the part's `file_url` when it has one;
   otherwise its `filename` when that is an absolute URI, a scheme of two
   or more characters as RFC 3986 spells one, a letter then letters,
@@ -1289,6 +1296,24 @@ module and is listed in the changelog as one.
   differ, `retryable` with a not-before time in a `_meta` block, a
   rate-limit error code, so it waits for one to settle. The MCP
   client handles its own transport failures meanwhile.
+
+## Changes since 0.10
+
+- The MCP binding gains a **session** row (agenttool#104). The
+  consuming side SHOULD let the host see whether a server's session is
+  live, ended, being restarted, failed its last restart, with its
+  error, or closed, and SHOULD tell the host when a session ends, once,
+  when it ends; a session the host closed is not reported. At 0.10 a
+  server that had exited read as running until a call failed or
+  restarted it, and without a restart nothing told the host at all.
+- The **session** row and Content gain a MUST (agenttool#105): the
+  first result from a server after the consuming side restarted it,
+  a success or an error, is marked, by default with a notice as an
+  `input_text` part before its content or at the head of an error's
+  message, which the host MAY replace; two restarts with no result
+  between them mark one result. At 0.10 only the host heard of a
+  restart, so a model that held a page, a transaction or a REPL
+  through the server carried on as if they still existed.
 
 ## Changes since 0.9
 
