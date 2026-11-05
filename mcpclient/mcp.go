@@ -143,6 +143,7 @@ type options struct {
 	timeouts    map[string]claim[callTimeout]
 	dial        func(context.Context) (sdk.Transport, error)
 	onReconnect func(ReconnectInfo)
+	onEnded     func(error)
 	// protocolVersion is the version the session offers, the SDK's
 	// latest when empty; tests set it to reach an older server's path.
 	protocolVersion string
@@ -553,6 +554,10 @@ type Remote struct {
 	// [reconnectTimeout] but for tests.
 	attempt          *attempt
 	reconnectTimeout time.Duration
+	// restartErr is the error of the last attempt to restart the server,
+	// while the session it could not restart is the remote's, and nil
+	// once one succeeds; see [Remote.State]. It is under mu.
+	restartErr error
 
 	// grace bounds the post-call wait for a notification. It is set
 	// before the remote is returned and read-only after.
@@ -707,11 +712,16 @@ func Connect(ctx context.Context, t sdk.Transport, opts ...Option) (*Remote, err
 	}
 	// The session is the remote's before its tools are listed, since a
 	// notification may arrive while they are.
-	l := newLink(session, 0)
+	l := newLink(session, 0, s.sessionEnded)
 	s.mu.Lock()
 	s.link = l
 	s.mu.Unlock()
 	if _, _, err := s.adopt(ctx, l); err != nil {
+		// The host never had the remote, so its session's end is not
+		// reported.
+		s.mu.Lock()
+		s.closed = true
+		s.mu.Unlock()
 		_ = session.Close()
 		return nil, err
 	}

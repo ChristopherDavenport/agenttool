@@ -5,6 +5,19 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Added: a host sees where an MCP server's session is, and hears when
+  it ends (#104). `mcpclient.Remote.State` returns the session's
+  `SessionState`, live, ended, restarting, failed with the last
+  restart's error, or closed, and `mcpclient.WithEnded` is called once
+  per session when the remote sees it end, with an error wrapping
+  `ErrSessionEnded`, with or without `WithReconnect`, and not for a
+  session the host closed. Before, a server that had exited read as
+  running until a call failed or restarted it, and without
+  `WithReconnect` nothing told the host. RFC 0001 draft 0.11 adds the
+  MCP binding's `session` row.
+
 ## v0.0.29 - 2026-11-03
 
 - Added: the command line answers a call's facts without running it

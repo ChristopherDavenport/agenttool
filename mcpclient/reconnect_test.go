@@ -858,3 +858,129 @@ func TestReconnectWithChangedInstructions(t *testing.T) {
 		t.Errorf("hook got %+v; want the second restart alone to change the instructions", infos)
 	}
 }
+
+// ended collects what WithEnded reports.
+type ended struct {
+	ch chan error
+}
+
+func newEnded() *ended { return &ended{ch: make(chan error, 8)} }
+
+func (e *ended) option() Option { return WithEnded(func(err error) { e.ch <- err }) }
+
+// wait returns the next end the hook heard, failing when none comes.
+func (e *ended) wait(t *testing.T) error {
+	t.Helper()
+	select {
+	case err := <-e.ch:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hook did not hear the session end")
+		return nil
+	}
+}
+
+// none fails when the hook heard an end.
+func (e *ended) none(t *testing.T) {
+	t.Helper()
+	select {
+	case err := <-e.ch:
+		t.Errorf("the hook heard an end: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func wantState(t *testing.T, s *Remote, want SessionState, wantErr bool) {
+	t.Helper()
+	got, err := s.State()
+	if got != want || (err != nil) != wantErr {
+		t.Errorf("State() = %v, %v; want %v with error %v", got, err, want, wantErr)
+	}
+}
+
+// A host sees whether the session is live, ended, being restarted,
+// failed its last restart or closed, and hears that it ended when it
+// ends, before any request finds it so, once per session; a session the
+// host closed is not reported as ended (#104).
+func TestReconnectStateAfterTheServerExits(t *testing.T) {
+	t.Run("restarted", func(t *testing.T) {
+		r := &restarter{t: t, serve: func(int) *sdk.Server { return newServer(t) }}
+		e := newEnded()
+		s := r.connect(false, e.option())
+		upper := lookup(t, s, "upper")
+		wantState(t, s, StateLive, false)
+
+		r.kill()
+		if err := e.wait(t); !errors.Is(err, ErrSessionEnded) {
+			t.Errorf("the hook got %v; want ErrSessionEnded", err)
+		}
+		wantState(t, s, StateEnded, false)
+		e.none(t)
+
+		if _, err := execute(upper, `{"text":"x"}`); err != nil {
+			t.Fatalf("the call after the end: %v", err)
+		}
+		wantState(t, s, StateLive, false)
+
+		r.fail.Store(1)
+		r.kill()
+		e.wait(t)
+		if _, err := execute(upper, `{"text":"x"}`); !errors.Is(err, ErrSessionEnded) {
+			t.Fatalf("the call after a failed restart: %v; want ErrSessionEnded", err)
+		}
+		st, err := s.State()
+		if st != StateFailed || err == nil || !strings.Contains(err.Error(), "unreachable") {
+			t.Errorf("State() = %v, %v; want failed with the dial's error", st, err)
+		}
+
+		if _, err := execute(upper, `{"text":"x"}`); err != nil {
+			t.Fatalf("the call after the failed restart: %v", err)
+		}
+		wantState(t, s, StateLive, false)
+
+		_ = s.Close()
+		wantState(t, s, StateClosed, false)
+		e.none(t)
+	})
+	t.Run("restarting", func(t *testing.T) {
+		r := &restarter{t: t, serve: func(int) *sdk.Server { return newServer(t) }, gate: make(chan struct{})}
+		s := r.connect(false)
+		upper := lookup(t, s, "upper")
+		r.drop(s)
+		done := make(chan error, 1)
+		go func() {
+			_, err := execute(upper, `{"text":"x"}`)
+			done <- err
+		}()
+		waitFor(t, func() []struct{} { return make([]struct{}, r.dials.Load()) }, 1)
+		wantState(t, s, StateRestarting, false)
+		close(r.gate)
+		if err := <-done; err != nil {
+			t.Fatalf("the call: %v", err)
+		}
+		wantState(t, s, StateLive, false)
+	})
+	t.Run("without reconnect", func(t *testing.T) {
+		r := &restarter{t: t, serve: func(int) *sdk.Server { return newServer(t) }}
+		e := newEnded()
+		s := r.connect(true, e.option())
+		r.kill()
+		if err := e.wait(t); !errors.Is(err, ErrSessionEnded) {
+			t.Errorf("the hook got %v; want ErrSessionEnded", err)
+		}
+		wantState(t, s, StateEnded, false)
+		_, _ = execute(lookup(t, s, "upper"), `{"text":"x"}`)
+		wantState(t, s, StateEnded, false)
+		e.none(t)
+		_ = s.Close()
+		wantState(t, s, StateClosed, false)
+	})
+	t.Run("closed live", func(t *testing.T) {
+		r := &restarter{t: t, serve: func(int) *sdk.Server { return newServer(t) }}
+		e := newEnded()
+		s := r.connect(false, e.option())
+		_ = s.Close()
+		wantState(t, s, StateClosed, false)
+		e.none(t)
+	})
+}

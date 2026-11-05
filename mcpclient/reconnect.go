@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -79,6 +80,9 @@ const endGrace = 500 * time.Millisecond
 //
 // Without the option a session that ends stays ended, and every later
 // request fails, as before.
+//
+// [Remote.State] says where the session is in this, and [WithEnded]
+// tells the host when it ends, with or without the option.
 func WithReconnect(dial func(ctx context.Context) (sdk.Transport, error)) Option {
 	return func(o *options) { o.dial = dial }
 }
@@ -117,6 +121,81 @@ func WithReconnected(fn func(ReconnectInfo)) Option {
 	return func(o *options) { o.onReconnect = fn }
 }
 
+// SessionState is where a remote's session is in its life; see
+// [Remote.State].
+type SessionState int
+
+const (
+	// StateLive is a session that has not ended.
+	StateLive SessionState = iota
+	// StateEnded is a session that ended, a process that exited or a
+	// connection that dropped, and has not been restarted: without
+	// [WithReconnect] it stays so, and with it the next request restarts
+	// the server.
+	StateEnded
+	// StateRestarting is a session that ended and is being restarted,
+	// with [WithReconnect].
+	StateRestarting
+	// StateFailed is a session that ended whose last restart failed;
+	// [Remote.State] gives that attempt's error, and the next request
+	// tries again.
+	StateFailed
+	// StateClosed is a remote the host closed with [Remote.Close].
+	StateClosed
+)
+
+// String returns the state's name: live, ended, restarting, failed or
+// closed.
+func (st SessionState) String() string {
+	switch st {
+	case StateLive:
+		return "live"
+	case StateEnded:
+		return "ended"
+	case StateRestarting:
+		return "restarting"
+	case StateFailed:
+		return "failed"
+	case StateClosed:
+		return "closed"
+	}
+	return "SessionState(" + strconv.Itoa(int(st)) + ")"
+}
+
+// State returns where the server's session is: live, ended, being
+// restarted, failed its last restart, with that attempt's error, or
+// closed. The error is nil in every other state. It reads the state as
+// the remote has seen it, so a server that has just exited may read live
+// until the remote sees its session end, which [WithEnded] reports.
+func (s *Remote) State() (SessionState, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	switch {
+	case s.closed:
+		return StateClosed, nil
+	case s.attempt != nil:
+		return StateRestarting, nil
+	case !s.link.isEnded():
+		return StateLive, nil
+	case s.restartErr != nil:
+		return StateFailed, s.restartErr
+	}
+	return StateEnded, nil
+}
+
+// WithEnded sets the function called when the server's session ends, a
+// process that exited or a connection that dropped, with an error
+// wrapping [ErrSessionEnded] and saying why when the session did. It is
+// called once per session, when the remote sees the session end and not
+// when a request next finds it ended, outside the remote's locks, with
+// or without [WithReconnect]; a restarted session that ends is another
+// session, and is reported again. It is not called for a session the
+// host ended with [Remote.Close], nor for one a failed restart or
+// [Connect] discarded before the remote used it.
+func WithEnded(fn func(error)) Option {
+	return func(o *options) { o.onEnded = fn }
+}
+
 // link is one session of a remote and what its server said at
 // initialize. A remote has one at a time and replaces it when it
 // restarts the server.
@@ -128,8 +207,13 @@ type link struct {
 	// listChanged that it sends tool-list-changed notifications.
 	factsCap    bool
 	listChanged bool
-	// ended is closed when the session ends.
-	ended chan struct{}
+	// ended is closed when the session ends, and endErr, set before it
+	// is, is the error the session ended with.
+	ended  chan struct{}
+	endErr error
+	// told says [WithEnded] was called for this session. It is under the
+	// remote's mu.
+	told bool
 
 	// closing makes the session's close happen once, whoever asks for
 	// it first, a restart releasing a session that ended or
@@ -138,8 +222,9 @@ type link struct {
 	closeErr error
 }
 
-// newLink wraps a session the client just connected, and watches it.
-func newLink(session *sdk.ClientSession, gen int64) *link {
+// newLink wraps a session the client just connected, and watches it:
+// when the session ends, onEnd is called with the link, unless it is nil.
+func newLink(session *sdk.ClientSession, gen int64, onEnd func(*link)) *link {
 	l := &link{session: session, gen: gen, ended: make(chan struct{})}
 	if res := session.InitializeResult(); res != nil && res.Capabilities != nil {
 		if res.Capabilities.Tools != nil {
@@ -148,10 +233,47 @@ func newLink(session *sdk.ClientSession, gen int64) *link {
 		_, l.factsCap = res.Capabilities.Experimental[FactsCapability]
 	}
 	go func() {
-		_ = session.Wait()
+		l.endErr = session.Wait()
 		close(l.ended)
+		if onEnd != nil {
+			onEnd(l)
+		}
 	}()
 	return l
+}
+
+// endError is what [WithEnded] is given for the session, which has
+// ended.
+func (l *link) endError() error {
+	if l.endErr != nil {
+		return fmt.Errorf("%w: %w", ErrSessionEnded, l.endErr)
+	}
+	return ErrSessionEnded
+}
+
+// sessionEnded tells the host that l's session ended, once, when l is
+// the remote's session and the host did not close it.
+func (s *Remote) sessionEnded(l *link) {
+	s.mu.Lock()
+	tell := s.tellEnd(l)
+	s.mu.Unlock()
+	if tell {
+		s.opts.onEnded(l.endError())
+	}
+}
+
+// tellEnd reports whether the host is to hear that l's session ended,
+// and marks it told: l has ended and is the remote's session, the host
+// takes the report and was not told, and the remote is not closed. The
+// caller holds mu, and calls the hook once it lets go. Both the watcher
+// and adopt ask, so a session that ends while it is being adopted is
+// reported by whichever comes second.
+func (s *Remote) tellEnd(l *link) bool {
+	if s.opts.onEnded == nil || s.closed || s.link != l || l.told || !l.isEnded() {
+		return false
+	}
+	l.told = true
+	return true
 }
 
 // isEnded reports whether the session has ended.
@@ -325,17 +447,24 @@ func (s *Remote) redial(ctx context.Context, old *link, a *attempt) {
 		}
 	}
 	a.finish(err)
+	var failed error
+	if err != nil {
+		failed = fmt.Errorf("%w and could not be restarted; the next request tries again: %w", ErrSessionEnded, err)
+	}
 	s.mu.Lock()
 	if s.attempt == a {
 		s.attempt = nil
 	}
 	closed := s.closed
+	if failed != nil && !closed {
+		s.restartErr = failed
+	}
 	s.mu.Unlock()
 	switch {
 	case closed:
 		a.err = ErrClosed
 	case err != nil:
-		a.err = fmt.Errorf("%w and could not be restarted; the next request tries again: %w", ErrSessionEnded, err)
+		a.err = failed
 		info.Err = a.err
 	default:
 		a.link = l
@@ -357,7 +486,7 @@ func (s *Remote) reconnect(ctx context.Context, old *link) (*link, ReconnectInfo
 	if err != nil {
 		return nil, ReconnectInfo{}, fmt.Errorf("connect: %w", err)
 	}
-	l := newLink(session, old.gen+1)
+	l := newLink(session, old.gen+1, s.sessionEnded)
 	before, after, err := s.adopt(ctx, l)
 	if err != nil {
 		_ = session.Close()
@@ -389,16 +518,22 @@ func (s *Remote) adopt(ctx context.Context, l *link) (before, after map[string]s
 		return nil, nil, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return nil, nil, ErrClosed
 	}
 	before = defs(s.claims)
 	s.link, s.tools, s.claims = l, tools, claims
+	s.restartErr = nil
 	s.settled = max(s.settled, gen)
 	s.settledErr = nil
 	close(s.settledCh)
 	s.settledCh = make(chan struct{})
+	tell := s.tellEnd(l)
+	s.mu.Unlock()
+	if tell {
+		s.opts.onEnded(l.endError())
+	}
 	return before, defs(claims), nil
 }
 
