@@ -304,7 +304,7 @@ func (s *Remote) ListEvents(ctx context.Context) ([]EventDescriptor, error) {
 			return nil, eventErr(err)
 		}
 		for _, d := range res.Events {
-			desc := EventDescriptor{Name: d.Name, Description: d.Description, Delivery: d.Delivery, InputSchema: d.InputSchema, PayloadSchema: d.PayloadSchema, Meta: d.Meta}
+			desc := EventDescriptor(d)
 			if _, err := paramBindings(desc.InputSchema); err != nil {
 				continue
 			}
