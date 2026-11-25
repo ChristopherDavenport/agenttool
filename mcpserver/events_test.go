@@ -358,9 +358,9 @@ func TestEventsPollTruncated(t *testing.T) {
 	}
 }
 
-// TestEventsRingBounds holds go:events:ring:bounds and
-// go:events:ring:epoch: the buffer drops by age and by count, and a
-// replaced type keeps the sequence so old cursors read as gaps.
+// TestEventsRingBounds holds the requirements go:events:ring:bounds
+// and go:events:ring:epoch: the buffer drops by age and by count, and
+// a replaced type keeps the sequence so old cursors read as gaps.
 func TestEventsRingBounds(t *testing.T) {
 	clock := newClock()
 	r := newRing("ep", clock.Now, EmitBuffer{MaxAge: time.Minute, MaxEvents: 10})
@@ -746,9 +746,8 @@ func TestEventsSchemaChange(t *testing.T) {
 	}
 }
 
-// TestEventsLeases holds go:events:lease:lifecycle and
-// go:events:lease:capacity:
-// OnSubscribe on the first poll, a lease per principal and arguments
+// TestEventsLeases holds the requirements go:events:lease:lifecycle
+// and go:events:lease:capacity: OnSubscribe on the first poll, a lease per principal and arguments
 // however written, renewed by polling, ended by silence, and bounded.
 func TestEventsLeases(t *testing.T) {
 	var mu sync.Mutex

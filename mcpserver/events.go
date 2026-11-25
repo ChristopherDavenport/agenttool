@@ -585,7 +585,7 @@ type eventRecord struct {
 }
 
 func (r eventRecord) event() Event {
-	return Event{ID: r.ID, Time: r.Time, Data: r.Data, Meta: r.Meta}
+	return Event(r)
 }
 
 // sameSchema says whether two schemas are the same JSON, whatever the

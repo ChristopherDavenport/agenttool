@@ -157,8 +157,9 @@ func (s *statusRecorder) RoundTrip(r *http.Request) (*http.Response, error) {
 	return resp, err
 }
 
-// TestEventsHTTPHeaders holds events:mcp-name, events:mcp-param and
-// go:events:header-roundtrip over Streamable HTTP, protocol 2026-07-28:
+// TestEventsHTTPHeaders holds events:mcp-name, events:mcp-param and the
+// requirement go:events:header-roundtrip over Streamable HTTP, protocol
+// 2026-07-28:
 // the headers a client sends are the ones the server accepts, and a
 // request whose headers differ from its params is refused with -32020
 // and data.mismatch.
