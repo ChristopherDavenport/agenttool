@@ -208,8 +208,9 @@ type EventDef struct {
 
 	// Match decides whether an emitted event reaches the subscription
 	// with these arguments; absent, every one does. Only an emit-only
-	// type has it. It runs for each event as poll reads it, so it
-	// should be cheap and must not hold on to ev.
+	// type has it. It runs for each event as poll reads it, and for each
+	// webhook subscription on the goroutine that emits, so it should be
+	// cheap and must not hold on to ev.
 	Match func(c EventContext, ev Event, args json.RawMessage) bool
 	// Transform reshapes an emitted event for the subscription it goes
 	// to; absent, it goes as emitted. Its result is checked against the

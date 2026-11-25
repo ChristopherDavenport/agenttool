@@ -276,6 +276,7 @@ func TestEventsConstantsMatchClient(t *testing.T) {
 		"EventsCodeForbidden": strconv.Itoa(EventsCodeForbidden), "EventsCodeResourceExhausted": strconv.Itoa(EventsCodeResourceExhausted),
 		"EventsCodeUnsupported": strconv.Itoa(EventsCodeUnsupported), "EventsCodeCallbackEndpoint": strconv.Itoa(EventsCodeCallbackEndpoint),
 		"EventsCodeHeaderMismatch": strconv.Itoa(EventsCodeHeaderMismatch),
+		"EventsSubscribeMethod":    EventsSubscribeMethod, "EventsUnsubscribeMethod": EventsUnsubscribeMethod,
 	}
 	for name, v := range ours {
 		if theirs[name] != v {

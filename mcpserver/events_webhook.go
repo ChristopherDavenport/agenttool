@@ -538,6 +538,12 @@ func (w *webhookEngine) arm(tr *tracked, expires time.Time) {
 // refresh that another replica made counts, and expires the record when
 // the grant has ended.
 func (w *webhookEngine) expireByID(id string) {
+	w.mu.Lock()
+	closed := w.closed
+	w.mu.Unlock()
+	if closed {
+		return
+	}
 	defer w.lockID(id)()
 	rec, ok, err := w.store.Get(w.ctx, id)
 	if err != nil {
