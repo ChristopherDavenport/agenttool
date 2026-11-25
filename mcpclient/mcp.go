@@ -132,6 +132,7 @@ type options struct {
 	setups         []func(*sdk.Client) error
 	onRefreshError func(error)
 	elicitation    bool
+	events         bool
 	claims         bool
 	hints          bool
 	// host is the roots and log messages the host takes part in; see
@@ -540,6 +541,9 @@ func WithFactsHints() Option {
 // offers. It is the consume-side handle; mcpserver.NewServer returns
 // the SDK server for the serve side.
 type Remote struct {
+	// schemas is the event types last listed; see [WithEvents].
+	schemas eventSchemas
+
 	opts options
 
 	// client is the SDK client every session of the remote is connected
