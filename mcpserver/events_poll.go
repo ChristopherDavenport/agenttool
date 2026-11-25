@@ -118,6 +118,40 @@ func (e *Events) handleUnsupported(mode string) func(context.Context, *sdk.Serve
 	}
 }
 
+func (e *Events) handleSubscribe(ctx context.Context, ss *sdk.ServerSession, p *eventsParams) (*subscribeResult, error) {
+	if e.hooks == nil {
+		return nil, unsupportedDelivery(DeliveryWebhook).wire()
+	}
+	res, err := e.hooks.subscribe(ctx, ss, p)
+	if err != nil {
+		return nil, e.wireError(err, "the subscription could not be made")
+	}
+	return res, nil
+}
+
+func (e *Events) handleUnsubscribe(ctx context.Context, ss *sdk.ServerSession, p *eventsParams) (*emptyEventsResult, error) {
+	if e.hooks == nil {
+		return nil, unsupportedDelivery(DeliveryWebhook).wire()
+	}
+	res, err := e.hooks.unsubscribe(ctx, ss, p)
+	if err != nil {
+		return nil, e.wireError(err, "the subscription could not be ended")
+	}
+	return res, nil
+}
+
+// wireError is err as the JSON-RPC error a request is answered with: an
+// [EventsError] as it is, and anything else an internal error, which the
+// server reports and whose text is not sent.
+func (e *Events) wireError(err error, what string) error {
+	var ee *EventsError
+	if !errors.As(err, &ee) {
+		e.opts.OnError(err)
+		ee = &EventsError{Code: -32603, Message: what}
+	}
+	return ee.wire()
+}
+
 func (e *Events) handlePoll(ctx context.Context, _ *sdk.ServerSession, p *eventsParams) (*pollEventsResult, error) {
 	res, err := e.poll(ctx, p)
 	if err != nil {

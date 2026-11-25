@@ -259,6 +259,10 @@ type EventsOptions struct {
 	MaxSubscriptions int
 	// Buffer bounds the ring of an emit-only type.
 	Buffer EmitBuffer
+	// Webhook turns on the webhook delivery mode, events/subscribe and
+	// events/unsubscribe; nil leaves it off, and both are then answered
+	// with [EventsCodeUnsupported]. See [WebhookOptions].
+	Webhook *WebhookOptions
 	// OnError is told of what the server skips or cannot do for an
 	// author's sake: an event whose payload does not conform, a hook
 	// that failed. Nil logs it with [slog.Default].
@@ -330,6 +334,8 @@ type Events struct {
 	types map[string]*EventType
 
 	leases leaseTable
+	// hooks is the webhook delivery, nil when it is off.
+	hooks *webhookEngine
 }
 
 // EventType is a registered event type, the handle of its author.
@@ -371,6 +377,14 @@ var ErrEventExists = errors.New("mcpserver: events: the type is registered with 
 func AddEvents(s *sdk.Server, o EventsOptions) (*Events, error) {
 	e := &Events{opts: o.withDefaults(), types: map[string]*EventType{}}
 	e.leases = leaseTable{byKey: map[string]*lease{}}
+	if o.Webhook != nil {
+		e.opts.Webhook = new(WebhookOptions)
+		*e.opts.Webhook = o.Webhook.withDefaults()
+		var err error
+		if e.hooks, err = newWebhookEngine(e, *e.opts.Webhook); err != nil {
+			return nil, err
+		}
+	}
 	for _, m := range []string{EventsListMethod, EventsPollMethod, EventsStreamMethod, EventsSubscribeMethod, EventsUnsubscribeMethod} {
 		var err error
 		switch m {
@@ -380,8 +394,10 @@ func AddEvents(s *sdk.Server, o EventsOptions) (*Events, error) {
 			err = sdk.AddReceivingCustomMethod(s, m, e.handlePoll)
 		case EventsStreamMethod:
 			err = sdk.AddReceivingCustomMethod(s, m, e.handleUnsupported(DeliveryPush))
+		case EventsSubscribeMethod:
+			err = sdk.AddReceivingCustomMethod(s, m, e.handleSubscribe)
 		default:
-			err = sdk.AddReceivingCustomMethod(s, m, e.handleUnsupported(DeliveryWebhook))
+			err = sdk.AddReceivingCustomMethod(s, m, e.handleUnsubscribe)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("mcpserver: %w", err)
@@ -430,10 +446,14 @@ func (e *Events) Register(def EventDef) (*EventType, error) {
 		if !sameSchema(old.def.PayloadSchema, t.def.PayloadSchema) {
 			feature = "payloadSchema"
 		}
-		e.leases.terminate(e, def.Name, &EventsError{
+		cause := &EventsError{
 			Code: EventsCodeUnsupported, Message: fmt.Sprintf("event %q changed its %s", def.Name, feature),
 			Data: map[string]any{"feature": feature, "reason": "schema_changed"},
-		})
+		}
+		e.leases.terminate(e, def.Name, cause)
+		if e.hooks != nil {
+			e.hooks.terminate(def.Name, cause)
+		}
 	}
 	return t, nil
 }
@@ -451,19 +471,29 @@ func (e *Events) newType(def EventDef) (*EventType, error) {
 	}
 	if len(def.Delivery) == 0 {
 		def.Delivery = []string{DeliveryPoll}
+		if e.hooks != nil && def.EmitOnly {
+			def.Delivery = append(def.Delivery, DeliveryWebhook)
+		}
 	} else {
 		def.Delivery = slices.Clone(def.Delivery)
 		for _, m := range def.Delivery {
 			switch m {
 			case DeliveryPoll:
-			case DeliveryPush, DeliveryWebhook:
+			case DeliveryPush:
 				return nil, fmt.Errorf("mcpserver: events: type %q: delivery %q is not served yet", def.Name, m)
+			case DeliveryWebhook:
+				if e.hooks == nil {
+					return nil, fmt.Errorf("mcpserver: events: type %q: delivery %q needs EventsOptions.Webhook", def.Name, m)
+				}
+				if !def.EmitOnly {
+					return nil, fmt.Errorf("mcpserver: events: type %q: delivery %q is served for emit-only types, which this package keeps a replayable position for", def.Name, m)
+				}
 			default:
 				return nil, fmt.Errorf("mcpserver: events: type %q: unknown delivery %q", def.Name, m)
 			}
 		}
 		if !slices.Contains(def.Delivery, DeliveryPoll) {
-			return nil, fmt.Errorf("mcpserver: events: type %q is not served by poll, the only mode served", def.Name)
+			return nil, fmt.Errorf("mcpserver: events: type %q is not served by poll, which every type is", def.Name)
 		}
 	}
 	if len(def.InputSchema) == 0 {
@@ -533,6 +563,9 @@ func (t *EventType) Remove() {
 	}
 	e.mu.Unlock()
 	e.leases.drop(e, t.def.Name)
+	if e.hooks != nil {
+		e.hooks.terminate(t.def.Name, notFoundEvent(t.def.Name))
+	}
 }
 
 // live says whether t is the type registered under its name.
@@ -549,9 +582,17 @@ func (e *Events) lookup(name string) *EventType {
 }
 
 // Close ends every poll lease, calling the types' OnUnsubscribe, which a
-// server that is shutting down does so a hook sees the end. Types and
-// emitted events are untouched.
-func (e *Events) Close() { e.leases.dropAll(e) }
+// server that is shutting down does so a hook sees the end, and stops
+// webhook delivery: timers are cancelled, requests in flight are cut off
+// and the goroutines are waited for, so nothing runs after it returns.
+// Webhook subscriptions stay in the store, which clients refresh. Types
+// and emitted events are untouched.
+func (e *Events) Close() {
+	e.leases.dropAll(e)
+	if e.hooks != nil {
+		e.hooks.close()
+	}
+}
 
 // record turns ev into the form the server keeps, checked against the
 // payload schema.
@@ -585,7 +626,7 @@ type eventRecord struct {
 }
 
 func (r eventRecord) event() Event {
-	return Event{ID: r.ID, Time: r.Time, Data: r.Data, Meta: r.Meta}
+	return Event(r)
 }
 
 // sameSchema says whether two schemas are the same JSON, whatever the
