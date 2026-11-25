@@ -280,8 +280,9 @@ func TestEventsList(t *testing.T) {
 	}
 }
 
-// TestEventsPollEmitOnly holds events:poll:bootstrap, replay, has-more,
-// result-type and events:cursor:absent-is-null for an emit-only type.
+// TestEventsPollEmitOnly holds events:poll:bootstrap, events:poll:replay,
+// events:poll:has-more, events:poll:result-type and
+// events:cursor:absent-is-null for an emit-only type.
 func TestEventsPollEmitOnly(t *testing.T) {
 	h := newEventsHarness(t, nil)
 	et := h.emitter("count", nil)
@@ -745,7 +746,8 @@ func TestEventsSchemaChange(t *testing.T) {
 	}
 }
 
-// TestEventsLeases holds go:events:lease:lifecycle and :capacity:
+// TestEventsLeases holds go:events:lease:lifecycle and
+// go:events:lease:capacity:
 // OnSubscribe on the first poll, a lease per principal and arguments
 // however written, renewed by polling, ended by silence, and bounded.
 func TestEventsLeases(t *testing.T) {
