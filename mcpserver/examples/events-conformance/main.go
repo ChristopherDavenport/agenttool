@@ -323,7 +323,7 @@ func run(addr, placeholder string, pageSize int) error {
 
 	mux := http.NewServeMux()
 	handler = sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return srv }, &sdk.StreamableHTTPOptions{Stateless: true})
-	mux.Handle("/mcp", handler)
+	mux.Handle("/mcp", ev.HTTPHandler(handler))
 	hs := &http.Server{Addr: addr, Handler: mux}
 	go func() {
 		<-ctx.Done()
