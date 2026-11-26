@@ -1,8 +1,10 @@
 # MCP Events (SEP-3415) in the MCP layer
 
-Status: poll and webhook shipped on `main` (PRs #108 to #112), unreleased;
-push is not served; wiring into dax and agentkit has not started. Written
-2026-11-25, updated 2026-11-26 to match what shipped.
+Status: poll and webhook shipped on `main` (PRs #108 to #112, released as
+agenttool v0.0.31); push is not served; real-stdio tests are in #113 (open);
+dax consumes events by poll and uses the same delivery path for background
+work (dax #218 and #219, merged, unreleased). Written 2026-11-25, updated
+2026-11-27 to match what shipped.
 
 ## Sources
 
@@ -142,6 +144,56 @@ request id in go-sdk, or our own thin wire layer for `events/stream` at the
 HTTP level plus a `Connection` wrapper for stdio. Nothing has been filed
 upstream.
 
+## Real stdio
+
+The first tests ran over in-memory transports and Streamable HTTP. #113
+adds tests over a real stdio pipe to a child process (the test binary
+re-execs itself as the server): list, poll and `RunEvents`, a restart (an
+old-epoch cursor on a new process reads as a gap with a fresh cursor, not
+an error), clean shutdown, and webhook subscribe, which is refused without a
+principal (there is no authentication over stdio) and works with a fixed
+one. No bug was found. Events emitted while a stdio server is down are
+lost, because the ring does not survive a restart; the gap is the only
+signal.
+
+## In dax (phase 4)
+
+dax is an events consumer; it does not serve events.
+
+- **dax #218, events by poll.** A user-config-only `mcp_servers.<n>.events`
+  block (`types`, `session`) polls a connected server with `RunEvents`. Each
+  event reaches the session as a user message framed as untrusted data
+  (header, a line saying it is not instructions, the payload between fixed
+  markers with the markers neutralised, capped at 4 KiB), recorded under the
+  trigger `mcp-event` with the `untrusted` label. With no run going an event
+  starts one; during a run it is a follow-up, never a steer. Cursors are in
+  `~/.dax/mcp-events.json`, private and locked. A project config file may not
+  declare it. `session: "current"` delivers to the session in use;
+  `"dedicated"` is defined and validated but fails at start, since it needs a
+  second hosted session. Tested over Streamable HTTP, stdio and a local
+  executor. An event-started run uses the session's current policy, and dax
+  does not taint tool context after untrusted input, so event text can lead
+  to tool calls the policy approves with nobody to ask.
+- **dax #219, background work wakes the loop.** This does not use MCP: the
+  loop-wakes-on-a-late-result mechanism is in-process (`Agent.Deliver` and
+  `Accept`), and dax now wires it. `extension.Env.Deliver` lets a tool hand
+  input to the session; a `background` process that ends on its own, and an
+  `explore` or `task` called with `background: true`, deliver their result as
+  the agent's own input (a run when idle, the run in flight takes it, queued
+  under a held approval). The pinned agentturn's `WithDetach` is fixed per
+  tool, so each child is a foreground and a `_background` tool behind a
+  dispatcher; at most four run at once, managed by `background_agents`. A
+  backgrounded child cannot ask its parent (a detached call has no
+  elicitor): it stops on the pending call and its end is delivered. Both
+  end with the session.
+
+MCP events as a source (dax publishing events) was scoped and set aside: for
+a process or sub-agent in the same process, `Deliver` already does the job;
+across a remote workspace `process.wait` blocks over MCP already; A2A has
+task state and streaming; attached views follow the control events. The one
+real gap is an external MCP client watching a dax session, which is a
+separate feature.
+
 ## Conformance
 
 Referee: conformance#541 at `c8625de3` (#521 at `76fef32d`). Both PRs were
@@ -174,13 +226,18 @@ grade.
   where the reference answers -32601; routing headers are checked only from
   2026-07-28.
 - Client mode selection per SEP Appendix A.
-- Phase 4: wire event sources into dax and agentkit as separate changes in
-  those repositories.
+- dax: `session: "dedicated"`; webhook delivery (needs a reachable
+  listener); persistence of background work across a restart and a
+  synthetic "session closed" delivery on resume; a per-call detach in
+  agentturn instead of the two-tools-per-child workaround; tainting tool
+  context after untrusted input; the `in: workspace` placement of an events
+  server is untested.
+- agentkit: no change was needed; the loop lives in dax.
 
 ## Open questions
 
 - Which way to take push: upstream custom notifications, our own wire
-  layer, or wait.
+  layer, or wait. (Nothing has been filed upstream.)
 - Error codes -32023..-32027 are provisional in the SEP.
 - SEP Open Questions that could change the wire: multi-name subscriptions
   with one cursor, events for resource and list-changed notifications.
