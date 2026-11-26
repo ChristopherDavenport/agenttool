@@ -20,7 +20,9 @@
 //
 //   - The events_conformance_allow_callback_origin tool, which the suite
 //     calls with its receiver's origin, trusts that origin with
-//     [mcpserver.Events.TrustWebhookOrigin].
+//     the module-internal testhook.TrustWebhookOrigin, which is not public
+//     API: an embedder that knows its callback origins when it builds the
+//     server sets WebhookOptions.TrustedOrigins instead.
 //   - The suite subscribes some callbacks to https://conformance.invalid,
 //     which exists nowhere. That origin is trusted, a resolver sends it to
 //     the loopback, and a stub there (-placeholder, default 127.0.0.1:443,
@@ -95,6 +97,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/ChristopherDavenport/agenttool/mcpserver"
+	"github.com/ChristopherDavenport/agenttool/mcpserver/internal/testhook"
 )
 
 const (
@@ -157,7 +160,7 @@ func run(addr, placeholder string, pageSize int) error {
 	allow := agenttool.New("events_conformance_allow_callback_origin",
 		"Trusts one webhook callback origin for the rest of the process.",
 		func(_ context.Context, a originArgs) (string, error) {
-			if err := ev.TrustWebhookOrigin(a.Origin); err != nil {
+			if err := testhook.TrustWebhookOrigin(ev, a.Origin); err != nil {
 				return "", err
 			}
 			return "ok", nil

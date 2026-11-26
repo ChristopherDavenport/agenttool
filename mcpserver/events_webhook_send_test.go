@@ -528,10 +528,10 @@ func TestEventsWebhookRebindingEndToEnd(t *testing.T) {
 	_ = url
 }
 
-// TestEventsWebhookTrustWebhookOrigin holds go:events:webhook:trust-origin-at-runtime:
+// TestEventsWebhookTrustOrigin holds go:events:webhook:trust-origin-at-runtime:
 // an origin added to a running server is trusted from then on, a malformed
 // one is refused, and a server without the webhook mode refuses all.
-func TestEventsWebhookTrustWebhookOrigin(t *testing.T) {
+func TestEventsWebhookTrustOrigin(t *testing.T) {
 	g := guardFor(t, WebhookOptions{})
 	if _, err := g.checkURL("http://127.0.0.1:9/x"); err == nil {
 		t.Fatal("an untrusted http callback was accepted")
@@ -550,10 +550,10 @@ func TestEventsWebhookTrustWebhookOrigin(t *testing.T) {
 	}
 
 	h := newWebhookHarness(t, nil)
-	if err := h.events.TrustWebhookOrigin("http://127.0.0.1:12345"); err != nil {
+	if err := h.events.trustWebhookOrigin("http://127.0.0.1:12345"); err != nil {
 		t.Fatal(err)
 	}
-	if err := (&Events{}).TrustWebhookOrigin("http://127.0.0.1:1"); err == nil {
+	if err := (&Events{}).trustWebhookOrigin("http://127.0.0.1:1"); err == nil {
 		t.Fatal("a server without webhooks trusted an origin")
 	}
 }
