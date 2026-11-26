@@ -5,6 +5,31 @@ All user-visible changes to this library. The format follows
 uses [Semantic Versioning](https://semver.org/); before v1.0.0 minor
 versions may break the API.
 
+## Unreleased
+
+- Added: MCP Events (SEP-3415), poll mode, experimental. `mcpserver.AddEvents`
+  has a server advertise `io.modelcontextprotocol/events` and answer
+  `events/list` and `events/poll`; event types are registered with
+  `Events.Register`, either with a `Check` that pulls from an upstream and
+  owns the cursor, or emit-only, kept in a bounded in-memory ring whose
+  cursors read `e<epoch>.<n>` and whose gaps are answered with `truncated`.
+  Polls hold leases with `OnSubscribe` and `OnUnsubscribe`, `nextPollMs` is
+  clamped to half the lease, a type registered again with other schemas ends
+  its leases with the SEP's `schema_changed` error, and `Mcp-Name` and
+  `Mcp-Param-*` headers are checked against the params, with `-32020` and
+  `data.mismatch`. The SDK sends that refusal as HTTP 200, not 400.
+  `events/stream`, `events/subscribe` and `events/unsubscribe` are answered
+  with the unsupported error (-32026), and no event type lists push or
+  webhook: the wire frames of a stream and a `streamSink` seam are defined
+  and tested but not wired, since go-sdk v1.8.0 has no custom notifications.
+  `mcpclient.WithEvents` takes the extension, `Remote.ListEvents` and
+  `Remote.PollEvents` call it, and `Remote.RunEvents` runs a poll loop that
+  saves its cursor in a `CursorStore` (in memory by default), skips event ids
+  it has seen, polls at once on `hasMore` and otherwise waits `nextPollMs`,
+  at least a floor, 1 second by default. `mcpclient.EventHeaders` is a round
+  tripper that sends `Mcp-Name` and `Mcp-Param-*` over Streamable HTTP.
+  The error codes -32023 to -32027 are provisional in the SEP.
+
 ## v0.0.30 - 2026-11-05
 
 - Added: a host sees where an MCP server's session is, and hears when
