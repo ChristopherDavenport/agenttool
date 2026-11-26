@@ -340,7 +340,7 @@ func TestEventsStdioShutdown(t *testing.T) {
 }
 
 // TestEventsStdioWebhook holds go:events:stdio:webhook: a subscribe over
-// stdio, where there is no authentication, is refused with -32011 unless
+// stdio, where there is no authentication, is refused with -32024 unless
 // the embedder's Principal names someone; with one, and a trusted local
 // callback, the subscription is verified, and an emitted event is POSTed
 // to the receiver, which verifies its signature.
@@ -369,7 +369,7 @@ func TestEventsStdioWebhook(t *testing.T) {
 	nobody := startStdioChild(t, stdioOriginEnv+"="+receiver.URL)
 	var ee *mcpclient.EventError
 	if _, err := nobody.remote.SubscribeEvents(ctx, p); !errors.As(err, &ee) || ee.Code != mcpclient.EventsCodeForbidden {
-		t.Errorf("subscribe without a principal = %v, want -32011", err)
+		t.Errorf("subscribe without a principal = %v, want -32024", err)
 	}
 
 	c := startStdioChild(t, stdioOriginEnv+"="+receiver.URL, stdioPrincipalEnv+"=local")
