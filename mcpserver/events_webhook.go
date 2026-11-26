@@ -717,6 +717,14 @@ func (w *webhookEngine) idleForTest() bool { return w.busy.Load() == 0 }
 // signature and the refusal of redirects still apply. A subscription
 // already made keeps the trust it was made with. It fails for an origin
 // that is not of that form, and where the webhook mode is off.
+//
+// This turns off the server's defence against a client that names a
+// callback to reach what the server can reach, for that origin, and
+// nothing takes the trust back. Call it only from code the embedder
+// controls, with an origin the embedder chose, as a test does for a
+// receiver on a port the system picked. Never call it with a value a
+// client sent, and never from a tool, route or handler a client can
+// reach.
 func (e *Events) TrustWebhookOrigin(origin string) error {
 	if e.hooks == nil {
 		return errors.New("mcpserver: events: the webhook mode is off")
