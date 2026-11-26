@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -79,6 +80,7 @@ type guard struct {
 	resolve   func(ctx context.Context, host string) ([]netip.Addr, error)
 	dial      func(ctx context.Context, network, addr string) (net.Conn, error)
 	tls       *tls.Config
+	mu        sync.RWMutex
 	trusted   map[string]bool
 	timeout   time.Duration
 	maxAddrs  int
@@ -99,13 +101,24 @@ func newGuard(o *WebhookOptions) (*guard, error) {
 		g.timeout = defaultSendTimeout
 	}
 	for _, raw := range o.TrustedOrigins {
-		u, err := url.Parse(raw)
-		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || (u.Path != "" && u.Path != "/") || u.User != nil || u.RawQuery != "" {
-			return nil, fmt.Errorf("mcpserver: events: trusted origin %q is not scheme://host[:port]", raw)
+		if err := g.trust(raw); err != nil {
+			return nil, err
 		}
-		g.trusted[originOf(u)] = true
 	}
 	return g, nil
+}
+
+// trust adds the origin raw, "scheme://host[:port]", to those whose
+// callbacks skip the scheme and address rules.
+func (g *guard) trust(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || (u.Path != "" && u.Path != "/") || u.User != nil || u.RawQuery != "" {
+		return fmt.Errorf("mcpserver: events: trusted origin %q is not scheme://host[:port]", raw)
+	}
+	g.mu.Lock()
+	g.trusted[originOf(u)] = true
+	g.mu.Unlock()
+	return nil
 }
 
 // originOf is the scheme://host:port of u, host in lower case, the port
@@ -121,7 +134,11 @@ func originOf(u *url.URL) string {
 	return strings.ToLower(u.Scheme) + "://" + net.JoinHostPort(strings.ToLower(u.Hostname()), port)
 }
 
-func (g *guard) isTrusted(u *url.URL) bool { return g.trusted[originOf(u)] }
+func (g *guard) isTrusted(u *url.URL) bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.trusted[originOf(u)]
+}
 
 // checkURL is the rules of a callback URL that need no lookup: at most
 // 2048 bytes, absolute, https (http for a trusted origin), a host, no

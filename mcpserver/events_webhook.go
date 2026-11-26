@@ -15,6 +15,8 @@ import (
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/ChristopherDavenport/agenttool/mcpserver/internal/testhook"
 )
 
 // WebhookOptions turn on the webhook delivery mode of MCP Events: a
@@ -708,3 +710,34 @@ func (w *webhookEngine) terminateOne(rec WebhookRecord, cause *EventsError) {
 
 // idleForTest says no delivery goroutine runs.
 func (w *webhookEngine) idleForTest() bool { return w.busy.Load() == 0 }
+
+// trustWebhookOrigin adds origin, "scheme://host[:port]", to the
+// [WebhookOptions.TrustedOrigins] of a server that is running, for an
+// origin that is known only then, such as a receiver a test starts on a
+// port the system picks. Callbacks under it may use http and a
+// special-purpose address; the handshake, the signature and the refusal
+// of redirects still apply. A subscription already made keeps the trust
+// it was made with, and nothing takes the trust back. It fails for an
+// origin that is not of that form, and where the webhook mode is off.
+//
+// It is not public API: it turns off the defence against a client that
+// names a callback to reach what the server can reach, so it is reached
+// only through [testhook.TrustWebhookOrigin], which no code outside this
+// module can import. An embedder that knows its origins when it builds
+// the server sets [WebhookOptions.TrustedOrigins].
+func (e *Events) trustWebhookOrigin(origin string) error {
+	if e.hooks == nil {
+		return errors.New("mcpserver: events: the webhook mode is off")
+	}
+	return e.hooks.guard.trust(origin)
+}
+
+func init() {
+	testhook.TrustWebhookOrigin = func(events any, origin string) error {
+		e, ok := events.(*Events)
+		if !ok || e == nil {
+			return fmt.Errorf("mcpserver: events: testhook: %T is not *Events", events)
+		}
+		return e.trustWebhookOrigin(origin)
+	}
+}
