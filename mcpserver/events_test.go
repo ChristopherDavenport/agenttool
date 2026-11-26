@@ -247,6 +247,7 @@ var eventsRequirements = []string{
 	"go:events:sink:feed",
 	"go:events:constants-match-client",
 	"go:events:header-roundtrip",
+	"go:events:http-400",
 	"go:events:poll-loop",
 	"events:webhook:mcp-name-mismatch-rejected",
 	"events:webhook:mcp-name-missing-rejected",

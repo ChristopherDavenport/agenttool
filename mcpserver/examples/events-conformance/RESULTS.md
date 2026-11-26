@@ -9,9 +9,9 @@ any row.
 | Scenario | Pass | Fail | Warn |
 | --- | --- | --- | --- |
 | events-discovery | 15/15 | 0 | 0 |
-| events-poll | 31/33 | 2 | 4 |
+| events-poll | 33/33 | 0 | 4 |
 | events-push | 3/26 | 23 | 2 |
-| events-webhook | 25/27 | 2 | 4 |
+| events-webhook | 27/27 | 0 | 4 |
 | events-webhook-delivery | 24/24 | 0 | 6 |
 
 A **failure** means the referee graded a requirement and the server did
@@ -38,20 +38,6 @@ cannot run.
 Revisit when go-sdk can send custom notifications; the push seam
 (`streamSink` and the frame types, golden-tested) is already in place, see
 `docs/plans/mcp-events.md`.
-
-### The refusal comes back as HTTP 200, not 400 (4 failures)
-
-`sep-3415-mcp-name-missing-rejected` and `-mismatch-rejected`, in both the
-poll and the webhook scenarios. The SEP says a request whose `Mcp-Name` or
-`Mcp-Param-*` header is missing or differs from the body is refused with
-HTTP 400. This server refuses it with the right error, `-32020` with
-`data.mismatch`, but in a response with status 200 and the error in the
-body. The cause is go-sdk: an error returned from middleware or a handler
-for a custom method is written as a JSON-RPC error in a 200 response, and
-the SDK has no hook to choose the status. The body is checked, and a
-client that reads it sees the refusal; one that goes by the status does
-not. Fixing the status means an HTTP wrapper in front of the handler or a
-change in go-sdk; neither is done.
 
 ## Warnings
 

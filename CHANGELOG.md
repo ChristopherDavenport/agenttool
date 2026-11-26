@@ -17,7 +17,9 @@ versions may break the API.
   clamped to half the lease, a type registered again with other schemas ends
   its leases with the SEP's `schema_changed` error, and `Mcp-Name` and
   `Mcp-Param-*` headers are checked against the params, with `-32020` and
-  `data.mismatch`. The SDK sends that refusal as HTTP 200, not 400.
+  `data.mismatch`. The SDK sends that refusal as HTTP 200, not 400; wrap its
+  Streamable HTTP handler with `Events.HTTPHandler` to send the 400 the SEP
+  asks for.
   `events/stream` is answered with the unsupported error (-32026), as are
   `events/subscribe` and `events/unsubscribe` unless webhooks are turned on
   (below), and no event type lists push: the wire frames of a stream and a

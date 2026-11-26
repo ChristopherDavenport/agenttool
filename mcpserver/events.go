@@ -383,7 +383,7 @@ var ErrEventExists = errors.New("mcpserver: events: the type is registered with 
 // [EventsCodeHeaderMismatch] when one differs from the request's
 // params, as the SEP says. The SDK sends a refusal found while handling
 // a request as an HTTP 200 whose body is the error, where the SEP says
-// 400; a host that needs the status wraps its handler.
+// 400; wrap the HTTP handler with [Events.HTTPHandler] to send the 400.
 //
 // This is experimental: the SEP's wire may change under it.
 func AddEvents(s *sdk.Server, o EventsOptions) (*Events, error) {
