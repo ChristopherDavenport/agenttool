@@ -3,10 +3,11 @@
 // conformance suite (modelcontextprotocol/conformance#521 and #541) to
 // run against. Push is not served: events/stream is answered with -32026.
 //
-// It serves two event types, which the scenarios discover and name
+// It serves three event types, which the scenarios discover and name
 // nothing of: conformance.counter, emit-only, one tick every two
-// seconds, by poll and webhook; and conformance.alerts, emit-only, poll
-// only, filtered by minimum severity. Every request is made by one fixed
+// seconds, by poll and webhook; conformance.hooks, emit-only, webhook
+// only (no poll, which the poll-mode row probes); and conformance.alerts,
+// emit-only, poll only, filtered by minimum severity. Every request is made by one fixed
 // principal, "mcp-conformance", which the webhook mode needs and which
 // stands for what an embedding application's authentication would say.
 //
@@ -97,6 +98,7 @@ import (
 const (
 	counterType = "conformance.counter"
 	alertsType  = "conformance.alerts"
+	hooksType   = "conformance.hooks"
 
 	// principal is who every request is from.
 	principal = "mcp-conformance"
@@ -277,6 +279,19 @@ func run(addr, placeholder string) error {
 	if err != nil {
 		return err
 	}
+	hooks, err := ev.Register(mcpserver.EventDef{
+		Name:          hooksType,
+		Description:   "A hook every four seconds; webhook only.",
+		EmitOnly:      true,
+		Delivery:      []string{mcpserver.DeliveryWebhook},
+		PayloadSchema: json.RawMessage(`{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}`),
+	})
+	if err != nil {
+		return err
+	}
+	go tick(ctx, 4*time.Second, func(n int) error {
+		return hooks.Emit(mcpserver.Event{Data: json.RawMessage(fmt.Sprintf(`{"n":%d}`, n))})
+	})
 	go tick(ctx, 2*time.Second, func(n int) error {
 		return counter.Emit(mcpserver.Event{Data: json.RawMessage(fmt.Sprintf(`{"n":%d}`, n))})
 	})

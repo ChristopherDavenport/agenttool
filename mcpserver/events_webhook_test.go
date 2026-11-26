@@ -677,6 +677,27 @@ func TestEventsWebhookStreamStillUnsupported(t *testing.T) {
 	}
 }
 
+// TestEventsWebhookOnlyType holds go:events:register:rules: an emit-only
+// type may offer webhook alone, its ring takes events, and a poll of it
+// is answered with the unsupported error for delivery mode poll.
+func TestEventsWebhookOnlyType(t *testing.T) {
+	wh := newWebhookHarness(t, nil)
+	typ, err := wh.events.Register(EventDef{Name: "hook", PayloadSchema: json.RawMessage(countSchema), EmitOnly: true, Delivery: []string{"webhook"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := typ.Emit(Event{Data: json.RawMessage(`{"n":1}`)}); err != nil {
+		t.Fatal(err)
+	}
+	_, perr := wh.call(EventsPollMethod, `{"name":"hook","cursor":null}`)
+	if perr == nil || perr.Code != EventsCodeUnsupported {
+		t.Fatalf("poll = %v, want unsupported", perr)
+	}
+	if got := normalise(t, perr.Data); got != `{"feature":"deliveryMode","value":"poll"}` {
+		t.Errorf("data %s", got)
+	}
+}
+
 // TestEventsWebhookRegisterRules holds go:events:register:rules for
 // webhook: a webhook delivery needs the option and an emit-only type, and
 // the default list of a type gains webhook when the option is on.
@@ -697,7 +718,9 @@ func TestEventsWebhookRegisterRules(t *testing.T) {
 		{"emit-only both", EventDef{Name: "c", PayloadSchema: payload, EmitOnly: true, Delivery: []string{"poll", "webhook"}}, "", "poll,webhook"},
 		{"check default", EventDef{Name: "d", PayloadSchema: payload, Check: check}, "", "poll"},
 		{"check with webhook", EventDef{Name: "e", PayloadSchema: payload, Check: check, Delivery: []string{"poll", "webhook"}}, "emit-only", ""},
-		{"webhook alone", EventDef{Name: "f", PayloadSchema: payload, EmitOnly: true, Delivery: []string{"webhook"}}, "not served by poll", ""},
+		{"webhook alone", EventDef{Name: "f", PayloadSchema: payload, EmitOnly: true, Delivery: []string{"webhook"}}, "", "webhook"},
+		{"check without poll", EventDef{Name: "g", PayloadSchema: payload, Check: check, Delivery: []string{}}, "", "poll"},
+		{"check webhook alone", EventDef{Name: "h", PayloadSchema: payload, Check: check, Delivery: []string{"webhook"}}, "emit-only", ""},
 	}
 	for _, tc := range tests {
 		_, err := wh.events.Register(tc.def)

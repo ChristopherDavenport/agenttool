@@ -196,8 +196,11 @@ type EventDef struct {
 	// Meta is the descriptor's _meta.
 	Meta map[string]any
 	// Delivery lists the modes the type is served by; the default is
-	// poll alone, which is also all that is served yet, so another mode
-	// is a registration error.
+	// poll, with webhook added for an emit-only type when the webhook
+	// mode is on. An emit-only type may leave poll out and offer webhook
+	// alone; events/poll then answers it with [EventsCodeUnsupported]. A
+	// type with a Check needs poll. Push is not served, so it is a
+	// registration error.
 	Delivery []string
 
 	// Check pulls events from the upstream. Exactly one of Check and
@@ -419,8 +422,9 @@ func AddEvents(s *sdk.Server, o EventsOptions) (*Events, error) {
 // The definition is refused when it has no name, or both or neither of
 // Check and EmitOnly, a Match or Transform on a type with a Check, a
 // schema that does not compile or a payload schema whose root is not an
-// object, a delivery list without poll or with a mode that is not served
-// yet, or an x-mcp-header annotation that breaks the rules of HTTP
+// object, a Check type whose delivery list lacks poll
+// (an emit-only type may offer webhook alone, and a poll of it is answered
+// with [EventsCodeUnsupported]) or has a mode that is not served yet, or an x-mcp-header annotation that breaks the rules of HTTP
 // header names and values.
 func (e *Events) Register(def EventDef) (*EventType, error) {
 	t, err := e.newType(def)
@@ -493,8 +497,8 @@ func (e *Events) newType(def EventDef) (*EventType, error) {
 				return nil, fmt.Errorf("mcpserver: events: type %q: unknown delivery %q", def.Name, m)
 			}
 		}
-		if !slices.Contains(def.Delivery, DeliveryPoll) {
-			return nil, fmt.Errorf("mcpserver: events: type %q is not served by poll, which every type is", def.Name)
+		if !slices.Contains(def.Delivery, DeliveryPoll) && !def.EmitOnly {
+			return nil, fmt.Errorf("mcpserver: events: type %q has a Check, which only poll runs, and its delivery list lacks poll", def.Name)
 		}
 	}
 	if len(def.InputSchema) == 0 {
