@@ -56,10 +56,12 @@
 // The suite's controls (events_conformance_*) served are the origin
 // allowance, the catalog, subscription existence and state, and a
 // subscribe on another principal's behalf, which the server sends to its
-// own handler with a header only it can make. The ones for gaps,
-// terminations and restarts are not served, since mcpserver has no way
-// to end one webhook subscription or to rebuild itself, so the rows that
-// need them report that they could not be tested.
+// own handler with a header only it can make, and a gap or a termination
+// of one webhook subscription by id ([mcpserver.Events.GapWebhook] and
+// [mcpserver.Events.TerminateWebhook], which check no principal: a tool
+// that offers them to clients is for a test server alone). The ones for
+// restarts are not served, since mcpserver has no way to rebuild itself,
+// so the rows that need them report that they could not be tested.
 package main
 
 import (
@@ -189,6 +191,22 @@ func run(addr, placeholder string, pageSize int) error {
 			}
 			return "absent", nil
 		})
+	gapTool := agenttool.New("events_conformance_webhook_gap",
+		"Sends one webhook subscription a gap envelope; answers \"ok\".",
+		func(_ context.Context, a idArgs) (string, error) {
+			if err := ev.GapWebhook(a.ID); err != nil {
+				return "", err
+			}
+			return "ok", nil
+		})
+	terminateTool := agenttool.New("events_conformance_webhook_terminate",
+		"Ends one webhook subscription with a terminated envelope; answers \"ok\".",
+		func(_ context.Context, a idArgs) (string, error) {
+			if err := ev.TerminateWebhook(a.ID, nil); err != nil {
+				return "", err
+			}
+			return "ok", nil
+		})
 	subscribeAs := agenttool.New("events_conformance_subscribe_as",
 		"Subscribes a webhook on another principal's behalf; answers the subscription id.",
 		func(_ context.Context, a tenantArgs) (string, error) {
@@ -198,7 +216,7 @@ func run(addr, placeholder string, pageSize int) error {
 			}
 			return id, err
 		})
-	srv, err := mcpserver.NewServer("agenttool-events-conformance", "0.0.0", allow, catalogTool, existsTool, stateTool, subscribeAs)
+	srv, err := mcpserver.NewServer("agenttool-events-conformance", "0.0.0", allow, catalogTool, existsTool, stateTool, gapTool, terminateTool, subscribeAs)
 	if err != nil {
 		return err
 	}

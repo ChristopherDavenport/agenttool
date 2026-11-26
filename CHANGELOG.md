@@ -63,6 +63,16 @@ versions may break the API.
 
 ## v0.0.30 - 2026-11-05
 
+- Added: MCP Events, embedder controls and catalog paging, experimental.
+  `Events.TerminateWebhook(id, cause)` ends one webhook subscription with a
+  signed `terminated` envelope, `Events.GapWebhook(id)` sends one a `gap`
+  envelope with a fresh cursor, and both return `ErrWebhookNotFound` for an id
+  that is not there. They check no principal and are for embedder code, never
+  for a client-reachable handler. `EventsOptions.ListPageSize` (default 100)
+  pages `events/list` with an opaque `nextCursor`. An emit-only type may now
+  offer `webhook` without `poll` (`Delivery: []string{DeliveryWebhook}`); a
+  poll of it is answered with -32026 as before, and a type with a `Check`
+  still needs poll.
 - Added: a host sees where an MCP server's session is, and hears when
   it ends (#104). `mcpclient.Remote.State` returns the session's
   `SessionState`, live, ended, restarting, failed with the last
