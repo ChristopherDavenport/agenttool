@@ -708,3 +708,18 @@ func (w *webhookEngine) terminateOne(rec WebhookRecord, cause *EventsError) {
 
 // idleForTest says no delivery goroutine runs.
 func (w *webhookEngine) idleForTest() bool { return w.busy.Load() == 0 }
+
+// TrustWebhookOrigin adds origin, "scheme://host[:port]", to the
+// [WebhookOptions.TrustedOrigins] of a server that is running, for an
+// origin that is known only then, such as a receiver a test starts on a
+// port the system picks. It is as the option says: callbacks under it
+// may use http and a special-purpose address, and the handshake, the
+// signature and the refusal of redirects still apply. A subscription
+// already made keeps the trust it was made with. It fails for an origin
+// that is not of that form, and where the webhook mode is off.
+func (e *Events) TrustWebhookOrigin(origin string) error {
+	if e.hooks == nil {
+		return errors.New("mcpserver: events: the webhook mode is off")
+	}
+	return e.hooks.guard.trust(origin)
+}

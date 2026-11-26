@@ -321,6 +321,7 @@ var eventsRequirements = []string{
 	"go:events:webhook:send-limits",
 	"go:events:webhook:store",
 	"go:events:webhook:suspension",
+	"go:events:webhook:trust-origin-at-runtime",
 	"go:events:webhook:verification-failed-pair",
 	"go:events:webhook:verification-host-limits",
 	"go:events:webhook:watermark",
