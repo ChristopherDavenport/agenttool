@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -101,15 +102,44 @@ func advertiseEvents(caps *sdk.ServerCapabilities) {
 }
 
 func (e *Events) handleList(_ context.Context, _ *sdk.ServerSession, p *eventsParams) (*listEventsResult, error) {
-	// One page: a cursor is one this server never gave.
+	after := ""
 	if p != nil && len(p.Cursor) > 0 && string(p.Cursor) != "null" {
-		return nil, invalidParams("unknown cursor").wire()
+		var c string
+		if json.Unmarshal(p.Cursor, &c) != nil {
+			return nil, invalidParams("events/list cursor must be a string").wire()
+		}
+		name, ok := decodeListCursor(c)
+		if !ok {
+			return nil, invalidParams("unknown cursor").wire()
+		}
+		after = name
 	}
 	res := &listEventsResult{ResultType: "complete", Events: []eventDescriptor{}}
+	// The cursor names the last type of the page before, so a type added
+	// or removed between pages moves nothing else.
 	for _, t := range e.sortedTypes() {
+		if t.def.Name <= after && after != "" {
+			continue
+		}
+		if len(res.Events) == e.opts.ListPageSize {
+			res.NextCursor = encodeListCursor(res.Events[len(res.Events)-1].Name)
+			break
+		}
 		res.Events = append(res.Events, t.descriptor())
 	}
 	return res, nil
+}
+
+const listCursorPrefix = "list:"
+
+func encodeListCursor(last string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(listCursorPrefix + last))
+}
+
+func decodeListCursor(c string) (string, bool) {
+	b, err := base64.RawURLEncoding.DecodeString(c)
+	name, ok := strings.CutPrefix(string(b), listCursorPrefix)
+	return name, err == nil && ok && name != ""
 }
 
 func (e *Events) handleUnsupported(mode string) func(context.Context, *sdk.ServerSession, *eventsParams) (*emptyEventsResult, error) {

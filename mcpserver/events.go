@@ -261,6 +261,10 @@ type EventsOptions struct {
 	// MaxSubscriptions bounds the leases held at once, refused beyond
 	// with [EventsCodeResourceExhausted]; the default is 1024.
 	MaxSubscriptions int
+	// ListPageSize is how many event types an events/list page holds;
+	// the default is 100. A catalog beyond it is paged with an opaque
+	// nextCursor, as tools/list is.
+	ListPageSize int
 	// Buffer bounds the ring of an emit-only type.
 	Buffer EmitBuffer
 	// Webhook turns on the webhook delivery mode, events/subscribe and
@@ -291,6 +295,7 @@ const (
 	defaultLeaseTTL        = 5 * time.Minute
 	defaultNextPoll        = 30 * time.Second
 	defaultMaxEvents       = 100
+	defaultListPage        = 100
 	defaultMaxSubscription = 1024
 	defaultBufferAge       = 10 * time.Minute
 	defaultBufferEvents    = 10000
@@ -308,6 +313,9 @@ func (o EventsOptions) withDefaults() EventsOptions {
 	}
 	if o.DefaultMaxEvents <= 0 {
 		o.DefaultMaxEvents = defaultMaxEvents
+	}
+	if o.ListPageSize <= 0 {
+		o.ListPageSize = defaultListPage
 	}
 	if o.MaxSubscriptions <= 0 {
 		o.MaxSubscriptions = defaultMaxSubscription

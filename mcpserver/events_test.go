@@ -222,6 +222,7 @@ var eventsRequirements = []string{
 	"events:fallback:unsupported-modes",
 	"events:list:descriptors",
 	"events:list:delivery",
+	"events:list:pagination",
 	"events:poll:bootstrap",
 	"events:poll:replay",
 	"events:poll:has-more",
@@ -381,6 +382,59 @@ func TestEventsList(t *testing.T) {
 	}
 	if _, err := h.call(EventsListMethod, `{"cursor":"x"}`); err == nil || err.Code != EventsCodeInvalidParams {
 		t.Errorf("list with a cursor = %v, want invalid params", err)
+	}
+}
+
+// TestEventsListPagination holds events:list:pagination: a page of
+// ListPageSize types, a nextCursor while more follow and none on the last
+// page, a cursor that survives a type added or removed between pages, and
+// a cursor this server never gave is invalid params.
+func TestEventsListPagination(t *testing.T) {
+	h := newEventsHarness(t, func(o *EventsOptions) { o.ListPageSize = 2 })
+	var typeB *EventType
+	for _, n := range []string{"e", "a", "d", "b", "c"} {
+		if et := h.emitter(n, nil); n == "b" {
+			typeB = et
+		}
+	}
+	names := func(r listEventsResult) string {
+		var out []string
+		for _, d := range r.Events {
+			out = append(out, d.Name)
+		}
+		return strings.Join(out, ",")
+	}
+	page := func(params string) listEventsResult {
+		t.Helper()
+		raw, err := h.call(EventsListMethod, params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var r listEventsResult
+		if e := json.Unmarshal(raw, &r); e != nil {
+			t.Fatal(e)
+		}
+		return r
+	}
+	p1 := page(`{}`)
+	if names(p1) != "a,b" || p1.NextCursor == "" {
+		t.Fatalf("page 1 = %s next %q", names(p1), p1.NextCursor)
+	}
+	// A type added before the cursor, and one removed, move nothing else.
+	h.emitter("a0", nil)
+	typeB.Remove()
+	p2 := page(fmt.Sprintf(`{"cursor":%q}`, p1.NextCursor))
+	if names(p2) != "c,d" || p2.NextCursor == "" || p2.NextCursor == p1.NextCursor {
+		t.Fatalf("page 2 = %s next %q", names(p2), p2.NextCursor)
+	}
+	p3 := page(fmt.Sprintf(`{"cursor":%q}`, p2.NextCursor))
+	if names(p3) != "e" || p3.NextCursor != "" {
+		t.Fatalf("page 3 = %s next %q", names(p3), p3.NextCursor)
+	}
+	for _, bad := range []string{`{"cursor":"x"}`, `{"cursor":"bGlzdDo"}`, `{"cursor":5}`} {
+		if _, err := h.call(EventsListMethod, bad); err == nil || err.Code != EventsCodeInvalidParams {
+			t.Errorf("list %s = %v, want invalid params", bad, err)
+		}
 	}
 }
 

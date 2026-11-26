@@ -133,13 +133,14 @@ const principalHeader = "X-Conformance-Principal"
 func main() {
 	addr := flag.String("addr", "127.0.0.1:3000", "address to serve /mcp on")
 	placeholder := flag.String("placeholder", "127.0.0.1:443", "address of the stub for https://"+placeholderHost+"; empty for none")
+	pageSize := flag.Int("list-page-size", 2, "event types in one events/list page; the pagination row needs a second page")
 	flag.Parse()
-	if err := run(*addr, *placeholder); err != nil {
+	if err := run(*addr, *placeholder, *pageSize); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(addr, placeholder string) error {
+func run(addr, placeholder string, pageSize int) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -233,7 +234,7 @@ func run(addr, placeholder string) error {
 			return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 		}
 	}
-	ev, err = mcpserver.AddEvents(srv, mcpserver.EventsOptions{Webhook: wh})
+	ev, err = mcpserver.AddEvents(srv, mcpserver.EventsOptions{Webhook: wh, ListPageSize: pageSize})
 	if err != nil {
 		return err
 	}
