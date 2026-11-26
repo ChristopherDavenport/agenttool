@@ -492,6 +492,22 @@ func (t *tracked) position() (cursor string, gap bool) {
 	return t.watermarkLocked(), gap
 }
 
+// gap queues a gap envelope, which reads the watermark when it is sent.
+// It reports false for a subscription that has ended or is ending.
+func (t *tracked) gap() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.ended || t.terminating {
+		return false
+	}
+	t.gapPending = false
+	if !slices.ContainsFunc(t.msgs, func(o *message) bool { return o.kind == kindGap }) {
+		t.msgs = append(t.msgs, &message{id: messageID(kindGap), kind: kindGap})
+	}
+	t.pumpLocked()
+	return true
+}
+
 // terminate ends the subscription with a terminated envelope, which is
 // retried like a delivery, and nothing after it.
 func (t *tracked) terminate(cause *EventsError) {

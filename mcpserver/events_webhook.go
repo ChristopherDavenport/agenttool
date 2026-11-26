@@ -708,6 +708,21 @@ func (w *webhookEngine) terminateOne(rec WebhookRecord, cause *EventsError) {
 	tr.unsubscribeHook()
 }
 
+// terminateID ends the subscription id with cause, as terminate does for
+// a type. It reports whether the subscription was there.
+func (w *webhookEngine) terminateID(id string, cause *EventsError) bool {
+	rec, ok, err := w.store.Get(w.ctx, id)
+	if err != nil {
+		w.e.opts.OnError(fmt.Errorf("mcpserver: events: webhook: terminate: %w", err))
+		return false
+	}
+	if !ok || !rec.Expires.After(w.now()) {
+		return false
+	}
+	w.terminateOne(rec, cause)
+	return true
+}
+
 // idleForTest says no delivery goroutine runs.
 func (w *webhookEngine) idleForTest() bool { return w.busy.Load() == 0 }
 
@@ -730,6 +745,64 @@ func (e *Events) trustWebhookOrigin(origin string) error {
 		return errors.New("mcpserver: events: the webhook mode is off")
 	}
 	return e.hooks.guard.trust(origin)
+}
+
+// ErrWebhookNotFound is what [Events.TerminateWebhook] and
+// [Events.GapWebhook] return for a subscription id that is not
+// registered, has lapsed, or (for a gap) is not delivering from this
+// process.
+var ErrWebhookNotFound = errors.New("mcpserver: events: no such webhook subscription")
+
+// TerminateWebhook ends the webhook subscription id: its record is
+// deleted, the type's OnUnsubscribe is called, and the callback is sent
+// a terminated envelope carrying cause, retried like a delivery, and
+// nothing after it. A nil cause is [EventsCodeForbidden], "subscription
+// ended by the server". The id is the one events/subscribe answered. A
+// delivery in flight finishes and is not retried; events queued behind
+// it are dropped. It returns [ErrWebhookNotFound] for an id that is not
+// registered, and an error where the webhook mode is off.
+//
+// This is for the embedding application, as when it revokes a client's
+// authorization. It checks no principal: whoever calls it ends any
+// subscription whose id they hold, and an id is not a secret (the
+// callback holds it, and a subscription's id is derived from values a
+// client chooses). Call it only from code the embedder controls, never
+// with a value a client sent, and never from a tool, route or handler a
+// client can reach.
+func (e *Events) TerminateWebhook(id string, cause *EventsError) error {
+	if e.hooks == nil {
+		return errors.New("mcpserver: events: the webhook mode is off")
+	}
+	if cause == nil {
+		cause = &EventsError{Code: EventsCodeForbidden, Message: "subscription ended by the server"}
+	}
+	if !e.hooks.terminateID(id, cause) {
+		return ErrWebhookNotFound
+	}
+	return nil
+}
+
+// GapWebhook records a gap on the webhook subscription id: the events
+// the callback has not been told of may be missing, and it is sent a
+// gap envelope with a fresh cursor, after the deliveries in flight
+// finish. Events go on after it. The same envelope is sent by itself
+// when the queue overflows or a delivery is given up; this is for the
+// embedder that knows the stream of one subscription has lost events.
+// It returns [ErrWebhookNotFound] for an id that is not delivering from
+// this process (a subscription a replica holds is that replica's), and
+// an error where the webhook mode is off.
+//
+// The same caution as [Events.TerminateWebhook] applies: it checks no
+// principal, so call it only from code the embedder controls.
+func (e *Events) GapWebhook(id string) error {
+	if e.hooks == nil {
+		return errors.New("mcpserver: events: the webhook mode is off")
+	}
+	tr := e.hooks.tracked(id)
+	if tr == nil || !tr.gap() {
+		return ErrWebhookNotFound
+	}
+	return nil
 }
 
 func init() {

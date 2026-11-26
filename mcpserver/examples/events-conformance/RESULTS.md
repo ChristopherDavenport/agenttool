@@ -1,6 +1,6 @@
 # Conformance results, and why each failure and warning is there
 
-Run on 2026-11-25 against modelcontextprotocol/conformance #541 at
+Run on 2026-11-26 against modelcontextprotocol/conformance #541 at
 `c8625de3` (stacked on #521 at `76fef32d`), spec version 2026-07-28, using
 this server. See the package comment in `main.go` for how to run it. Both
 PRs were open then; the scenarios may change, so rerun before relying on
@@ -8,11 +8,11 @@ any row.
 
 | Scenario | Pass | Fail | Warn |
 | --- | --- | --- | --- |
-| events-discovery | 14/14 | 0 | 1 |
-| events-poll | 30/33 | 3 | 4 |
+| events-discovery | 15/15 | 0 | 0 |
+| events-poll | 31/33 | 2 | 4 |
 | events-push | 3/26 | 23 | 2 |
 | events-webhook | 25/27 | 2 | 4 |
-| events-webhook-delivery | 22/22 | 0 | 8 |
+| events-webhook-delivery | 24/24 | 0 | 6 |
 
 A **failure** means the referee graded a requirement and the server did
 not meet it, or the referee could not test it at all. A **warning** means
@@ -53,16 +53,6 @@ client that reads it sees the refusal; one that goes by the status does
 not. Fixing the status means an HTTP wrapper in front of the handler or a
 change in go-sdk; neither is done.
 
-### A type without poll cannot be registered (events-poll, 1 failure)
-
-`sep-3415-poll-mode-unsupported` asks for an event type that does not
-offer poll and checks that `events/poll` on it answers `-32026`. The
-referee could not run it: every type this server offers advertises poll,
-because `Register` refuses a type whose delivery list lacks it, although
-`events/poll` already answers `-32026` for one that does. This is a design
-choice and not a platform limit: allowing a webhook-only emit-only type
-would let the row run. Not done yet.
-
 ## Warnings
 
 All are "unverified, not violated".
@@ -85,11 +75,6 @@ All are "unverified, not violated".
 
 The code's own list of these, with its reasons, is `eventsWebhookBaselined`
 in `events_test.go`; a test fails if a test claims one of them.
-- `envelope-gap` and `envelope-terminated` (delivery): the referee asks the
-  server to gap or end one webhook subscription. `mcpserver` has no public
-  way to do either for a single subscription, so the controls are not
-  served. The envelopes themselves are covered by this repository's own
-  tests.
 
 ### Not implemented
 
@@ -97,8 +82,6 @@ in `events_test.go`; a test fails if a test claims one of them.
   signature and the Server Card `signingKeys` that let a client verify a
   server's webhook identity. Not built; it depends on ext-server-card#55.
   Also in `eventsWebhookBaselined`.
-- `list-pagination` (discovery): `events/list` returns one page, so the
-  cursor rows cannot be graded.
 
 ### The referee cannot grade it
 
@@ -125,6 +108,6 @@ checked by the coverage test, so it cannot be dropped silently.
 
 ## Not run
 
-Server restart and generation, a webhook gap or termination, and push
-beyond the `-32026` answer were not exercised. A wrapper to turn the
+Server restart and generation, and push beyond the `-32026` answer, were
+not exercised. A wrapper to turn the
 `-32020` status into 400 was not tried.

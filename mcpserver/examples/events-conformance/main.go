@@ -3,10 +3,11 @@
 // conformance suite (modelcontextprotocol/conformance#521 and #541) to
 // run against. Push is not served: events/stream is answered with -32026.
 //
-// It serves two event types, which the scenarios discover and name
+// It serves three event types, which the scenarios discover and name
 // nothing of: conformance.counter, emit-only, one tick every two
-// seconds, by poll and webhook; and conformance.alerts, emit-only, poll
-// only, filtered by minimum severity. Every request is made by one fixed
+// seconds, by poll and webhook; conformance.hooks, emit-only, webhook
+// only (no poll, which the poll-mode row probes); and conformance.alerts,
+// emit-only, poll only, filtered by minimum severity. Every request is made by one fixed
 // principal, "mcp-conformance", which the webhook mode needs and which
 // stands for what an embedding application's authentication would say.
 //
@@ -57,10 +58,12 @@
 // The suite's controls (events_conformance_*) served are the origin
 // allowance, the catalog, subscription existence and state, and a
 // subscribe on another principal's behalf, which the server sends to its
-// own handler with a header only it can make. The ones for gaps,
-// terminations and restarts are not served, since mcpserver has no way
-// to end one webhook subscription or to rebuild itself, so the rows that
-// need them report that they could not be tested.
+// own handler with a header only it can make, and a gap or a termination
+// of one webhook subscription by id ([mcpserver.Events.GapWebhook] and
+// [mcpserver.Events.TerminateWebhook], which check no principal: a tool
+// that offers them to clients is for a test server alone). The ones for
+// restarts are not served, since mcpserver has no way to rebuild itself,
+// so the rows that need them report that they could not be tested.
 package main
 
 import (
@@ -100,6 +103,7 @@ import (
 const (
 	counterType = "conformance.counter"
 	alertsType  = "conformance.alerts"
+	hooksType   = "conformance.hooks"
 
 	// principal is who every request is from.
 	principal = "mcp-conformance"
@@ -134,13 +138,14 @@ const principalHeader = "X-Conformance-Principal"
 func main() {
 	addr := flag.String("addr", "127.0.0.1:3000", "address to serve /mcp on")
 	placeholder := flag.String("placeholder", "127.0.0.1:443", "address of the stub for https://"+placeholderHost+"; empty for none")
+	pageSize := flag.Int("list-page-size", 2, "event types in one events/list page; the pagination row needs a second page")
 	flag.Parse()
-	if err := run(*addr, *placeholder); err != nil {
+	if err := run(*addr, *placeholder, *pageSize); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(addr, placeholder string) error {
+func run(addr, placeholder string, pageSize int) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -189,6 +194,22 @@ func run(addr, placeholder string) error {
 			}
 			return "absent", nil
 		})
+	gapTool := agenttool.New("events_conformance_webhook_gap",
+		"Sends one webhook subscription a gap envelope; answers \"ok\".",
+		func(_ context.Context, a idArgs) (string, error) {
+			if err := ev.GapWebhook(a.ID); err != nil {
+				return "", err
+			}
+			return "ok", nil
+		})
+	terminateTool := agenttool.New("events_conformance_webhook_terminate",
+		"Ends one webhook subscription with a terminated envelope; answers \"ok\".",
+		func(_ context.Context, a idArgs) (string, error) {
+			if err := ev.TerminateWebhook(a.ID, nil); err != nil {
+				return "", err
+			}
+			return "ok", nil
+		})
 	subscribeAs := agenttool.New("events_conformance_subscribe_as",
 		"Subscribes a webhook on another principal's behalf; answers the subscription id.",
 		func(_ context.Context, a tenantArgs) (string, error) {
@@ -198,7 +219,7 @@ func run(addr, placeholder string) error {
 			}
 			return id, err
 		})
-	srv, err := mcpserver.NewServer("agenttool-events-conformance", "0.0.0", allow, catalogTool, existsTool, stateTool, subscribeAs)
+	srv, err := mcpserver.NewServer("agenttool-events-conformance", "0.0.0", allow, catalogTool, existsTool, stateTool, gapTool, terminateTool, subscribeAs)
 	if err != nil {
 		return err
 	}
@@ -234,7 +255,7 @@ func run(addr, placeholder string) error {
 			return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 		}
 	}
-	ev, err = mcpserver.AddEvents(srv, mcpserver.EventsOptions{Webhook: wh})
+	ev, err = mcpserver.AddEvents(srv, mcpserver.EventsOptions{Webhook: wh, ListPageSize: pageSize})
 	if err != nil {
 		return err
 	}
@@ -280,6 +301,19 @@ func run(addr, placeholder string) error {
 	if err != nil {
 		return err
 	}
+	hooks, err := ev.Register(mcpserver.EventDef{
+		Name:          hooksType,
+		Description:   "A hook every four seconds; webhook only.",
+		EmitOnly:      true,
+		Delivery:      []string{mcpserver.DeliveryWebhook},
+		PayloadSchema: json.RawMessage(`{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}`),
+	})
+	if err != nil {
+		return err
+	}
+	go tick(ctx, 4*time.Second, func(n int) error {
+		return hooks.Emit(mcpserver.Event{Data: json.RawMessage(fmt.Sprintf(`{"n":%d}`, n))})
+	})
 	go tick(ctx, 2*time.Second, func(n int) error {
 		return counter.Emit(mcpserver.Event{Data: json.RawMessage(fmt.Sprintf(`{"n":%d}`, n))})
 	})

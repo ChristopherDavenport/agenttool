@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"runtime"
 	"slices"
@@ -747,6 +748,78 @@ func TestEventsWebhookTerminated(t *testing.T) {
 	wh2.events.hooks.mu.Unlock()
 	if left != 0 || wh2.timers.pending() != 0 {
 		t.Errorf("after the envelope was given up: %d tracked, %d timers", left, wh2.timers.pending())
+	}
+}
+
+// TestEventsWebhookEmbedderControls holds events:webhook:envelope-gap and
+// events:webhook:envelope-terminated for the embedder's calls: GapWebhook
+// sends one subscription a signed gap envelope with a fresh cursor and
+// leaves it live, TerminateWebhook sends the given cause (or forbidden) and
+// ends it, and both refuse an id that is not there.
+func TestEventsWebhookEmbedderControls(t *testing.T) {
+	var unsubs int
+	wh := newWebhookHarness(t, nil)
+	et := wh.emitter("count", func(d *EventDef) { d.OnUnsubscribe = hook0(&unsubs) })
+	other := wh.subscribe(subParams("count", "https://hook.example.com/other", secretA, ""))
+	res := wh.subscribe(subParams("count", hookURL, secretA, ""))
+	wh.reset()
+
+	if err := wh.events.GapWebhook("nope"); !errors.Is(err, ErrWebhookNotFound) {
+		t.Errorf("gap of an unknown id = %v", err)
+	}
+	if err := wh.events.GapWebhook(res.ID); err != nil {
+		t.Fatal(err)
+	}
+	wh.settle()
+	ds := wh.deliveries()
+	if len(ds) != 1 || ds[0].typ() != "gap" || !ds[0].verifies(secretA) || ds[0].Header.Get("X-MCP-Subscription-Id") != res.ID {
+		t.Fatalf("after a gap: %v", ds)
+	}
+	var g struct{ Cursor string }
+	_ = json.Unmarshal(ds[0].Body, &g)
+	if g.Cursor != "eabcd1234.0" {
+		t.Errorf("gap cursor %q", g.Cursor)
+	}
+	// Still live, and the other subscription was not told.
+	wh.reset()
+	emit(t, et, "x", 1)
+	wh.settle()
+	if n := len(wh.deliveries()); n != 2 {
+		t.Errorf("%d deliveries after a gap, want the event to both", n)
+	}
+
+	wh.reset()
+	cause := &EventsError{Code: EventsCodeNotFound, Message: "revoked", Data: map[string]any{"kind": "subscription"}}
+	if err := wh.events.TerminateWebhook(res.ID, cause); err != nil {
+		t.Fatal(err)
+	}
+	wh.settle()
+	ds = wh.deliveries()
+	if len(ds) != 1 || ds[0].typ() != "terminated" || !strings.Contains(string(ds[0].Body), "revoked") || ds[0].Header.Get("X-MCP-Subscription-Id") != res.ID {
+		t.Fatalf("after terminate: %v", ds)
+	}
+	if unsubs != 1 || wh.events.hooks.count() != 1 {
+		t.Errorf("OnUnsubscribe %d, held %d", unsubs, wh.events.hooks.count())
+	}
+	if err := wh.events.TerminateWebhook(res.ID, nil); !errors.Is(err, ErrWebhookNotFound) {
+		t.Errorf("second terminate = %v", err)
+	}
+	if err := wh.events.GapWebhook(res.ID); !errors.Is(err, ErrWebhookNotFound) {
+		t.Errorf("gap after terminate = %v", err)
+	}
+	// A nil cause is forbidden.
+	wh.reset()
+	if err := wh.events.TerminateWebhook(other.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	wh.settle()
+	if ds = wh.deliveries(); len(ds) != 1 || !strings.Contains(string(ds[0].Body), fmt.Sprint(EventsCodeForbidden)) {
+		t.Errorf("default cause: %v", ds)
+	}
+	// Off without the webhook mode.
+	h := newEventsHarness(t, nil)
+	if h.events.TerminateWebhook("x", nil) == nil || h.events.GapWebhook("x") == nil {
+		t.Error("controls worked with the webhook mode off")
 	}
 }
 
