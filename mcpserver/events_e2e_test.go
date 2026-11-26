@@ -157,9 +157,7 @@ func (s *statusRecorder) RoundTrip(r *http.Request) (*http.Response, error) {
 	return resp, err
 }
 
-// TestEventsHTTPHeaders holds events:mcp-name, events:mcp-param and the
-// requirement go:events:header-roundtrip over Streamable HTTP, protocol
-// 2026-07-28:
+// TestEventsHTTPHeaders holds events:mcp-name, events:mcp-param and go:events:header-roundtrip over Streamable HTTP, protocol 2026-07-28:
 // the headers a client sends are the ones the server accepts, and a
 // request whose headers differ from its params is refused with -32020
 // and data.mismatch.
@@ -278,6 +276,7 @@ func TestEventsConstantsMatchClient(t *testing.T) {
 		"EventsCodeForbidden": strconv.Itoa(EventsCodeForbidden), "EventsCodeResourceExhausted": strconv.Itoa(EventsCodeResourceExhausted),
 		"EventsCodeUnsupported": strconv.Itoa(EventsCodeUnsupported), "EventsCodeCallbackEndpoint": strconv.Itoa(EventsCodeCallbackEndpoint),
 		"EventsCodeHeaderMismatch": strconv.Itoa(EventsCodeHeaderMismatch),
+		"EventsSubscribeMethod":    EventsSubscribeMethod, "EventsUnsubscribeMethod": EventsUnsubscribeMethod,
 	}
 	for name, v := range ours {
 		if theirs[name] != v {
@@ -298,9 +297,11 @@ func TestEventsRequirementsCovered(t *testing.T) {
 				t.Fatal(err)
 			}
 			s := string(b)
-			if i := strings.Index(s, "var eventsRequirements = []string{"); i >= 0 {
-				j := strings.Index(s[i:], "\n}\n")
-				s = s[:i] + s[i+j:]
+			for _, decl := range []string{"var eventsRequirements = []string{", "var eventsWebhookBaselined = map[string]string{"} {
+				if i := strings.Index(s, decl); i >= 0 {
+					j := strings.Index(s[i:], "\n}\n")
+					s = s[:i] + s[i+j:]
+				}
 			}
 			text.WriteString(s)
 		}
@@ -308,6 +309,14 @@ func TestEventsRequirementsCovered(t *testing.T) {
 	for _, id := range eventsRequirements {
 		if !strings.Contains(text.String(), id) {
 			t.Errorf("requirement %s is not held by any test", id)
+		}
+	}
+	for id, why := range eventsWebhookBaselined {
+		if why == "" {
+			t.Errorf("baselined requirement %s has no reason", id)
+		}
+		if strings.Contains(text.String(), id) {
+			t.Errorf("requirement %s is baselined and a test names it: move it to eventsRequirements", id)
 		}
 	}
 }

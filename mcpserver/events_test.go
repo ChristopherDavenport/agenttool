@@ -74,13 +74,26 @@ type eventsHarness struct {
 	clock  *fakeClock
 	events *Events
 	cs     *sdk.ClientSession
+	errMu  sync.Mutex
 	errors []error
+}
+
+// reported is what the server told OnError so far.
+func (h *eventsHarness) reported() []error {
+	h.errMu.Lock()
+	defer h.errMu.Unlock()
+	return append([]error(nil), h.errors...)
 }
 
 func newEventsHarness(t *testing.T, mod func(*EventsOptions)) *eventsHarness {
 	t.Helper()
-	h := &eventsHarness{t: t, clock: newClock()}
-	opts := EventsOptions{Now: h.clock.Now, epoch: "abcd1234", OnError: func(err error) { h.errors = append(h.errors, err) }}
+	return newEventsHarnessWithClock(t, newClock(), mod)
+}
+
+func newEventsHarnessWithClock(t *testing.T, clock *fakeClock, mod func(*EventsOptions)) *eventsHarness {
+	t.Helper()
+	h := &eventsHarness{t: t, clock: clock}
+	opts := EventsOptions{Now: h.clock.Now, epoch: "abcd1234", OnError: func(err error) { h.errMu.Lock(); h.errors = append(h.errors, err); h.errMu.Unlock() }}
 	if mod != nil {
 		mod(&opts)
 	}
@@ -234,6 +247,96 @@ var eventsRequirements = []string{
 	"go:events:constants-match-client",
 	"go:events:header-roundtrip",
 	"go:events:poll-loop",
+	"events:webhook:mcp-name-mismatch-rejected",
+	"events:webhook:mcp-name-missing-rejected",
+	"events:webhook:receiver-verify-signature",
+	"events:webhook:receiver-timestamp-freshness",
+	"events:webhook:receiver-dedup-webhook-id",
+	"events:webhook:receiver-dedup-event-per-subscription",
+	"events:webhook:receiver-forwards-control",
+	"events:webhook:receiver-verification-echo",
+	"events:webhook:receiver-unknown-id-retryable",
+	"go:events:webhook:secret-made",
+	"go:events:webhook:keep",
+	"go:events:webhook:receiver-retry",
+	"go:events:webhook:end-to-end",
+	"events:webhook:delivery-410-non-retryable",
+	"events:webhook:delivery-413-non-retryable",
+	"events:webhook:delivery-body-size",
+	"events:webhook:delivery-dual-sign-on-rotation",
+	"events:webhook:delivery-post-json",
+	"events:webhook:delivery-retries-bounded",
+	"events:webhook:delivery-retry-regenerates-signature",
+	"events:webhook:delivery-signature-formula",
+	"events:webhook:delivery-standard-webhooks-headers",
+	"events:webhook:delivery-status-last-error-category",
+	"events:webhook:delivery-subscription-id-header",
+	"events:webhook:delivery-webhook-id-per-message",
+	"events:webhook:envelope-gap",
+	"events:webhook:envelope-signed-like-deliveries",
+	"events:webhook:envelope-terminated",
+	"events:webhook:envelope-type-discriminator",
+	"events:webhook:envelope-webhook-id-format",
+	"events:webhook:error-callback-endpoint-error",
+	"events:webhook:error-unsupported",
+	"events:webhook:ssrf-no-redirects",
+	"events:webhook:ssrf-reject-non-routable",
+	"events:webhook:ssrf-validate-at-delivery-time",
+	"events:webhook:ssrf-validate-callback-url",
+	"events:webhook:subscribe-cross-tenant-isolation",
+	"events:webhook:subscribe-id-derived",
+	"events:webhook:subscribe-id-not-an-input",
+	"events:webhook:subscribe-idempotent-upsert",
+	"events:webhook:subscribe-key-composition",
+	"events:webhook:subscribe-key-immutable",
+	"events:webhook:subscribe-refresh-before-present",
+	"events:webhook:subscribe-refresh-reactivates",
+	"events:webhook:subscribe-response-cursor",
+	"events:webhook:subscribe-response-truncated",
+	"events:webhook:subscribe-secret-format",
+	"events:webhook:subscribe-secret-rejected",
+	"events:webhook:subscribe-secret-required",
+	"events:webhook:subscribe-url-https-required",
+	"events:webhook:subscribe-url-non-https-rejected",
+	"events:webhook:subscribe-webhook-only",
+	"events:webhook:ttl-no-rejection-path",
+	"events:webhook:ttl-null-only-when-requested",
+	"events:webhook:ttl-omitted-means-default",
+	"events:webhook:ttl-refresh-before-lte-suggestion",
+	"events:webhook:unsubscribe-by-key",
+	"events:webhook:unsubscribe-empty-result",
+	"events:webhook:unsubscribe-unknown-not-found",
+	"events:webhook:verification-cached-per-principal-url",
+	"events:webhook:verification-challenge-echo",
+	"events:webhook:verification-failure-error",
+	"events:webhook:verification-no-raw-endpoint-responses",
+	"events:webhook:verification-required-before-delivery",
+	"events:webhook:verification-uses-ssrf-hardened-path",
+	"go:events:webhook:close",
+	"go:events:webhook:concurrent-emit",
+	"go:events:webhook:expiry",
+	"go:events:webhook:hooks",
+	"go:events:webhook:no-reverify-on-refresh",
+	"go:events:webhook:replay",
+	"go:events:webhook:send-limits",
+	"go:events:webhook:store",
+	"go:events:webhook:suspension",
+	"go:events:webhook:verification-failed-pair",
+	"go:events:webhook:verification-host-limits",
+	"go:events:webhook:watermark",
+}
+
+// eventsWebhookBaselined are the requirement ids of the webhook
+// conformance scenarios this package does not meet, with the reason for
+// each, as a baseline file would carry them. TestEventsRequirementsCovered
+// checks that no test claims one, so a row that is implemented moves to
+// eventsRequirements.
+var eventsWebhookBaselined = map[string]string{
+	"events:webhook:ttl-no-expiry-persisted":              "this package never grants a subscription that does not expire, which the SEP allows; a server that grants no expiry must persist it across restarts",
+	"events:webhook:ttl-no-expiry-gc-terminated":          "no expiry is never granted, so there is no sustained-failure drop with a terminated envelope",
+	"events:webhook:ttl-long-grant-retained":              "grants are at most WebhookOptions.TTL, an hour by default, held in the store the embedder chose; a long grant over the default map store would not survive a restart",
+	"events:webhook:verification-persisted-for-no-expiry": "verification is soft state per process, and no expiry is never granted; a restart verifies again on the next subscribe",
+	"events:webhook:server-identity-key-discovery":        "the optional v1a ed25519 signature and the Server Card signingKeys are not implemented; they depend on ext-server-card#55",
 }
 
 // TestEventsCapability holds events:capability:declared: the extension is
@@ -358,9 +461,8 @@ func TestEventsPollTruncated(t *testing.T) {
 	}
 }
 
-// TestEventsRingBounds holds the requirements go:events:ring:bounds
-// and go:events:ring:epoch: the buffer drops by age and by count, and
-// a replaced type keeps the sequence so old cursors read as gaps.
+// TestEventsRingBounds holds go:events:ring:bounds and go:events:ring:epoch: the buffer drops by age and by count, and a
+// replaced type keeps the sequence so old cursors read as gaps.
 func TestEventsRingBounds(t *testing.T) {
 	clock := newClock()
 	r := newRing("ep", clock.Now, EmitBuffer{MaxAge: time.Minute, MaxEvents: 10})
@@ -654,7 +756,7 @@ func TestEventsRegister(t *testing.T) {
 		{"payload not an object", EventDef{Name: "x", PayloadSchema: json.RawMessage(`{"type":"string"}`), EmitOnly: true}, "root must be an object"},
 		{"bad schema", EventDef{Name: "x", PayloadSchema: json.RawMessage(`{"type":"object","properties":3}`), EmitOnly: true}, "payload schema"},
 		{"push", EventDef{Name: "x", PayloadSchema: payload, EmitOnly: true, Delivery: []string{"poll", "push"}}, "not served yet"},
-		{"webhook only", EventDef{Name: "x", PayloadSchema: payload, EmitOnly: true, Delivery: []string{"webhook"}}, "not served yet"},
+		{"webhook only", EventDef{Name: "x", PayloadSchema: payload, EmitOnly: true, Delivery: []string{"poll", "webhook"}}, "needs EventsOptions.Webhook"},
 		{"unknown mode", EventDef{Name: "x", PayloadSchema: payload, EmitOnly: true, Delivery: []string{"pigeon"}}, "unknown delivery"},
 		{"header name", EventDef{Name: "x", PayloadSchema: payload, EmitOnly: true, InputSchema: json.RawMessage(`{"type":"object","properties":{"a":{"type":"string","x-mcp-header":"Bad Name"}}}`)}, "may not"},
 		{"header type", EventDef{Name: "x", PayloadSchema: payload, EmitOnly: true, InputSchema: json.RawMessage(`{"type":"object","properties":{"a":{"type":"number","x-mcp-header":"A"}}}`)}, "string, integer or boolean"},
@@ -746,8 +848,8 @@ func TestEventsSchemaChange(t *testing.T) {
 	}
 }
 
-// TestEventsLeases holds the requirements go:events:lease:lifecycle
-// and go:events:lease:capacity: OnSubscribe on the first poll, a lease per principal and arguments
+// TestEventsLeases holds go:events:lease:lifecycle and go:events:lease:capacity:
+// OnSubscribe on the first poll, a lease per principal and arguments
 // however written, renewed by polling, ended by silence, and bounded.
 func TestEventsLeases(t *testing.T) {
 	var mu sync.Mutex

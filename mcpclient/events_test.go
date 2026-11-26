@@ -56,6 +56,22 @@ type fakeEvents struct {
 	script []func(raw map[string]json.RawMessage) (*fakePollResult, error)
 	polls  []map[string]json.RawMessage
 	offer  bool
+	// subs are the params of each events/subscribe, answered by the next
+	// subScript step; unsubs those of each events/unsubscribe.
+	subs      []map[string]json.RawMessage
+	subScript []func(raw map[string]json.RawMessage) (*fakeSubResult, error)
+	unsubs    []map[string]json.RawMessage
+	unsubErr  error
+}
+
+type fakeSubResult struct {
+	sdk.ResultBase
+	ResultType     string         `json:"resultType"`
+	ID             string         `json:"id"`
+	RefreshBefore  *string        `json:"refreshBefore"`
+	Cursor         *string        `json:"cursor"`
+	Truncated      bool           `json:"truncated"`
+	DeliveryStatus map[string]any `json:"deliveryStatus,omitempty"`
 }
 
 func (f *fakeEvents) server(t *testing.T) *sdk.Server {
@@ -96,7 +112,35 @@ func (f *fakeEvents) server(t *testing.T) *sdk.Server {
 	if err != nil {
 		t.Fatal(err)
 	}
+	err = sdk.AddReceivingCustomMethod(s, EventsSubscribeMethod, func(_ context.Context, _ *sdk.ServerSession, p *fakePollParams) (*fakeSubResult, error) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.subs = append(f.subs, p.Raw)
+		if len(f.subScript) == 0 {
+			return nil, &jsonrpc.Error{Code: -32603, Message: "script ended"}
+		}
+		step := f.subScript[0]
+		f.subScript = f.subScript[1:]
+		return step(p.Raw)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = sdk.AddReceivingCustomMethod(s, EventsUnsubscribeMethod, func(_ context.Context, _ *sdk.ServerSession, p *fakePollParams) (*fakeUnsubResult, error) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.unsubs = append(f.unsubs, p.Raw)
+		return &fakeUnsubResult{ResultType: "complete"}, f.unsubErr
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	return s
+}
+
+type fakeUnsubResult struct {
+	sdk.ResultBase
+	ResultType string `json:"resultType"`
 }
 
 func desc(name string, delivery []string, input string) map[string]any {

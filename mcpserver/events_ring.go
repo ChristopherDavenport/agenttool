@@ -116,7 +116,10 @@ func (r *ring) watch(fn func()) (cancel func()) {
 
 // ringRead is what one read of the ring found.
 type ringRead struct {
-	events    []Event
+	events []Event
+	// seqs are the sequence numbers of events, which a consumer that
+	// acknowledges them one by one keeps its position by.
+	seqs      []uint64
 	cursor    string
 	truncated bool
 	hasMore   bool
@@ -158,6 +161,7 @@ func (r *ring) read(cursor *string, max int, floor time.Time, sel func(eventReco
 		pos = en.seq
 		if ev, ok := sel(en.ev); ok {
 			out.events = append(out.events, ev)
+			out.seqs = append(out.seqs, en.seq)
 		}
 	}
 	out.cursor = r.format(pos)

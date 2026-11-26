@@ -18,10 +18,11 @@ versions may break the API.
   its leases with the SEP's `schema_changed` error, and `Mcp-Name` and
   `Mcp-Param-*` headers are checked against the params, with `-32020` and
   `data.mismatch`. The SDK sends that refusal as HTTP 200, not 400.
-  `events/stream`, `events/subscribe` and `events/unsubscribe` are answered
-  with the unsupported error (-32026), and no event type lists push or
-  webhook: the wire frames of a stream and a `streamSink` seam are defined
-  and tested but not wired, since go-sdk v1.8.0 has no custom notifications.
+  `events/stream` is answered with the unsupported error (-32026), as are
+  `events/subscribe` and `events/unsubscribe` unless webhooks are turned on
+  (below), and no event type lists push: the wire frames of a stream and a
+  `streamSink` seam are defined and tested but not wired, since go-sdk
+  v1.8.0 has no custom notifications.
   `mcpclient.WithEvents` takes the extension, `Remote.ListEvents` and
   `Remote.PollEvents` call it, and `Remote.RunEvents` runs a poll loop that
   saves its cursor in a `CursorStore` (in memory by default), skips event ids
@@ -29,6 +30,36 @@ versions may break the API.
   at least a floor, 1 second by default. `mcpclient.EventHeaders` is a round
   tripper that sends `Mcp-Name` and `Mcp-Param-*` over Streamable HTTP.
   The error codes -32023 to -32027 are provisional in the SEP.
+- Added: MCP Events (SEP-3415), webhook delivery, experimental, on top of the
+  poll mode above. `EventsOptions.Webhook` turns on `events/subscribe` and
+  `events/unsubscribe` for emit-only event types, which then list `webhook`
+  beside `poll`. The server does no authentication: `WebhookOptions.Principal`
+  says who a request came from, there is no default, and without one every
+  subscribe and unsubscribe is refused with -32024. A subscription is keyed by
+  (principal, url, name, arguments), has a derived `sub_` id, a finite grant
+  (`WebhookOptions.TTL`, an hour by default, floor 60 s; no expiry is never
+  granted) and a client-supplied `whsec_` secret that a refresh rotates, with
+  both secrets signing for 300 s. Deliveries are Standard Webhooks signed,
+  carry `X-MCP-Subscription-Id` and a safe-to-persist watermark cursor, are
+  retried five times at 5, 30, 120 and 300 s (410 and 413 are final), and send
+  `gap` and `terminated` envelopes; delivery is suspended at over 95% failures
+  in 100 attempts in an hour and resumed by a refresh, which reports
+  `deliveryStatus`. A callback must echo a signed challenge before anything is
+  delivered to it, within per-host limits. The callback's host is resolved at
+  every send, refused if any address is special-purpose (IANA registries, IPv4
+  mapped IPv6 included), dialed at the address checked with the name kept for
+  SNI and Host, with no redirect, a 5 s timeout and a 64 KiB response cap;
+  `WebhookOptions.TrustedOrigins` allows http and private addresses for named
+  origins. `WebhookStore` holds the subscriptions (a map by default),
+  `Events.Close` stops all delivery. Webhook is not served for types with a
+  `Check`.
+  `mcpclient` adds `Remote.SubscribeEvents` and `UnsubscribeEvents`,
+  `NewWebhookSecret`, `Remote.KeepSubscribed`, which refreshes before each
+  grant ends with jitter and the last cursor, and `NewWebhookReceiver`, an
+  `http.Handler` that verifies the signature over the raw body, refuses
+  timestamps over five minutes off, answers the challenge, deduplicates by
+  webhook id and by event id per subscription, and hands events, gaps and
+  terminations with their cursors to a callback.
 
 ## v0.0.30 - 2026-11-05
 

@@ -26,16 +26,20 @@ import (
 //
 // Events are experimental: the extension is defined for protocol
 // revision 2026-07-28 and later, and its error codes are provisional.
-// This package takes the poll mode alone: it lists events, polls them
-// and runs a poll loop. A subscription by stream or webhook is not
-// made, and an event type that does not list poll is not polled.
+// This package takes poll and webhook: it lists events, polls them,
+// runs a poll loop, subscribes a webhook with [Remote.SubscribeEvents],
+// keeps it alive with [Remote.KeepSubscribed] and receives its deliveries
+// with [NewWebhookReceiver]. A subscription by stream is not made, and an
+// event type that does not list poll is not polled.
 const EventsExtension = "io.modelcontextprotocol/events"
 
 // The methods of the extension this package sends. They are
 // mcpserver's byte for byte.
 const (
-	EventsListMethod = "events/list"
-	EventsPollMethod = "events/poll"
+	EventsListMethod        = "events/list"
+	EventsPollMethod        = "events/poll"
+	EventsSubscribeMethod   = "events/subscribe"
+	EventsUnsubscribeMethod = "events/unsubscribe"
 )
 
 // The codes events errors carry; see [EventError]. They are mcpserver's
@@ -118,7 +122,13 @@ func WithEvents() Option {
 			if err := sdk.AddSendingCustomMethod[*listEventsParams, *listEventsResult](c, EventsListMethod); err != nil {
 				return err
 			}
-			return sdk.AddSendingCustomMethod[*pollEventsParams, *pollEventsResult](c, EventsPollMethod)
+			if err := sdk.AddSendingCustomMethod[*pollEventsParams, *pollEventsResult](c, EventsPollMethod); err != nil {
+				return err
+			}
+			if err := sdk.AddSendingCustomMethod[*subscribeEventsParams, *subscribeEventsResult](c, EventsSubscribeMethod); err != nil {
+				return err
+			}
+			return sdk.AddSendingCustomMethod[*unsubscribeEventsParams, *emptyEventsResult](c, EventsUnsubscribeMethod)
 		})
 	}
 }
@@ -128,13 +138,23 @@ type EventDescriptor struct {
 	Name        string
 	Description string
 	// Delivery is the modes the server serves it by: "poll", "push",
-	// "webhook". Only "poll" is taken here.
+	// "webhook". "poll" and "webhook" are taken here.
 	Delivery []string
 	// InputSchema is the JSON Schema of the arguments a subscription
 	// takes, and PayloadSchema that of an event's data.
 	InputSchema   json.RawMessage
 	PayloadSchema json.RawMessage
 	Meta          map[string]any
+}
+
+// Webhooks says whether the type is served by webhook.
+func (d EventDescriptor) Webhooks() bool {
+	for _, m := range d.Delivery {
+		if m == "webhook" {
+			return true
+		}
+	}
+	return false
 }
 
 // Polls says whether the type is served by poll.
@@ -549,6 +569,12 @@ func newSeenSet(n int) *seenSet {
 }
 
 // add notes id and says whether it is new.
+// has says whether id is remembered.
+func (s *seenSet) has(id string) bool {
+	_, ok := s.ids[id]
+	return ok
+}
+
 func (s *seenSet) add(id string) bool {
 	if _, ok := s.ids[id]; ok {
 		return false
