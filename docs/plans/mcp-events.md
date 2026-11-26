@@ -1,6 +1,8 @@
 # MCP Events (SEP-3415) in the MCP layer
 
-Status: plan, nothing implemented. Written 2026-11-25.
+Status: poll and webhook shipped on `main` (PRs #108 to #112), unreleased;
+push is not served; wiring into dax and agentkit has not started. Written
+2026-11-25, updated 2026-11-26 to match what shipped.
 
 ## Sources
 
@@ -8,7 +10,8 @@ Status: plan, nothing implemented. Written 2026-11-25.
   `modelcontextprotocol/modelcontextprotocol#3415`, `seps/3415-events-extension.md`.
 - TypeScript reference: `modelcontextprotocol/typescript-sdk#3209` (all three modes).
 - Python reference: `modelcontextprotocol/python-sdk#3822` (poll and webhook).
-- Conformance: `modelcontextprotocol/conformance#521` (five scenarios) and #541.
+- Conformance: `modelcontextprotocol/conformance#521` (five server
+  scenarios) and #541, which stacks on it; run against `c8625de3`.
 
 ## What the extension is
 
@@ -23,115 +26,161 @@ The SEP is written against protocol 2026-07-28: `resultType`,
 `server/discover`, `Mcp-Method` / `Mcp-Name` / `Mcp-Param-*` headers,
 `subscriptions/listen` for list-changed only.
 
-## What go-sdk v1.8.0 gives us
+## What shipped
 
-Checked against the module source (the fit study is in the session
-scratchpad; the two claims that block push were re-read in the source).
+| PR | What |
+| --- | --- |
+| #108 | Poll: `mcpserver.AddEvents`, the registry, ring buffer and cursors, poll leases, header middleware, `events/list` and `events/poll`; `mcpclient` list, poll and a poll loop. The push wire frames and a `streamSink` seam, golden-tested, unwired. |
+| #109 | Webhook: `events/subscribe` and `events/unsubscribe`, TTLs and secrets, verification handshake, SSRF-guarded sender, signing, retry queue, gap bookkeeping, suspension, `deliveryStatus`; `mcpclient` subscribe, refresh and a receiver. |
+| #110 | `mcpserver/examples/events-conformance`, a server for the referee, with `RESULTS.md` explaining every failure and warning; the runtime origin trust as a module-internal test hook. |
+| #111 | An emit-only type may offer webhook without poll; `events/list` pages (`EventsOptions.ListPageSize`); `Events.TerminateWebhook`, `Events.GapWebhook` and `ErrWebhookNotFound`. |
+| #112 | `Events.HTTPHandler`: the real HTTP 400 for a routing-header mismatch. |
+
+Public surface, all experimental: `mcpserver.AddEvents`, `EventsOptions`
+(including `Webhook` and `ListPageSize`), `Events.Register`,
+`EventType.Emit`, `Events.TerminateWebhook`, `Events.GapWebhook`,
+`Events.HTTPHandler`; `mcpclient.WithEvents`, `Remote.ListEvents`,
+`PollEvents`, `RunEvents`, `SubscribeEvents`, `UnsubscribeEvents`,
+`KeepSubscribed`, `NewWebhookSecret`, `NewWebhookReceiver` and
+`EventHeaders`.
+
+### Where it landed
+
+- `mcpserver` holds the registry, emit path, poll, webhook and header
+  checks. About 4,150 non-test lines at the first webhook merge, plus the
+  later PRs; `mcpclient` about 1,580. The root module is untouched and
+  stays free of the MCP SDK (`make deps`).
+- A server is built as `AddEvents(srv, EventsOptions{...})`, which returns
+  the handle types are registered on, not by changing `Options.NewServer`.
+- Webhook subscription state is an interface (get, put, delete,
+  listByName) with a map default. Cursors are not pluggable: check-type
+  cursors belong to the author and emit-only types use an in-memory ring
+  (`e<epoch>.<seq>`), as in the TypeScript PR.
+- Webhook has no default principal: subscribe is refused (-32024) until
+  the embedder supplies one (library is capability, app does auth).
+- Webhook is served for emit-only types only; a type with a `Check` is
+  refused at `Register`, since its author owns its cursors.
+- Tests follow the TypeScript PR: golden-frame wire tests, injectable
+  clocks, requirement ids `events:<area>:<rule>` for ids shared with other
+  SDKs and `go:events:...` for ours, and a coverage test that every id is
+  named by a test.
+
+### Decisions worth knowing
+
+- **The origin trust the referee needs is not API.** The referee's
+  receiver picks its port at run time, so the example must trust that
+  origin after the server starts. That goes through
+  `mcpserver/internal/testhook`, which no code outside the module can
+  import, as the TypeScript reference does with a test-only hook. An
+  embedder that knows its origins sets `WebhookOptions.TrustedOrigins`.
+- **`TerminateWebhook` and `GapWebhook` check no principal.** A
+  subscription id is not a secret, so the docs say to call them only from
+  code the embedder controls. Alternatives not taken: methods that take a
+  principal and refuse a mismatch, addressing a subscription by
+  (principal, url, name, arguments), a gap per event type.
+- **Only finite TTLs are granted.** The SEP allows a subscription with no
+  expiry; we do not grant one, so the three `ttl-no-expiry` rows stay
+  warnings.
+
+## What go-sdk v1.8.0 gave us, and what we did by hand
+
+Checked against the module source.
 
 | Need | v1.8.0 |
 | --- | --- |
-| Custom request/response methods | `AddReceivingCustomMethod`, `AddSendingCustomMethod`, `CallCustomMethod` |
-| Extension capability entry | `Extensions` + `AddExtension` on both capability structs |
-| Handler sees request headers | No. Handler gets `(ctx, *ServerSession, params)`. Receiving middleware sees `RequestExtra.Header`, so middleware can put them in ctx. |
+| Custom request/response methods | `AddReceivingCustomMethod`, `AddSendingCustomMethod`, `CallCustomMethod`; used. |
+| Extension capability entry | `Extensions` + `AddExtension` on both capability structs; used. |
+| 2026-07-28 pieces (`server/discover`, per-request client capabilities) | Served well enough. `resultType` is set only on the SDK's own results, so ours carry `resultType: "complete"` by hand. |
+| Handler sees request headers | No. Receiving middleware sees `RequestExtra.Header`; the events methods are answered there. |
+| `Mcp-Name` / `Mcp-Param-*` validation for custom methods | Not done by the SDK; ours, in middleware. |
+| Status of a refusal from a custom method | Always HTTP 200 with the error in the body. `Events.HTTPHandler` runs the same check in front of the SDK and sends the 400. |
 | Custom notifications | No. |
-| Streaming responses for a custom method | No. Workaround: park the handler, send frames with `NotifyProgress` or `Log` on the session; routed to that request's SSE stream. |
-| Per-request client headers | No option; a `RoundTripper` on `StreamableClientTransport.HTTPClient` can add them from ctx. |
+| Per-request client headers | No option; `mcpclient.EventHeaders` is a `RoundTripper` that adds them from the context. |
 
-Open upstream: go-sdk#1031 (client-to-server custom-method ergonomics only,
-changes none of the above). v1.9.0-pre.1 adds nothing for custom
-notifications or handler access to `Extra`.
+go-sdk#1031 (client-to-server custom-method ergonomics) changes none of
+the above, and v1.9.0-pre.1 adds nothing for custom notifications or
+handler access to the request.
 
-## Verdict per mode
+## Push
 
-- **Poll** (list, poll, subscribe, unsubscribe): doable on stock v1.8.0.
-- **Webhook**: doable; delivery is plain `net/http`, independent of the SDK.
-  Needs an authenticated principal, https-only URLs, a verification
-  handshake, an SSRF-hardened dialer pinned to the validated IP, no
-  redirects, HMAC v1 signing, a retry queue and a TTL store.
-- **Push** (`events/stream`): not doable on stock v1.8.0. The SEP's
-  frames are custom notifications (`notifications/events/{active,event,
-  heartbeat,error,terminated}`, each stamped with
-  `_meta["io.modelcontextprotocol/subscriptionId"]`, then an empty
-  result), and go-sdk has no custom notifications. Progress/log frames
-  are not the SEP wire format, so we do not use them. A parked handler
-  can also deadlock session close (go-sdk#1160).
+Not served. The SEP's frames are custom notifications
+(`notifications/events/{active,event,heartbeat,error,terminated}`, each
+stamped with `_meta["io.modelcontextprotocol/subscriptionId"]`, then an
+empty result) and go-sdk has no way to send one. The TypeScript reference
+allows a server to leave push out (`delivery: {push: false}`), so this is
+conformant. Descriptors omit `push` from `delivery`, and `events/stream`
+answers the SEP's unsupported error (-32026).
 
-## Decision: push is off in the first release
+### Spike (not merged)
 
-The TypeScript reference allows this (`delivery: {push: false}`), so a
-server without push is conformant. We ship poll and webhook, declare
-push unsupported in every descriptor's `delivery` list, and answer
-`events/stream` with the SEP's unsupported error. The client never
-selects push when a descriptor omits it.
+A throwaway branch tried a transport wrapper: a `Connection` wrapper for
+stdio and in-memory, and an `http.Handler` in front of the stock stateless
+handler that rewrites the SSE event the SDK writes. It worked, with the
+referee's push scenario going from 3 to 19 of 28 passes, at about 820 lines
+including tests, but it depends on three undocumented SDK behaviours (the
+`idContextKey` request routing, the SSE framing of `writeEvent`, and a
+progress notification used as a carrier). Hosting our own
+`StreamableServerTransport` does not work, because custom methods are
+rejected while its unexported `server` field is unset. The recommendation
+was not to ship it. The spike lives on a local branch and was never
+pushed; its one reusable idea, the HTTP 400, is `Events.HTTPHandler`.
 
-### Staying ready for go-sdk support
+### Staying ready
 
-- Push is one interface in `mcpserver`, `streamSink` (send active,
-  event, heartbeat, error, terminated; end with the result). Emit,
-  cursors, subscription matching and replay do not know how frames
-  travel; poll and webhook use the same core.
-- The registry, emit path and cursor ring are written for a long-lived
-  consumer already (a subscriber with a cursor that receives events as
-  they are emitted). Poll drains it on request.
-- `delivery` is data on the event definition, not a constant. Turning
-  push on is a change in one place plus a sink implementation.
-- Wire frame types are defined now, with golden-frame tests, so the
-  sink can be added without a format decision.
-- Two ways in later, behind the sink: go-sdk custom notifications (watch
-  for an upstream issue; file one with this plan as the use case) or a
-  `Transport` wrapper. Either is additive. No public API changes: a
-  server that enabled push later only adds `push` to `delivery`.
-- Client side: the stream receiver is the same shape (consume frames,
-  dedupe by `eventId`, reconnect with the cursor), so it is added
-  without touching the poll or webhook paths.
+- Push is one interface in `mcpserver`, `streamSink`; emit, cursors,
+  matching and replay do not know how frames travel, so poll, webhook and
+  push share the same core.
+- `delivery` is data on the event definition. Turning push on is a change
+  in one place plus a sink, and a server that enabled it only adds `push`
+  to `delivery`; no public API changes.
+- The wire frame types are defined and golden-tested.
+- The client's stream receiver would have the same shape as the poll
+  loop: consume frames, dedupe by `eventId`, reconnect with the cursor.
 
-## Placement
+Ways in, none taken: custom notifications and handler access to the
+request id in go-sdk, or our own thin wire layer for `events/stream` at the
+HTTP level plus a `Connection` wrapper for stdio. Nothing has been filed
+upstream.
 
-- `mcpserver`: an events registry (type descriptors, `emit`, cursor store,
-  subscription store) and the method handlers; `Options` gains a
-  capabilities pass-through (`NewServer` builds `ServerOptions` only when
-  `Instructions` or `Logger` is set).
-- `mcpclient`: `events/*` calls via `WithClientSetup`, a poll loop with
-  cursor persistence and `eventId` dedup, stream and webhook receivers,
-  and a mode chooser per Appendix A.
-- Root module: only types that tools or agent loops share (event
-  descriptor, occurrence) and only if a consumer needs them; the root
-  must stay free of the MCP SDK (`make deps`).
-- Webhook subscription state is an interface (get, put, delete,
-  listByName) with a map default, as in the TypeScript PR. Cursors are
-  not pluggable there: check-type cursors belong to the author and
-  emit-only types use an in-memory ring (`e<epoch>.<seq>`); we do the
-  same.
-- Header checks (`Mcp-Name`, `Mcp-Param-*`, 400 with -32020) are HTTP
-  middleware, since handlers see no headers; it reads the registry for
-  each type's `x-mcp-header` annotations.
-- No default for the webhook principal: webhook stays refused until the
-  embedder supplies one (library is capability, app does auth).
+## Conformance
 
-## Phases
+Referee: conformance#541 at `c8625de3` (#521 at `76fef32d`). Both PRs were
+open; rerun before relying on a row. Commands and the reason for every
+failure and warning are in
+`mcpserver/examples/events-conformance/RESULTS.md`.
 
-1. Capability, `events/list`, `events/poll`, server emit, client poll
-   loop, header middleware. Passes `events-discovery` and `events-poll`.
-2. Webhook: subscribe / unsubscribe, delivery, security. Passes
-   `events-webhook` and `events-webhook-delivery`. Expect the
-   TypeScript baselines (ttl-no-expiry x2, list-pagination) unless we
-   implement them.
-3. Push, when go-sdk can carry the frames (see above). Passes
-   `events-push`; until then that scenario is baselined as unsupported.
-4. Wire into dax and agentkit (event sources into the agent loop) as
-   separate changes in those repositories.
+| Scenario | Result |
+| --- | --- |
+| events-discovery | 15/15 |
+| events-poll | 33/33, 4 warnings |
+| events-webhook | 27/27, 4 warnings |
+| events-webhook-delivery | 24/24, 6 warnings |
+| events-push | 3/26, 23 failures: no type advertises push |
 
-Tests follow the TypeScript PR: golden-frame wire tests, injectable
-clocks, and requirement ids `events:<area>:<rule>` for ids shared with
-other SDKs and `go:events:...` for ours, with a coverage check.
+Warnings are all "unverified, not violated": controls the example does not
+serve (restart, generation), features not built, and rows the suite cannot
+grade.
 
-Run the conformance scenarios locally from a build of conformance#541;
-no released referee carries them yet.
+## Not done
+
+- Push (above) and the client's stream receiver.
+- `server-identity-key-discovery`: the optional signature and Server Card
+  `signingKeys`; depends on ext-server-card#55.
+- Webhook: a per-principal subscription quota, delivery-time
+  re-authorization, `throttled` / `retryAfterMs`, the well-known and
+  allowlist verification options, and subscriptions with no expiry.
+- `listChanged` is not offered; `RunEvents` does not retry.
+- The events methods are still served on protocols before 2026-07-28,
+  where the reference answers -32601; routing headers are checked only from
+  2026-07-28.
+- Client mode selection per SEP Appendix A.
+- Phase 4: wire event sources into dax and agentkit as separate changes in
+  those repositories.
 
 ## Open questions
 
-- Is 2026-07-28 (`server/discover`, `resultType`, `Mcp-*` headers) fully
-  served by v1.8.0, or do we add pieces by hand? Verify before phase 1.
+- Which way to take push: upstream custom notifications, our own wire
+  layer, or wait.
 - Error codes -32023..-32027 are provisional in the SEP.
 - SEP Open Questions that could change the wire: multi-name subscriptions
   with one cursor, events for resource and list-changed notifications.
